@@ -78,9 +78,18 @@ export function channelOptions(
     domain: config.domain === 'lark' ? Domain.Lark : Domain.Feishu,
     source: 'feishu4dsh',
     // Messages arriving within one chat are processed strictly in order; the
-    // agent's inbox already drains queued messages into a single turn, so the
-    // SDK's batching window stays closed to preserve attribution.
-    safety: { chatQueue: { enabled: true } },
+    // agent's inbox already drains queued messages into a single turn.
+    // The batching window MUST stay closed: with the default 600 ms text
+    // debounce the SDK merges consecutive messages into one representative
+    // that keeps the LAST message's identity (`mergeBatch`), so a topic
+    // message bundled with an adjacent non-topic message loses its
+    // thread_id — its answer is then scoped/replied to the chat root
+    // instead of the topic. `chatQueue.enabled` alone does NOT close that
+    // window; only `batch.text.delayMs = 0` does (immediate serial flush).
+    safety: {
+      chatQueue: { enabled: true },
+      batch: { text: { delayMs: 0 } },
+    },
   }
   if (config.connectionMode === 'webhook') {
     options.webhook = {

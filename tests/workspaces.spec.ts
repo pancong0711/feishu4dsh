@@ -1,8 +1,8 @@
 import { beforeEach, afterEach, describe, expect, it } from 'vitest'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildCatalog, isAllowed, listWorkspaces, resolveCdTarget, registeredPathsOf } from '../src/workspaces.js'
+import { buildCatalog, isAllowed, listWorkspaces, resolveCdTarget, registeredPathsOf, normalizeWorkspacePath, resolveWorkspaceDirectory } from '../src/workspaces.js'
 
 let root: string
 let defaultWs: string
@@ -134,5 +134,69 @@ describe('registeredPathsOf', () => {
   it('reads paths from a working registry', () => {
     const registry = { list: () => [{ path: '/a' }, { path: '/b' }] }
     expect(registeredPathsOf(registry)).toEqual(['/a', '/b'])
+  })
+})
+
+describe('R14 中文路径兼容（normalizeWorkspacePath）', () => {
+  it('strips full-width space U+3000 in every segment', () => {
+    expect(normalizeWorkspacePath('/home/user/20260730　-　示例目录')).toBe('/home/user/20260730-示例目录')
+    expect(normalizeWorkspacePath('/home/user/A　B/读　书')).toBe('/home/user/AB/读书')
+  })
+
+  it('strips ASCII spaces, tabs and NBSP-like whitespace', () => {
+    expect(normalizeWorkspacePath('/home/user/20260730 - 示例目录')).toBe('/home/user/20260730-示例目录')
+    expect(normalizeWorkspacePath('/home/user/a\tb/c d')).toBe('/home/user/ab/cd')
+    expect(normalizeWorkspacePath('/home/user/a\u00a0b')).toBe('/home/user/ab')
+  })
+
+  it('NFC-normalizes composed forms onto one spelling', () => {
+    // 'café' 的 NFD 形式（e + U+0301）折叠为 NFC 的 é；中文路径里也常见
+    // 全角/半角混合，NFC 保证比较键唯一。
+    const nfd = 'café'.normalize('NFD')
+    expect(normalizeWorkspacePath(nfd)).toBe('café'.normalize('NFC'))
+  })
+
+  it('preserves separators and leading slashes', () => {
+    expect(normalizeWorkspacePath('/a//b c/')).toBe('/a//bc/')
+  })
+
+  it('keeps an already-canonical path unchanged', () => {
+    const p = '/home/user/20260730-示例目录'
+    expect(normalizeWorkspacePath(p)).toBe(p)
+  })
+})
+
+describe('R14 中文路径兼容（目录解析）', () => {
+  let wsRoot: string
+
+  beforeEach(async () => {
+    wsRoot = await mkdtemp(join(tmpdir(), 'feishu4dsh-r14-'))
+    // 磁盘上只存在「无空格」的真实目录；配置值里带空格/全角空格的拼写都是坏值。
+    // 真实名含连字符：`目标-项目`；坏拼写 `目标 - 项目` / `目标　-　项目` 去空格后回到原名。
+    await mkdir(join(wsRoot, '读书', '目标-项目'), { recursive: true })
+  })
+
+  afterEach(async () => {
+    await rm(wsRoot, { recursive: true, force: true })
+  })
+
+  it('resolveWorkspaceDirectory finds dirs misspelled with full-width spaces', async () => {
+    const misspelled = join(wsRoot, '读\u3000书', '目标　-　项目')
+    expect(await resolveWorkspaceDirectory(misspelled)).toBe(join(wsRoot, '读书', '目标-项目'))
+  })
+
+  it('resolveWorkspaceDirectory finds dirs misspelled with stray ASCII spaces', async () => {
+    const misspelled = join(wsRoot, '读 书', '目标 - 项目')
+    expect(await resolveWorkspaceDirectory(misspelled)).toBe(join(wsRoot, '读书', '目标-项目'))
+  })
+
+  it('resolveWorkspaceDirectory keeps a verbatim existing path (legit spaces win)', async () => {
+    await mkdir(join(wsRoot, '读 书', '目标-项目'), { recursive: true })
+    const legit = join(wsRoot, '读 书', '目标-项目')
+    expect(await resolveWorkspaceDirectory(legit)).toBe(await realpath(legit))
+  })
+
+  it('resolveWorkspaceDirectory returns undefined when no spelling exists', async () => {
+    expect(await resolveWorkspaceDirectory(join(wsRoot, '不存在'))).toBeUndefined()
   })
 })
