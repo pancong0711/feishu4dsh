@@ -1,0 +1,61 @@
+# Bundle patch applied over the selected DSH profile when this package is
+# listed in `dsh.profile.bundles`. The row id is deployment-local; the package
+# name must match package.json.
+
+- insert:
+    - id: feishu4dsh
+      name: 'feishu4dsh'
+      config:
+        # Credentials layering: these entry values (env via `!!js`, never
+        # `!js`) -> the user settings document.
+        appId: !!js process.env.FEISHU_APP_ID
+        appSecret: !!js process.env.FEISHU_APP_SECRET
+
+        # 域名：feishu（国内，默认）或 lark（国际版）
+        # domain: lark
+
+        # 传输模式：websocket（长连接，默认，无需公网地址）或 webhook
+        # connectionMode: websocket
+        # webhook 模式才需要的两个值（飞书开放平台「事件与回调 -> 加密策略」）：
+        # verificationToken: !!js process.env.FEISHU_VERIFICATION_TOKEN
+        # encryptKey: !!js process.env.FEISHU_ENCRYPT_KEY
+        # webhookPort: 3081
+
+        # 工作目录：agent 会话的默认工作区（默认宿主进程 cwd）
+        # workspace: /absolute/path/to/workspace
+
+        # /cd 可进入的目录前缀；留空 = 仅允许默认工作区与已注册工作区（安全默认）
+        # workspaceRoots: ['/absolute/path/to/projects']
+
+        # 会话粒度：chat（默认，整个聊天一个会话）、chat-thread（按话题）、
+        # chat-sender（按发送人）
+        sessionScope: chat-thread
+
+        # 群聊是否需要 @ 机器人才响应（默认 true）
+        requireMention: true
+
+        # 输出呈现：stream（默认，一段流式文本）或 card（单卡片聚合过程与答案）
+        # output: stream
+        # 是否在回复卡片/文本中展示工具调用过程
+        # showProcess: true
+
+        # 媒体收发
+        # receiveFiles: true                    # 入站文件/图片落入 <workspace>/.feishu4dsh/inbox/
+        # maxReceiveFileBytes: 20971520         # 单文件上限
+        # maxMessageReceiveBytes: 1073741824    # 单条消息附件总大小上限（1 GiB）
+        # saveImagesToInbox: true               # 图片是否也保存到工作区 inbox
+        # attachImages: false                   # 仅确认模型支持视觉时开启
+        # sendFiles: true                       # 群聊发送前始终弹审批卡片
+        # maxSendFileBytes: 20971520
+
+        # 审批（工具调用授权）：超时未点击按拒绝处理（fail-closed）
+        # approvalTimeoutMs: 300000
+
+        # 界面语言：auto（跟随飞书客户端语言）/ zh-CN / en-US
+        # locale: auto
+
+        # 授权收窄（只收窄、不放行）：谁能找到机器人由应用「可用范围」决定，
+        # 这里可以进一步限制。留空 = 服务所有能见到机器人的人。
+        # senderAllowlist: []      # 私聊发送人 open_id 列表
+        # groupAllowlist: []       # 群聊 chat_id 列表
+        # approvers: []            # 可点击「允许/拒绝」按钮的 open_id；留空 = 谁驱动会话谁审批

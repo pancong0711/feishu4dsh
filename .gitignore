@@ -1,0 +1,25 @@
+# 产物与依赖
+node_modules/
+lib/
+*.tsbuildinfo
+
+# 运行时痕迹：不提交任何凭据、日志、会话状态
+.env
+.env.*
+*.log
+.feishu4dsh/
+coverage/
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+
+# 归档/临时保留，不纳入版本控制
+archive/
+
+# 部署/发布预览 clone（暂存目录，不纳入主仓库版本控制）
+publish/
+
+# 后台 subagent 工作痕迹（日志/报告），不提交
+.subagent/
