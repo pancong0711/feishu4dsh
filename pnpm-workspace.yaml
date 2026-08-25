@@ -1,2 +1,4 @@
+# pnpm ≥10 默认忽略依赖构建脚本；@larksuiteoapi/node-sdk 依赖 protobufjs，
+# 其 postinstall 需要放行，否则 pnpm install 报 ERR_PNPM_IGNORED_BUILDS 并使 CI 全红。
 allowBuilds:
-  protobufjs: set this to true or false
+  protobufjs: true

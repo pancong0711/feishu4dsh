@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-08-25)
+
+**R12：远程仓库管理定稿 + CI 修复 + 版本发布**
+
+- **远程仓库管理定稿**：远程仓库仅发布**测试过、去敏的白名单快照**；日常开发提交保留在本地全量仓库，本地主分支不再直接推送远程（发布流程见 `docs/PUBLISHING.md`「三个仓库」）。
+- **CI 修复**：pnpm ≥10 默认忽略依赖构建脚本，导致 `pnpm install` 报 `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: protobufjs@7.6.5`、每次 push 后 CI 失败；已在 `pnpm-workspace.yaml` 放行 `protobufjs` 构建脚本。
+- 版本号 0.3.0 → 0.4.0。
 
 **R11：模型/工作区切换加固**
 
