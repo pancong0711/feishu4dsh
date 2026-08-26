@@ -816,7 +816,7 @@ async function deliverFile(
   env: BridgeEnv,
   state: BridgeState,
   binding: ChatBinding,
-  _sessionId: string,
+  sessionId: string,
   file: OutboundFile,
   signal?: AbortSignal,
 ): Promise<string | undefined> {
@@ -833,11 +833,13 @@ async function deliverFile(
     denyLabel: state.copy.denyButton,
     payload,
   })
-  const sent = await env.port.send(binding.chatId, { card: cardObject }).catch(() => undefined)
+  const anchor = replyAnchorFor(state, binding, sessionId)
+  const options = anchor === undefined ? undefined : { replyTo: anchor, replyInThread: true }
+  const sent = await env.port.send(binding.chatId, { card: cardObject }, options).catch(() => undefined)
   if (sent === undefined) return 'send_file could not ask the group for approval'
 
   const decision = await waitForCardDecision(env, state, {
-    token, kind: 'file-send', chatId: binding.chatId, sessionId: _sessionId, messageId: sent.messageId, file,
+    token, kind: 'file-send', chatId: binding.chatId, sessionId, messageId: sent.messageId, file,
   }, signal)
   return decision === 'approve' ? sendFileBytes(env, binding.chatId, file) : 'The group declined to send that file.'
 }
@@ -1122,7 +1124,9 @@ async function answerApproval(
 
   let messageId: string
   try {
-    messageId = (await env.port.send(binding.chatId, { card: cardObject })).messageId
+    const anchor = replyAnchorFor(state, binding, sessionId)
+    const options = anchor === undefined ? undefined : { replyTo: anchor, replyInThread: true }
+    messageId = (await env.port.send(binding.chatId, { card: cardObject }, options)).messageId
   } catch (error) {
     env.report(`feishu4dsh: approval card failed: ${describeError(error)}`)
     return next()
@@ -1144,6 +1148,19 @@ function currentAgentKey(binding: ChatBinding): string {
 }
 
 /** The session id the chat is driving right now (live or prospective). */
+/**
+ * The Feishu message an interactive card should thread under when asked by
+ * THIS session: the inbound message that started its current turn. Undefined
+ * when the asking session is not the chat's CURRENT one (e.g. a pre-/cd
+ * leftover still finishing a turn) or no anchor is known — such a card then
+ * lands in the chat root rather than inside a wrong topic (R17).
+ */
+function replyAnchorFor(state: BridgeState, binding: ChatBinding, sessionId: string): string | undefined {
+  const currentSession = state.ledger.get(currentAgentKey(binding))?.sessionId
+  if (currentSession !== sessionId) return undefined
+  return binding.replyTo
+}
+
 function currentSessionId(state: BridgeState, binding: ChatBinding): string {
   const agentKey = currentAgentKey(binding)
   const entry = state.ledger.get(agentKey)

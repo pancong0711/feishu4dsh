@@ -1470,3 +1470,69 @@ describe('bridge: R11 switch hardening', () => {
     }
   })
 })
+
+/* ------------------------------------------------------------------ */
+/* R17: approval cards follow their source conversation                */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R17 approval cards follow their source topic', () => {
+  function emitInbound(port: FakePort, content: string, messageId: string): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+  }
+
+  it('R17-a: an approval card threads under the current turn’s inbound message', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'do privileged work', 'm_anchor')
+    await sleep(20)
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    host.emit('approval/request', {
+      agent, toolName: 'bash', reason: 'rm -rf out/',
+    }, async () => 'unavailable' as const)
+    await sleep(5)
+
+    const cardMessage = port.sent.find(m => 'card' in m.input)
+    expect(cardMessage).toBeDefined()
+    // The card lands INSIDE the topic that asked for it, not at the chat root.
+    expect(cardMessage?.options).toEqual({ replyTo: 'm_anchor', replyInThread: true })
+  })
+
+  it('R17-b: a stale session’s approval falls back to unthreaded delivery', async () => {
+    const { host, port } = makeEnv({ workspaceRoots: [tmpdir()] })
+    const sibling = mkdtempSync(join(tmpdir(), 'feishu4dsh-r17b-'))
+    try {
+      emitInbound(port, 'task before switch', 'm_old_turn')
+      await sleep(20)
+      const oldAgent = host.created[0]
+      if (oldAgent === undefined) throw new Error('agent missing')
+
+      // Switching re-points the chat at another workspace; the old session is
+      // no longer "current", so its late approval must NOT thread under the
+      // new context's messages.
+      await textMessage(port, `/cd ${sibling}`)
+      host.emit('approval/request', { agent: oldAgent, toolName: 'bash' },
+        async () => 'unavailable' as const)
+      await sleep(5)
+
+      const cardMessage = port.sent.find(m => 'card' in m.input)
+      expect(cardMessage).toBeDefined()
+      expect(cardMessage?.options).toBeUndefined()
+    } finally {
+      rmSync(sibling, { recursive: true, force: true })
+    }
+  })
+})
