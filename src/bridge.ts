@@ -705,7 +705,15 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
   } catch {
     handle = await env.host.agents.create({
       sessionId,
-      meta: binding.workspacePath === '' ? undefined : { cwd: binding.workspacePath },
+      meta: {
+        ...(binding.workspacePath === '' ? {} : { cwd: binding.workspacePath }),
+        // Feishu sessions run the FULL coding-agent preset (fs/search/subagent/
+        // workflow tools). The deployment default is `minimal`, which ships only
+        // a bash terminal and cannot carry the requirement-doc → subagent
+        // collaboration flow. resume() cannot change presets, so existing
+        // sessions keep theirs until /new starts a fresh one. (R18)
+        agentPreset: 'standard',
+      },
       agentOptions,
       setup,
     })

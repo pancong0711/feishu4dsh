@@ -23,6 +23,8 @@ class FakeAgent implements HostAgent {
   cwd?: string
   /** The provider/model the agent was created with. */
   agentOptions?: HostAgentOptions
+  /** The agent preset the agent was created under (R18). */
+  preset?: string
   /**
    * When set, the fake session advertises `requestHeader()` (R7); leaving it
    * undefined models an older host whose sessions have no such capability.
@@ -102,6 +104,7 @@ function fakeHost() {
         if (options.setup !== undefined) await options.setup({ get: () => undefined, on: () => () => undefined })
         const agent = new FakeAgent(options.sessionId)
         agent.cwd = options.meta?.cwd
+        agent.preset = options.meta?.agentPreset
         agent.agentOptions = options.agentOptions
         created.push(agent)
         return { agent, async dispose(): Promise<void> {} }
@@ -207,6 +210,14 @@ describe('bridge: inbound messages', () => {
 
     expect(host.created).toHaveLength(1)
     expect(host.created[0]?.agentOptions).toEqual({ provider: 'opencode-go', model: 'deepseek-v4-flash' })
+  })
+
+  it('R18: creates Feishu agents with the standard preset (full toolset)', async () => {
+    const { host, port } = makeEnv()
+    await textMessage(port, 'hello')
+    expect(host.created).toHaveLength(1)
+    // minimal 预设只有 bash 终端，跑不了「需求文档 → subagent」协作；新会话必须 standard。
+    expect(host.created[0]?.preset).toBe('standard')
   })
 
   it('creates agents without a default model service', async () => {
