@@ -34,3 +34,55 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # R19-a dual-track manifest gates (run after Build so the facet entry
+      # artifact exists). Structural lint is the hard, offline gate.
+      - name: Manifest structural lint
+        run: pnpm check:manifest
+
+      # Upgrade precheck against the real upstream schema. The validator is
+      # installed into a throwaway prefix on purpose -- never a project
+      # dependency. Advisory only: network-restricted runners skip it with a
+      # warning instead of failing the build.
+      - name: Manifest schema precheck (@dsh-std/manifest, advisory)
+        continue-on-error: true
+        env:
+          DSH_STD_MANIFEST_SPEC: "@dsh-std/manifest@0.1.0-rc3"
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          echo "precheck sandbox: $tmp"
+          if ! npm install --prefix "$tmp" --no-save --no-audit --no-fund --loglevel=error "$DSH_STD_MANIFEST_SPEC"; then
+            echo "::warning::skipped dsh-std manifest schema precheck (validator install failed; offline runner?)"
+            exit 0
+          fi
+          cat > "$tmp/precheck.mjs" <<'PRECHECK_EOF'
+          import { readFileSync } from 'node:fs'
+          import { join } from 'node:path'
+          import { pathToFileURL } from 'node:url'
+
+          const pkgDir = join(process.env.PRECHECK_TMP, 'node_modules', '@dsh-std', 'manifest')
+          const meta = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'))
+          // Resolve the ESM entry without assuming a specific exports layout.
+          let rel = meta.main ?? meta.module
+          const dot = meta.exports?.['.']
+          const pick = value => (typeof value === 'string' ? value : undefined)
+          if (typeof dot === 'string') rel = dot
+          else if (dot && typeof dot === 'object') {
+            rel = pick(dot.import) ?? pick(dot.default) ?? rel
+          }
+          const mod = await import(pathToFileURL(join(pkgDir, rel ?? 'index.js')).href)
+          const manifest = JSON.parse(readFileSync(process.argv[2], 'utf8'))
+          const candidates = ['parseManifest', 'validateManifest', 'validate', 'check']
+          const validate = candidates
+            .map(name => mod[name] ?? mod.default?.[name])
+            .find(fn => typeof fn === 'function')
+          if (validate === undefined) {
+            throw new Error(`unrecognized @dsh-std/manifest exports: ${Object.keys(mod).join(', ')}`)
+          }
+          const report = validate(manifest)
+          const problems = Array.isArray(report?.errors) ? report.errors : []
+          if (problems.length > 0) throw new Error(JSON.stringify(problems, null, 2))
+          console.log(`dsh-std schema precheck passed (${process.env.DSH_STD_MANIFEST_SPEC}).`)
+          PRECHECK_EOF
+          PRECHECK_TMP="$tmp" node "$tmp/precheck.mjs" dsh-plugin.json

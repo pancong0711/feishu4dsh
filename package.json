@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check:manifest": "node scripts/check-manifest.mjs"
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -40,6 +41,8 @@
     "src",
     "docs",
     "cordis.patch.yml",
+    "dsh-plugin.json",
+    "HISTORY.md",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

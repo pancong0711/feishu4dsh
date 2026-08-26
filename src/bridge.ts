@@ -52,8 +52,16 @@ export interface ChatBinding {
   workspacePath: string
   /** Display name of the current workspace (basename). */
   workspaceName: string
-  /** The inbound message id the next reply aims at. */
+  /** The inbound message id the next reply aims at (one-shot: cleared at turn/end). */
   replyTo?: string
+  /**
+   * The last inbound message id this scope ever saw (R20). Unlike `replyTo`,
+   * this persists across turn/end, so a turn the HOST initiates on its own
+   * (subagent completion reports, job/goal injections — no inbound message,
+   * no user/message restoration) can still thread its output under the
+   * conversation's most recent inbound topic instead of the chat root.
+   */
+  lastInboundReplyTo?: string
   /** The active reply stream, when one is open. */
   stream?: ReplyStream
   /** Tool call counts for the current turn; reset at `turn/start`. */
@@ -70,6 +78,16 @@ export interface ChatBinding {
 interface ReplyStream {
   append(text: string): Promise<void>
   finish(): Promise<void>
+  /**
+   * Whether this stream already carries round content (buffered text, or
+   * anything that reached the underlying card). `handleInboundMessage`
+   * PRE-OPENS a stream before the agent turn starts, so an attached stream
+   * at `turn/start` is usually that fresh, still-empty placeholder — it must
+   * be KEPT. Only a stream holding a previous round's payload is stale
+   * residue worth reclaiming (R21 §3.3); the per-binding render queue
+   * guarantees anything with payload predates the new turn/start.
+   */
+  hasPayload(): boolean
 }
 
 /** Accumulated token usage for one turn. */
@@ -79,6 +97,16 @@ interface TurnUsage {
   cacheReadTokens: number
   cacheWriteTokens: number
   reasoningTokens: number
+}
+
+/**
+ * One remembered reply anchor: the Feishu message a turn's eventual output
+ * should thread under. Carries the owning scopeKey so `/new` can purge the
+ * entries of exactly its own scope (R22 §2.2).
+ */
+interface ReplyTarget {
+  readonly scopeKey: string
+  readonly messageId: string
 }
 
 function emptyTurnUsage(): TurnUsage {
@@ -131,6 +159,53 @@ export interface BridgeHooks {
   onUserWorkspacesChange?: (workspaces: string[]) => void | Promise<void>
 }
 
+/**
+ * Time-to-ready watchdog for stream-mode replies (R21 §3.1): if the SDK's
+ * markdown callback has not handed us a controller within this window (hung
+ * open request, throttling, WS reconnect), the stream is condemned and every
+ * later `append` becomes a no-op while `finish` delivers the accumulated
+ * buffer as one plain message. A constant for now; promoting it into
+ * `ResolvedConfig` is deliberately deferred.
+ *
+ * R22 §2.1: the SAME window bounds the card-mode placeholder round-trip —
+ * a placeholder that neither settles nor fails within it condemns the card,
+ * and `finish` degrades to the plain-markdown path.
+ */
+export const REPLY_STREAM_READY_TIMEOUT_MS = 10_000
+
+/**
+ * Convergence cap for stream-mode `finish()` (R21 §3.2): waiting for the
+ * SDK's send promise is raced against this window, so a turn end always
+ * resolves in bounded time even when the underlying request hangs.
+ *
+ * R22 §2.1: the SAME cap bounds the card-mode `updateCard` round-trip inside
+ * `finish()`; past it the content degrades to one plain markdown send.
+ */
+export const REPLY_STREAM_FINISH_TIMEOUT_MS = 30_000
+
+/** Injectable timings (primarily for tests; production uses the defaults). */
+export interface BridgeTimingOptions {
+  /** Overrides {@link REPLY_STREAM_READY_TIMEOUT_MS} (stream ready / card placeholder). */
+  replyReadyTimeoutMs?: number
+  /** Overrides {@link REPLY_STREAM_FINISH_TIMEOUT_MS} (stream settle / card update). */
+  replyFinishTimeoutMs?: number
+}
+
+/** The resolved timing knobs carried on {@link BridgeEnv}. */
+export interface BridgeTiming {
+  readonly replyReadyTimeoutMs: number
+  readonly replyFinishTimeoutMs: number
+}
+
+/**
+ * Backstop cap on remembered reply anchors (R22 §2.2): entries are consumed
+ * (deleted) when the host restores their user message; anchors of turns that
+ * died before restoration would otherwise accumulate forever. Past this many,
+ * the OLDEST entries are pruned at turn/end. Deterministic cleanup point only
+ * — deliberately no TTL/LRU.
+ */
+export const REPLY_TARGETS_MAX = 100
+
 /** Dependencies every bridge call threads through. */
 export interface BridgeEnv {
   readonly host: BridgeHost
@@ -139,6 +214,18 @@ export interface BridgeEnv {
   readonly authorization: Authorization
   readonly report: (line: string) => void
   readonly hooks: BridgeHooks
+  /** Reply-stream liveness timings (R21); resolved from {@link BridgeTimingOptions}. */
+  readonly timing: BridgeTiming
+}
+
+/**
+ * What {@link installBridge} hands back: the teardown hook, plus the live
+ * bridge state as a read-only observation surface for tests and diagnostics.
+ */
+export interface BridgeDisposer {
+  (): Promise<void>
+  /** The live bridge state (R22: lets regressions assert memory hygiene). */
+  readonly state: BridgeState
 }
 
 /** Install the bridge and return a disposer. */
@@ -149,14 +236,26 @@ export function installBridge(
   authorization: Authorization,
   report: (line: string) => void,
   hooks: BridgeHooks = {},
-): () => Promise<void> {
-  const env: BridgeEnv = { host, config, port, authorization, report, hooks }
+  timing: BridgeTimingOptions = {},
+): BridgeDisposer {
+  const env: BridgeEnv = {
+    host,
+    config,
+    port,
+    authorization,
+    report,
+    hooks,
+    timing: {
+      replyReadyTimeoutMs: timing.replyReadyTimeoutMs ?? REPLY_STREAM_READY_TIMEOUT_MS,
+      replyFinishTimeoutMs: timing.replyFinishTimeoutMs ?? REPLY_STREAM_FINISH_TIMEOUT_MS,
+    },
+  }
   const state = createBridgeState()
   for (const workspace of config.userWorkspaces) state.userWorkspaces.add(workspace)
   wirePortEvents(env, state)
   wireSessionEvents(env, state)
   wireApprovals(env, state)
-  return async () => { await dispose(env, state) }
+  return Object.assign(async (): Promise<void> => { await dispose(env, state) }, { state })
 }
 
 /* ------------------------------------------------------------------ */
@@ -177,8 +276,14 @@ export interface BridgeState {
   readonly pendingAgents: Map<string, Promise<HostAgentHandle>>
   /** Bindings whose current turn already streamed assistant deltas. */
   readonly streamedTurns: Set<ChatBinding>
-  /** userMessage.id -> Feishu messageId, restored when the turn consumes it. */
-  readonly replyTargets: Map<string, string>
+  /** userMessage.id -> Feishu anchor of the scope that produced it (R22). */
+  readonly replyTargets: Map<string, ReplyTarget>
+  /**
+   * scope key -> tail of that binding's render queue (R21 §3.4). Session
+   * events for one chat render strictly one after another, so concurrent
+   * turns can never interleave writes into the same reply stream.
+   */
+  readonly renderQueues: Map<string, Promise<void>>
   /** Workspace paths added at runtime via `/ws add`. */
   readonly userWorkspaces: Set<string>
   /** Cached workspace catalog; rebuilt by {@link workspaceCatalogFor}. */
@@ -198,6 +303,7 @@ function createBridgeState(): BridgeState {
     pendingAgents: new Map(),
     streamedTurns: new Set(),
     replyTargets: new Map(),
+    renderQueues: new Map(),
     userWorkspaces: new Set(),
     workspaceCatalog: undefined,
     locale: 'zh-CN',
@@ -253,13 +359,39 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
   if (env.config.output === 'card') {
     // Card mode: one interactive card, re-rendered as content grows.
     let cardMessageId: string | undefined
-    const placeholder: Promise<void> = (async () => {
+    // R22 §2.1: the placeholder round-trip is raced against the same
+    // time-to-ready window as stream mode. A placeholder that neither settles
+    // nor fails within the window (hung request, throttling, reconnect) used
+    // to park `finish()` — and with it turn/end — indefinitely; now the card
+    // is condemned ("no card") and finish takes the markdown fallback below.
+    let placeholderSettled = false
+    let openPlaceholderGate: (() => void) | undefined
+    const placeholderGate = new Promise<void>(resolve => { openPlaceholderGate = resolve })
+    let placeholderTimer: ReturnType<typeof setTimeout> | undefined
+    // The watchdog is armed before the request so even a synchronously
+    // throwing port cannot escape the settle path's bookkeeping.
+    placeholderTimer = setTimeout(() => {
+      if (placeholderSettled) return
+      env.report(
+        `feishu4dsh: placeholder card not ready within ${env.timing.replyReadyTimeoutMs}ms;`
+        + ` delivering the reply as one plain message`,
+      )
+      openPlaceholderGate?.()
+    }, env.timing.replyReadyTimeoutMs)
+    void (async () => {
       try {
         const initial = simpleCard(copy.thinking)
         const result = await port.send(chatId, { card: initial }, options)
         cardMessageId = result.messageId
       } catch (error) {
         env.report(`feishu4dsh: placeholder card failed: ${describeError(error)}`)
+      } finally {
+        placeholderSettled = true
+        if (placeholderTimer !== undefined) {
+          clearTimeout(placeholderTimer)
+          placeholderTimer = undefined
+        }
+        openPlaceholderGate?.()
       }
     })()
     return {
@@ -267,19 +399,22 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
         buffer += text
       },
       async finish(): Promise<void> {
-        await placeholder
+        // Bounded verdict wait: the placeholder settled (with or without a
+        // card id) or the watchdog condemned it. `condemned` keeps a LATE
+        // placeholder from being used after degradation, so the content is
+        // still delivered through exactly one path.
+        await placeholderGate
+        const condemned = !placeholderSettled
         const content = buffer.trim() === '' ? copy.thinking : buffer
-        if (cardMessageId !== undefined) {
-          try {
-            await port.updateCard(cardMessageId, simpleCard(content))
-            return
-          } catch (error) {
-            env.report(`feishu4dsh: card update failed: ${describeError(error)}`)
-          }
+        if (!condemned && cardMessageId !== undefined) {
+          if (await tryUpdateCard(env, cardMessageId, simpleCard(content))) return
         }
         await port.send(chatId, { markdown: content }, options).catch(
           error => env.report(`feishu4dsh: reply send failed: ${describeError(error)}`),
         )
+      },
+      hasPayload(): boolean {
+        return buffer.trim() !== ''
       },
     }
   }
@@ -289,15 +424,41 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
     let controller: StreamControllerLike | undefined
     let failed = false
     let streamed = false
+    let fallbackSent = false
     let onReady: (() => void) | undefined
     const ready = new Promise<void>(resolve => { onReady = resolve })
     let resolveDone: (() => void) | undefined
     const done = new Promise<void>(resolve => { resolveDone = resolve })
+    // R21 §3.2: a failure signal that releases a finish() parked in the
+    // convergence race the moment the stream is condemned (watchdog or
+    // rejection), instead of making it wait out the full cap.
+    let signalFailure: (() => void) | undefined
+    const failure = new Promise<void>(resolve => { signalFailure = resolve })
+    // Declared before `port.stream()` so a (hypothetical) synchronous
+    // markdown callback can never touch it in its temporal dead zone.
+    let watchdogTimer: ReturnType<typeof setTimeout> | undefined
+
+    /** Condemn the stream once and for all; wake every waiter. */
+    const markFailed = (): void => {
+      if (failed) return
+      failed = true
+      if (watchdogTimer !== undefined) {
+        clearTimeout(watchdogTimer)
+        watchdogTimer = undefined
+      }
+      onReady?.()
+      signalFailure?.()
+    }
+
     const sendPromise = port.stream(
       chatId,
       {
         markdown: async (streamController: StreamControllerLike) => {
           controller = streamController
+          if (watchdogTimer !== undefined) {
+            clearTimeout(watchdogTimer)
+            watchdogTimer = undefined
+          }
           onReady?.()
           await done
         },
@@ -305,10 +466,27 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
       options,
     )
     sendPromise.catch(error => {
-      failed = true
-      onReady?.()
       env.report(`feishu4dsh: stream open failed: ${describeError(error)}`)
+      markFailed()
     })
+
+    // R21 §3.1 time-to-ready watchdog: the ready gate used to be opened ONLY
+    // by the SDK's first markdown callback, and every append waited on it
+    // forever — one hung stream-open request silently parked the whole turn's
+    // rendering until the underlying HTTP finally timed out. Now the wait is
+    // bounded: past the window the stream is condemned, appends no-op into
+    // the buffer, and finish delivers that buffer as one plain message.
+    watchdogTimer = setTimeout(() => {
+      // The controller may have arrived between timer scheduling and firing
+      // (or synchronously during port.stream()); never condemn a live stream.
+      if (failed || controller !== undefined) return
+      env.report(
+        `feishu4dsh: reply stream not ready within ${env.timing.replyReadyTimeoutMs}ms;`
+        + ` delivering the buffered reply as one plain message`,
+      )
+      markFailed()
+    }, env.timing.replyReadyTimeoutMs)
+
     return {
       async append(text: string): Promise<void> {
         buffer += text
@@ -322,17 +500,41 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
           // The stream could not carry this chunk; the settle still sends it.
         }
       },
+      hasPayload(): boolean {
+        // Anything that reached the card counts, even if only partially.
+        return streamed || buffer.trim() !== ''
+      },
       async finish(): Promise<void> {
         resolveDone?.()
-        try {
-          await sendPromise
-        } catch {
-          // On open failure, deliver the accumulated text as one message.
-          if (!streamed && buffer.trim() !== '') {
-            await port.send(chatId, { markdown: buffer }, options).catch(
-              sendError => env.report(`feishu4dsh: reply send failed: ${describeError(sendError)}`),
-            )
+        let openFailed = false
+        let capped = false
+        if (!failed) {
+          // R21 §3.2 convergence cap: `sendPromise` once hung finish (and with
+          // it turn/end) indefinitely when the underlying request stalled.
+          // Race it against the cap and the failure signal so finish ALWAYS
+          // resolves in finite time.
+          let capElapsed: (() => void) | undefined
+          const cappedPromise = new Promise<void>(resolve => { capElapsed = resolve })
+          const capTimer = setTimeout(() => {
+            capped = true
+            capElapsed?.()
+          }, env.timing.replyFinishTimeoutMs)
+          try {
+            await Promise.race([sendPromise, cappedPromise, failure])
+          } catch {
+            // The stream request itself failed; deliver from the buffer below.
+            openFailed = true
           }
+          clearTimeout(capTimer)
+        }
+        // Exactly one buffered fallback across every degradation shape
+        // (open rejection, watchdog condemnation, convergence cap): the same
+        // contract the old open-failure catch path implemented.
+        if ((failed || openFailed || capped) && !streamed && !fallbackSent && buffer.trim() !== '') {
+          fallbackSent = true
+          await port.send(chatId, { markdown: buffer }, options).catch(
+            sendError => env.report(`feishu4dsh: reply send failed: ${describeError(sendError)}`),
+          )
         }
       },
     }
@@ -349,12 +551,59 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
         error => env.report(`feishu4dsh: reply send failed: ${describeError(error)}`),
       )
     },
+    hasPayload(): boolean {
+      return buffer.trim() !== ''
+    },
   }
 }
 
 /** The push-side controller shape `port.stream` hands to the producer. */
 interface StreamControllerLike {
   append(chunk: string): Promise<void>
+}
+
+/**
+ * One card-update attempt under the finish convergence cap (R22 §2.1):
+ * resolves `true` when the card was re-rendered within the window, `false`
+ * when the round-trip failed or outlived it — the caller then degrades to a
+ * single plain markdown send, so content still arrives exactly once and
+ * `finish()` always resolves in finite time.
+ */
+async function tryUpdateCard(env: BridgeEnv, messageId: string, card: object): Promise<boolean> {
+  // A synchronously throwing port must degrade exactly like a rejected one —
+  // the legacy finish() try/catch covered both, so keep that parity here:
+  // the caller's markdown fallback is the only place content may land.
+  let update: Promise<void>
+  try {
+    update = env.port.updateCard(messageId, card)
+  } catch (error) {
+    env.report(`feishu4dsh: card update failed: ${describeError(error)}`)
+    return false
+  }
+  // The cap may release this race while the request is still in flight; mark
+  // the promise handled so a late failure cannot surface as unhandledRejection.
+  update.catch(() => undefined)
+  let capped = false
+  let capElapsed: (() => void) | undefined
+  const cappedPromise = new Promise<void>(resolve => { capElapsed = resolve })
+  const capTimer = setTimeout(() => {
+    capped = true
+    capElapsed?.()
+  }, env.timing.replyFinishTimeoutMs)
+  try {
+    await Promise.race([update, cappedPromise])
+  } catch (error) {
+    env.report(`feishu4dsh: card update failed: ${describeError(error)}`)
+    return false
+  } finally {
+    clearTimeout(capTimer)
+  }
+  if (!capped) return true
+  env.report(
+    `feishu4dsh: card update did not settle within ${env.timing.replyFinishTimeoutMs}ms;`
+    + ` delivering the reply as one plain message`,
+  )
+  return false
 }
 
 /** A single markdown-element card. */
@@ -398,6 +647,9 @@ async function handleInboundMessage(env: BridgeEnv, state: BridgeState, message:
   const scopeKey = resolveScopeKey(env.config, scopeInput)
   const binding = await ensureBinding(env, state, scopeKey, message.chatId, message.chatType)
   binding.replyTo = message.messageId
+  // R20: remember the latest inbound anchor for the binding's whole lifetime;
+  // turn/end clears only `replyTo` (one-shot semantics unchanged).
+  binding.lastInboundReplyTo = message.messageId
   state.locale = resolveLocale(env.config.locale)
   state.copy = strings(state.locale)
 
@@ -431,7 +683,7 @@ async function handleInboundMessage(env: BridgeEnv, state: BridgeState, message:
     content: blocks,
     source: { kind: 'user' as const },
   }
-  state.replyTargets.set(userMessage.id, message.messageId)
+  state.replyTargets.set(userMessage.id, { scopeKey: binding.scopeKey, messageId: message.messageId })
   safeOpenStream(env, state, binding)
   handle.agent.followup(userMessage)
 }
@@ -526,7 +778,14 @@ async function ensureBinding(env: BridgeEnv, state: BridgeState, scopeKey: strin
 /** Open (or reuse) the reply stream for the binding's current turn. */
 function safeOpenStream(env: BridgeEnv, state: BridgeState, binding: ChatBinding): void {
   if (binding.stream === undefined) {
-    binding.stream = openReplyStream(env, binding.chatId, binding.replyTo, state.copy)
+    // Anchor priority (R20): this turn's one-shot inbound anchor first; when
+    // it is gone (turn/end cleared it), fall back to the scope's persistent
+    // last-inbound anchor so a HOST-initiated turn — one that never went
+    // through handleInboundMessage and gets no user/message restoration —
+    // still threads under the conversation's most recent topic instead of
+    // landing at the chat root. Stale sessions never reach here:
+    // renderSessionEvent drops them before any stream can open.
+    binding.stream = openReplyStream(env, binding.chatId, binding.replyTo ?? binding.lastInboundReplyTo, state.copy)
   }
 }
 
@@ -963,10 +1222,64 @@ function wireSessionEvents(env: BridgeEnv, state: BridgeState): void {
   })
 }
 
+/**
+ * Render one session event into its chat. Only the scope lookup happens
+ * outside the queue (cheap filter: sessions this channel does not drive are
+ * dropped without allocating a queue slot); everything else — including the
+ * current-session guard, re-checked at EXECUTION time so a `/cd` mid-queue
+ * still suppresses stale events — runs serialized per binding (R21 §3.4).
+ */
 async function renderSessionEvent(env: BridgeEnv, state: BridgeState, session: HostSession, event: HostSessionEvent): Promise<void> {
-  // Only sessions this channel drives get rendered into a chat.
   const scopeKey = state.sessionScopes.get(session.id)
   if (scopeKey === undefined) return
+  await enqueueRender(env, state, scopeKey, () => renderScopeEvent(env, state, scopeKey, session, event))
+}
+
+/**
+ * Append one render task to the binding's queue and return a promise that
+ * resolves when THIS task has finished. The stored tail always carries a
+ * `catch`, so a failing task is reported and the chain keeps flowing — one
+ * broken event must never silence every later one.
+ */
+function enqueueRender(env: BridgeEnv, state: BridgeState, scopeKey: string, task: () => Promise<void>): Promise<void> {
+  const tail = state.renderQueues.get(scopeKey) ?? Promise.resolve()
+  const next = tail.then(task).catch(error => {
+    env.report(`feishu4dsh: session event render failed: ${describeError(error)}`)
+  })
+  state.renderQueues.set(scopeKey, next)
+  return next
+}
+
+/**
+ * Drop one scope's render-queue slot after letting any in-flight render drain
+ * (R22 §2.2). `/new` uses this: the old session's agent is gone, so fresh
+ * events must start a clean chain instead of chaining onto — and keeping
+ * alive — a tail that would otherwise sit in the map forever.
+ */
+async function drainRenderQueue(state: BridgeState, scopeKey: string): Promise<void> {
+  const tail = state.renderQueues.get(scopeKey)
+  if (tail === undefined) return
+  state.renderQueues.delete(scopeKey)
+  await tail.catch(() => undefined)
+}
+
+/**
+ * Backstop sweep for reply anchors (R22 §2.2): once {@link REPLY_TARGETS_MAX}
+ * is exceeded at turn/end, drop the OLDEST entries (insertion order) back down
+ * to the cap. Consumed entries are already gone; this only bounds anchors of
+ * turns that died before their user message was ever restored.
+ */
+function pruneReplyTargets(state: BridgeState): void {
+  let excess = state.replyTargets.size - REPLY_TARGETS_MAX
+  if (excess <= 0) return
+  for (const id of state.replyTargets.keys()) {
+    if (excess <= 0) break
+    state.replyTargets.delete(id)
+    excess -= 1
+  }
+}
+
+async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: string, session: HostSession, event: HostSessionEvent): Promise<void> {
   const binding = state.chats.get(scopeKey)
   if (binding === undefined) return
 
@@ -978,6 +1291,20 @@ async function renderSessionEvent(env: BridgeEnv, state: BridgeState, session: H
   if (session.id !== currentSessionId) return
 
   if (isTurnStartEvent(event)) {
+    // R21 §3.3 turn/start hygiene: a stream still attached here that already
+    // CARRIES content is residue of an aborted previous round (hung append in
+    // the pre-R21 world, lost turn/end, crash). Reclaim it fire-and-forget —
+    // its finish is bounded (R21 §3.1/§3.2) and its buffered text is salvaged.
+    // An attached but still-EMPTY stream is the inbound pipeline's fresh
+    // pre-opened placeholder; it is kept so this round's deltas flow into it
+    // instead of forking a second card. The render queue guarantees any
+    // payload-bearing stream predates this turn/start.
+    const stale = binding.stream
+    if (stale !== undefined && stale.hasPayload()) {
+      binding.stream = undefined
+      void stale.finish().catch(() => undefined)
+      env.report(`feishu4dsh: stale stream reclaimed at turn/start of scope ${scopeKey}`)
+    }
     binding.turn = event.data.turn
     binding.toolCallCounts = new Map()
     binding.turnUsage = emptyTurnUsage()
@@ -990,7 +1317,7 @@ async function renderSessionEvent(env: BridgeEnv, state: BridgeState, session: H
     if (id !== undefined) {
       const replyTo = state.replyTargets.get(id)
       if (replyTo !== undefined) {
-        binding.replyTo = replyTo
+        binding.replyTo = replyTo.messageId
         state.replyTargets.delete(id)
       }
     }
@@ -1083,6 +1410,9 @@ async function renderSessionEvent(env: BridgeEnv, state: BridgeState, session: H
     binding.replyTo = undefined
     binding.turnHasOutput = false
     if (stream !== undefined) await stream.finish()
+    // R22 §2.2: turn/end is a deterministic cleanup point — sweep reply
+    // anchors that outlived their turn before the queue takes the next task.
+    pruneReplyTargets(state)
   }
 }
 
@@ -1201,6 +1531,14 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
       // /new clears CONTEXT only — workspace binding and model choice stay.
       for (const [sessionId] of [...state.sessionScopes]) {
         if (entry !== undefined && sessionId === entry.sessionId) state.sessionScopes.delete(sessionId)
+      }
+      // R22 §2.2 memory hygiene: a reset must not leak this scope's
+      // bookkeeping. The render-queue slot is drained and dropped; reply
+      // anchors of messages this scope will never restore (its agent was just
+      // cancelled) would otherwise sit in replyTargets forever.
+      await drainRenderQueue(state, binding.scopeKey)
+      for (const [id, target] of [...state.replyTargets]) {
+        if (target.scopeKey === binding.scopeKey) state.replyTargets.delete(id)
       }
       await safeSend(env, chatId, state.copy.newSessionDone, replyTo)
       return
@@ -1634,6 +1972,15 @@ function hostCommandLines(env: BridgeEnv, state: BridgeState, binding: ChatBindi
 
 async function dispose(env: BridgeEnv, state: BridgeState): Promise<void> {
   state.disposed = true
+  // R22 §2.2 memory hygiene: the per-chat tables die with the bridge. Clearing
+  // them up front stops rendering/approval paths from touching state while the
+  // awaits below are still unwinding. approvals/selections/pendingAgents keep
+  // their existing teardown order.
+  state.renderQueues.clear()
+  state.chats.clear()
+  state.sessionScopes.clear()
+  state.replyTargets.clear()
+  state.streamedTurns.clear()
   state.selections.clear()
   // Settle in-flight agent creations so the sweep below disposes their
   // handles too; failures during creation have nothing to dispose.
@@ -1641,6 +1988,16 @@ async function dispose(env: BridgeEnv, state: BridgeState): Promise<void> {
     await pending.catch(() => undefined)
   }
   state.pendingAgents.clear()
+  // The creations awaited above only complete now, and a successful one
+  // re-registers its session in `sessionScopes` — after the first sweep above.
+  // Sweep the R22 tables once more so "dispose leaves every collection empty"
+  // holds deterministically even when a creation raced teardown; nothing after
+  // this point (the approval/ledger teardown below) repopulates them.
+  state.renderQueues.clear()
+  state.chats.clear()
+  state.sessionScopes.clear()
+  state.replyTargets.clear()
+  state.streamedTurns.clear()
   for (const pending of state.approvals.values()) {
     clearTimeout(pending.timer)
   }

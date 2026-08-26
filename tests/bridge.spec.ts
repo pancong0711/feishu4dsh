@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { BridgeHost, BridgeHooks } from '../src/bridge.js'
-import { installBridge } from '../src/bridge.js'
+import type { BridgeHost, BridgeHooks, BridgeTimingOptions } from '../src/bridge.js'
+import { installBridge, REPLY_TARGETS_MAX } from '../src/bridge.js'
 import { resolveConfig } from '../src/config.js'
 import type { ResolvedConfig } from '../src/config.js'
 import { resolveAuthorization } from '../src/acl.js'
@@ -1544,6 +1544,783 @@ describe('bridge: R17 approval cards follow their source topic', () => {
       expect(cardMessage?.options).toBeUndefined()
     } finally {
       rmSync(sibling, { recursive: true, force: true })
+    }
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R20: host-autonomous turns thread under the last inbound message    */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R20 host-autonomous turn thread anchor', () => {
+  /** Emit an inbound text message with an explicit messageId (the anchor). */
+  function emitInbound(port: FakePort, messageId: string, content: string, extras?: Record<string, unknown>): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+      ...extras,
+    })
+  }
+
+  interface AutonomousTurn {
+    turn: number
+    text?: string
+  }
+
+  /** Drive one turn purely through session/event — no inbound message involved. */
+  function emitAutonomousTurn(host: ReturnType<typeof fakeHost>, sessionId: string, options: AutonomousTurn): void {
+    host.emit('session/event', { id: sessionId }, { type: 'turn/start', data: { turn: options.turn } })
+    if (options.text !== undefined) {
+      host.emit('session/event', { id: sessionId }, {
+        type: 'assistant/chunk', data: { turn: options.turn, chunk: { type: 'text-delta', text: options.text } },
+      })
+    }
+    host.emit('session/event', { id: sessionId }, { type: 'turn/end', data: { turn: options.turn, reason: { kind: 'complete' } } })
+  }
+
+  it('R20-a: a host-autonomous turn falls back to the last inbound message as its thread anchor', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'om_seed', 'seed the conversation')
+    await sleep(20)
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    // Complete the inbound-driven turn the normal way (with user/message
+    // restoration); its answer threads under om_seed...
+    host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: agent.id }, { type: 'user/message', data: { id: agent.followups[0]?.id } })
+    host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: 'seed answer' }] } },
+    })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+    await sleep(20)
+    const seededReply = port.sent.find(m => m.input.markdown === 'seed answer')
+    expect(seededReply?.options).toEqual({ replyTo: 'om_seed', replyInThread: true })
+
+    // ...which cleared the one-shot binding.replyTo. A HOST-AUTONOMOUS turn
+    // now starts without any inbound message and without user/message
+    // restoration — its output must still thread under the LAST inbound
+    // message instead of landing at the chat root.
+    emitAutonomousTurn(host, agent.id, { turn: 2, text: 'background subagent report' })
+    await sleep(20)
+
+    const report = port.sent.find(m => String(m.input.markdown ?? '').includes('background subagent report'))
+    expect(report).toBeDefined()
+    expect(report?.options).toEqual({ replyTo: 'om_seed', replyInThread: true })
+
+    // The persistent anchor survives the autonomous turn/end as well.
+    emitAutonomousTurn(host, agent.id, { turn: 3, text: 'second background report' })
+    await sleep(20)
+    const second = port.sent.find(m => String(m.input.markdown ?? '').includes('second background report'))
+    expect(second?.options).toEqual({ replyTo: 'om_seed', replyInThread: true })
+  })
+
+  it('R20-b: after /cd the stale session gets no output and no thread anchor from the new conversation', async () => {
+    const { host, port } = makeEnv({ workspaceRoots: [tmpdir()] })
+    const sibling = mkdtempSync(join(tmpdir(), 'feishu4dsh-r20b-'))
+    try {
+      emitInbound(port, 'om_before', 'task before switch')
+      await sleep(20)
+      const oldAgent = host.created[0]
+      if (oldAgent === undefined) throw new Error('agent missing')
+      // Finish the old turn so only the PERSISTENT anchor remains.
+      emitAutonomousTurn(host, oldAgent.id, { turn: 1 })
+      await sleep(20)
+
+      await textMessage(port, `/cd ${sibling}`)
+      expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已切换工作区'))).toBe(true)
+      const sentAfterSwitch = port.sent.length
+
+      // Host-autonomous events from the STALE (pre-/cd) session: the render
+      // guard must drop every event — the persistent anchor must never hand
+      // the old session a thread inside the new workspace conversation.
+      emitAutonomousTurn(host, oldAgent.id, { turn: 2, text: 'stale autonomous report' })
+      await sleep(20)
+
+      expect(port.sent.length).toBe(sentAfterSwitch)
+      expect(port.sent.slice(sentAfterSwitch).every(m => m.options === undefined)).toBe(true)
+      expect(port.sent.some(m => String(m.input.markdown ?? '').includes('stale autonomous'))).toBe(false)
+
+      // The NEW workspace's own session keeps working: after its own turn
+      // completes (one-shot anchor cleared), an autonomous turn there still
+      // anchors under this binding's latest inbound message.
+      emitInbound(port, 'om_after', 'task in new workspace')
+      await sleep(20)
+      const newAgent = host.created[1]
+      if (newAgent === undefined) throw new Error('second agent missing')
+      emitAutonomousTurn(host, newAgent.id, { turn: 1 })
+      await sleep(10)
+      emitAutonomousTurn(host, newAgent.id, { turn: 2, text: 'fresh autonomous report' })
+      await sleep(20)
+
+      const fresh = port.sent.find(m => String(m.input.markdown ?? '').includes('fresh autonomous report'))
+      expect(fresh).toBeDefined()
+      expect(fresh?.options).toEqual({ replyTo: 'om_after', replyInThread: true })
+    } finally {
+      rmSync(sibling, { recursive: true, force: true })
+    }
+  })
+
+  it('R20-c: per-topic persistent anchors stay isolated across bindings', async () => {
+    const { host, port } = makeEnv({ sessionScope: 'chat-thread' })
+    emitInbound(port, 'om_t1', 'topic one seed', { threadId: 'ot_thread1' })
+    await sleep(20)
+    emitInbound(port, 'om_t2', 'topic two seed', { threadId: 'ot_thread2' })
+    await sleep(20)
+    expect(host.created).toHaveLength(2)
+
+    const agentOfTopicOne = host.created.find(a =>
+      a.followups.some(f => f.content.some(b => b.type === 'text' && b.text === 'topic one seed')),
+    )
+    if (agentOfTopicOne === undefined) throw new Error('topic-one agent missing')
+
+    // Clear the one-shot anchor of topic one, then let the HOST start a turn
+    // on its own: it must use topic ONE's last inbound anchor, never topic
+    // two's — each binding holds its own persistent anchor.
+    emitAutonomousTurn(host, agentOfTopicOne.id, { turn: 1 })
+    await sleep(10)
+    emitAutonomousTurn(host, agentOfTopicOne.id, { turn: 2, text: 'topic one background report' })
+    await sleep(20)
+
+    const report = port.sent.find(m => String(m.input.markdown ?? '').includes('topic one background report'))
+    expect(report).toBeDefined()
+    expect(report?.options).toEqual({ replyTo: 'om_t1', replyInThread: true })
+    expect(report?.options?.replyTo).not.toBe('om_t2')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R21: reply-stream liveness — ready watchdog, finish convergence     */
+/* cap, turn/start stale-stream reclaim, per-binding render queue      */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R21 reply-stream liveness hardening', () => {
+  /** How a test hands the (never-arriving-on-its-own) stream controller over. */
+  interface ManualStreamOpenSpec {
+    /** Per-chunk controller.append delays, indexed by chunk arrival order. */
+    delays?: number[]
+    /** Chunk values for which controller.append rejects (partial-stream failure). */
+    rejectChunks?: string[]
+    /** Keep the underlying send promise pending even after the producer ends. */
+    holdSettle?: boolean
+  }
+
+  interface ManualStreamHandle {
+    to: string
+    options?: { replyTo?: string; replyInThread?: boolean }
+    /** Chunks that actually flowed through the streaming controller. */
+    readonly chunks: string[]
+    /** Hand the bridge its controller; never calling this models a hung open. */
+    open(spec?: ManualStreamOpenSpec): void
+    /** Reject the underlying send promise (models a delayed open failure). */
+    failOpen(error: unknown): void
+  }
+
+  /**
+   * A port whose `stream` never opens by itself: the SDK markdown callback is
+   * recorded and only runs when a test calls `open()`. This models every
+   * timing shape R21 guards against without real 10s/30s waits.
+   */
+  class ManualStreamPort extends FakePort {
+    readonly opened: ManualStreamHandle[] = []
+
+    override async stream(
+      to: string,
+      input: Record<string, unknown>,
+      options?: { replyTo?: string; replyInThread?: boolean },
+    ): Promise<{ messageId: string }> {
+      return new Promise((resolve, reject) => {
+        const producer = input.markdown as ((controller: { append(chunk: string): Promise<void> }) => Promise<void>)
+        const handle: ManualStreamHandle = {
+          to,
+          options,
+          chunks: [],
+          open(spec?: ManualStreamOpenSpec): void {
+            const delays = spec?.delays ?? []
+            const rejectChunks = spec?.rejectChunks ?? []
+            let index = 0
+            void producer({
+              append: async (chunk: string): Promise<void> => {
+                const delay = delays[index] ?? 0
+                index += 1
+                if (delay > 0) await sleep(delay)
+                if (rejectChunks.includes(chunk)) throw new Error(`controller refuses ${chunk}`)
+                handle.chunks.push(chunk)
+              },
+            }).then(() => {
+              // A real SDK send promise settles only after card finalization;
+              // holding it back models a hang at the settle stage (R21 §3.2).
+              if (spec?.holdSettle !== true) resolve({ messageId: `om_stream_${index}` })
+            }, error => reject(error))
+          },
+          failOpen: error => reject(error),
+        }
+        this.opened.push(handle)
+      })
+    }
+  }
+
+  function makeR21Env(timing: BridgeTimingOptions) {
+    const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-r21-'))
+    const config = resolveConfig({ appId: 'cli_test', appSecret: 'secret', workspace })
+    const port = new ManualStreamPort()
+    const host = fakeHost()
+    const reportLines: string[] = []
+    const dispose = installBridge(
+      host,
+      config,
+      port,
+      resolveAuthorization(config),
+      line => reportLines.push(line),
+      {},
+      timing,
+    )
+    return { workspace, config, port, host, reportLines, dispose }
+  }
+
+  function emitInbound(port: ManualStreamPort, messageId: string, content: string): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+  }
+
+  /** Poll until a condition holds; fails loudly instead of hanging forever. */
+  async function until(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error('R21 condition not met within timeout')
+      await sleep(5)
+    }
+  }
+
+  /**
+   * Seed one chat scope deterministically. The inbound message creates the
+   * agent + binding and PRE-OPENS its placeholder stream (that is what
+   * `handleInboundMessage` does); a first clean bootstrap turn consumes that
+   * placeholder — opened by hand here so its producer completes — and clears
+   * the one-shot anchor. Every tested round afterwards is HOST-autonomous
+   * (R20 style): it anchors via lastInboundReplyTo and starts with NO
+   * attached stream, so `port.opened[N]` indices stay predictable.
+   */
+  async function seedBinding(env: ReturnType<typeof makeR21Env>, messageId: string): Promise<FakeAgent> {
+    emitInbound(env.port, messageId, 'seed the scope')
+    await sleep(20)
+    const agent = env.host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+    env.host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+    env.port.opened[0]?.open({})
+    env.host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+    await sleep(40)
+    return agent
+  }
+
+  it('R21-a: a stream whose ready callback never fires is salvaged by the watchdog into one plain message', async () => {
+    const env = makeR21Env({ replyReadyTimeoutMs: 60, replyFinishTimeoutMs: 5000 })
+    const { host, port, reportLines, dispose } = env
+    try {
+      const agent = await seedBinding(env, 'om_r21a')
+
+      // Host-autonomous round: its own stream only opens at the first delta.
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 2 } })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'salvaged answer' } },
+      })
+      await sleep(10)
+      expect(port.opened).toHaveLength(2)
+      // Parked on the ready gate: nothing delivered yet, nothing lost either.
+      expect(port.sent.filter(m => typeof m.input.markdown === 'string')).toHaveLength(0)
+
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+      await until(() => port.sent.some(m => m.input.markdown === 'salvaged answer'))
+
+      const salvage = port.sent.find(m => m.input.markdown === 'salvaged answer')
+      expect(salvage?.to).toBe('oc_chat1')
+      // Degraded delivery keeps the threading contract (R17/R20 anchors).
+      expect(salvage?.options).toEqual({ replyTo: 'om_r21a', replyInThread: true })
+      expect(reportLines.some(line => line.includes('not ready within'))).toBe(true)
+      // Nothing ever flowed through the never-handed-over streaming card.
+      expect(port.opened[1]?.chunks).toEqual([])
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('R21-b: a late-but-arriving ready callback still streams through controller.append (no regression)', async () => {
+    const env = makeR21Env({ replyReadyTimeoutMs: 3000, replyFinishTimeoutMs: 5000 })
+    const { host, port, dispose } = env
+    try {
+      const agent = await seedBinding(env, 'om_r21b')
+
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 2 } })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'Hello ' } },
+      })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'world' } },
+      })
+      await sleep(10)
+      expect(port.opened).toHaveLength(2)
+      expect(port.opened[1]?.chunks).toEqual([])
+
+      // The SDK's markdown callback arrives late but within the watchdog window.
+      port.opened[1]?.open({})
+      await until(() => port.opened[1]?.chunks.join('') === 'Hello world')
+
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+      await sleep(80)
+      // Content went through the stream; no plain-message fallback was sent.
+      expect(port.sent.filter(m => typeof m.input.markdown === 'string')).toHaveLength(0)
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('R21-c: turn/start reclaims a leftover dead stream, logs it, and the new round renders fresh', async () => {
+    const env = makeR21Env({ replyReadyTimeoutMs: 120, replyFinishTimeoutMs: 5000 })
+    const { host, port, reportLines, dispose } = env
+    try {
+      const agent = await seedBinding(env, 'om_r21c')
+
+      // Round two opens a stream that never becomes ready and never ends.
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 2 } })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'orphan draft' } },
+      })
+      await sleep(10)
+      expect(port.opened).toHaveLength(2)
+
+      // Round three starts although round two never ended: the payload-bearing
+      // leftover must be reclaimed (and salvaged), not written into forever.
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 3 } })
+      await until(() => reportLines.some(line => line.includes('stale stream reclaimed')))
+
+      // Round three renders through a brand-new stream, not the dead one.
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 3, chunk: { type: 'text-delta', text: 'fresh answer' } },
+      })
+      await sleep(10)
+      expect(port.opened).toHaveLength(3)
+      port.opened[2]?.open({})
+      await until(() => port.opened[2]?.chunks.join('') === 'fresh answer')
+      expect(port.opened[1]?.chunks).toEqual([])
+
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 3, reason: { kind: 'complete' } } })
+      // The orphaned buffer was salvaged by the old stream's bounded finish…
+      await until(() => port.sent.some(m => m.input.markdown === 'orphan draft'))
+      expect(port.sent.find(m => m.input.markdown === 'orphan draft')?.options)
+        .toEqual({ replyTo: 'om_r21c', replyInThread: true })
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('R21-d: interleaved events render strictly in arrival order per binding (serialized queue)', async () => {
+    const env = makeR21Env({ replyReadyTimeoutMs: 5000, replyFinishTimeoutMs: 5000 })
+    const { host, port, dispose } = env
+    try {
+      const agent = await seedBinding(env, 'om_r21d')
+
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 2 } })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'A-slow' } },
+      })
+      await sleep(10)
+      expect(port.opened).toHaveLength(2)
+      // The first append is slow, the second fast: WITHOUT serialization the
+      // fast chunk would overtake the slow one inside the controller.
+      port.opened[1]?.open({ delays: [40, 0] })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'B-fast' } },
+      })
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+      await until(() => port.opened[1]?.chunks.join('') === 'A-slowB-fast')
+      expect(port.opened[1]?.chunks).toEqual(['A-slow', 'B-fast'])
+
+      // The queue drained cleanly: the next autonomous round flows right after.
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 3 } })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 3, chunk: { type: 'text-delta', text: 'C-last' } },
+      })
+      await sleep(10)
+      expect(port.opened).toHaveLength(3)
+      port.opened[2]?.open({})
+      await until(() => port.opened[2]?.chunks.join('') === 'C-last')
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 3, reason: { kind: 'complete' } } })
+      await sleep(80)
+      expect(port.sent.filter(m => typeof m.input.markdown === 'string')).toHaveLength(0)
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('R21-e: a delayed open rejection still salvages the buffer as one plain message', async () => {
+    const env = makeR21Env({ replyReadyTimeoutMs: 3000, replyFinishTimeoutMs: 5000 })
+    const { host, port, reportLines, dispose } = env
+    try {
+      const agent = await seedBinding(env, 'om_r21e')
+
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 2 } })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'doomed draft' } },
+      })
+      await sleep(10)
+      expect(port.opened).toHaveLength(2)
+
+      // The stream request fails only AFTER the open call hung a while — the
+      // classic "long silence, then error" shape behind the R21 symptom.
+      setTimeout(() => port.opened[1]?.failOpen(new Error('sdk exploded')), 40)
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+
+      await until(() => port.sent.some(m => m.input.markdown === 'doomed draft'))
+      expect(port.sent.find(m => m.input.markdown === 'doomed draft')?.options)
+        .toEqual({ replyTo: 'om_r21e', replyInThread: true })
+      expect(reportLines.some(line => line.includes('stream open failed'))).toBe(true)
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('R21-f: convergence cap bounds finish when settlement hangs; partial stream is not resent', async () => {
+    const env = makeR21Env({ replyReadyTimeoutMs: 5000, replyFinishTimeoutMs: 100 })
+    const { host, port, dispose } = env
+    try {
+      const agent = await seedBinding(env, 'om_r21f')
+
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 2 } })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'part-' } },
+      })
+      await sleep(10)
+      expect(port.opened).toHaveLength(2)
+      // The controller works, but the send promise never settles (settle-stage
+      // hang) and the 'tail' chunk is refused by the card.
+      port.opened[1]?.open({ rejectChunks: ['tail'], holdSettle: true })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'tail' } },
+      })
+      await until(() => port.opened[1]?.chunks.join('') === 'part-')
+
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+      // Round three can only proceed once turn/end — and its bounded finish —
+      // has resolved; a wedged finish would stall the serialized queue here
+      // and this poll would hit its own timeout instead.
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 3 } })
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 3, chunk: { type: 'text-delta', text: 'post-cap answer' } },
+      })
+      await until(() => port.opened.length === 3, 1500)
+      port.opened[2]?.open({})
+      await until(() => port.opened[2]?.chunks.join('') === 'post-cap answer')
+
+      await sleep(250)
+      // Partially-streamed turns are NOT duplicated as a full fallback message.
+      expect(port.sent.filter(m => typeof m.input.markdown === 'string')).toHaveLength(0)
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R22: card-mode timeout convergence + render-queue/reply-target      */
+/* memory hygiene                                                      */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R22 card-mode convergence and memory hygiene', () => {
+  /**
+   * A port whose placeholder `send` and/or `updateCard` round-trips can be
+   * held open forever — modeling every hang shape R22 §2.1 guards against
+   * without waiting out real 10s/30s windows.
+   */
+  class HangingCardPort extends FakePort {
+    /** When set, placeholder card sends never settle (hung creation). */
+    holdPlaceholder = false
+    /** When set, updateCard calls never settle (hung re-render). */
+    holdUpdate = false
+    /** When set, updateCard throws synchronously (defective port). */
+    throwUpdate = false
+    /** updateCard invocations, counted even while hanging. */
+    updateAttempts = 0
+
+    override async send(
+      to: string,
+      input: Record<string, unknown>,
+      options?: { replyTo?: string; replyInThread?: boolean },
+    ): Promise<{ messageId: string }> {
+      if (this.holdPlaceholder && input.card !== undefined) {
+        await new Promise<void>(() => {})
+      }
+      return super.send(to, input, options)
+    }
+
+    override updateCard(messageId: string, card: object): Promise<void> {
+      this.updateAttempts += 1
+      if (this.throwUpdate) throw new Error('card refused synchronously')
+      if (this.holdUpdate) return new Promise<void>(() => {})
+      return super.updateCard(messageId, card)
+    }
+  }
+
+  function makeR22Env(timing: BridgeTimingOptions) {
+    const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-r22-'))
+    const config = resolveConfig({ appId: 'cli_test', appSecret: 'secret', workspace, output: 'card' })
+    const port = new HangingCardPort()
+    const host = fakeHost()
+    const reportLines: string[] = []
+    const dispose = installBridge(
+      host,
+      config,
+      port,
+      resolveAuthorization(config),
+      line => reportLines.push(line),
+      {},
+      timing,
+    )
+    return { workspace, config, port, host, reportLines, dispose }
+  }
+
+  function emitInbound(port: HangingCardPort, messageId: string, content: string): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+  }
+
+  /** Drive one complete non-streaming turn through session/event. */
+  function driveTurn(host: ReturnType<typeof fakeHost>, sessionId: string, turn: number, text: string): void {
+    host.emit('session/event', { id: sessionId }, { type: 'turn/start', data: { turn } })
+    host.emit('session/event', { id: sessionId }, {
+      type: 'assistant/message',
+      data: { turn, message: { content: [{ type: 'text', text }] } },
+    })
+    host.emit('session/event', { id: sessionId }, { type: 'turn/end', data: { turn, reason: { kind: 'complete' } } })
+  }
+
+  /** Poll until a condition holds; fails loudly instead of hanging forever. */
+  async function until(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error('R22 condition not met within timeout')
+      await sleep(5)
+    }
+  }
+
+  it('R22-a: a placeholder that never settles condemns the card at the ready window; finish delivers exactly one markdown fallback', async () => {
+    const env = makeR22Env({ replyReadyTimeoutMs: 60, replyFinishTimeoutMs: 5000 })
+    const { host, port, reportLines, dispose } = env
+    try {
+      port.holdPlaceholder = true
+      emitInbound(port, 'om_r22a', 'seed the scope')
+      await sleep(20)
+      const agent = host.created[0]
+      if (agent === undefined) throw new Error('agent missing')
+
+      // The pre-opened placeholder hangs; the turn must still converge.
+      driveTurn(host, agent.id, 1, 'salvaged card answer')
+      await until(() => port.sent.some(m => m.input.markdown === 'salvaged card answer'))
+
+      // Exactly one delivery, through the markdown fallback path.
+      const markdowns = port.sent.filter(m => typeof m.input.markdown === 'string')
+      expect(markdowns).toHaveLength(1)
+      expect(markdowns[0]?.to).toBe('oc_chat1')
+      expect(markdowns[0]?.options).toEqual({ replyTo: 'om_r22a', replyInThread: true })
+      // No card id ever existed, so no update could run either.
+      expect(port.cardUpdates).toHaveLength(0)
+      expect(reportLines.some(line => line.includes('placeholder card not ready within'))).toBe(true)
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('R22-b: an updateCard that hangs hits the convergence cap and degrades to exactly one markdown send', async () => {
+    const env = makeR22Env({ replyReadyTimeoutMs: 5000, replyFinishTimeoutMs: 80 })
+    const { host, port, reportLines, dispose } = env
+    try {
+      emitInbound(port, 'om_r22b', 'seed the scope')
+      await sleep(20)
+      const agent = host.created[0]
+      if (agent === undefined) throw new Error('agent missing')
+      // The placeholder itself arrived fine; only the re-render hangs.
+      expect(port.sent.some(m => m.input.card !== undefined)).toBe(true)
+
+      port.holdUpdate = true
+      driveTurn(host, agent.id, 1, 'capped card answer')
+      await until(() => port.sent.some(m => m.input.markdown === 'capped card answer'))
+
+      // Exactly one degradation send; the hung update was attempted once.
+      const markdowns = port.sent.filter(m => typeof m.input.markdown === 'string')
+      expect(markdowns).toHaveLength(1)
+      expect(markdowns[0]?.options).toEqual({ replyTo: 'om_r22b', replyInThread: true })
+      expect(port.updateAttempts).toBe(1)
+      expect(reportLines.some(line => line.includes('card update did not settle within'))).toBe(true)
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('R22-c: /new drains the scope render-queue entry and purges its unconsumed reply anchors', async () => {
+    const env = makeR22Env({ replyReadyTimeoutMs: 5000, replyFinishTimeoutMs: 5000 })
+    const { host, port, dispose } = env
+    try {
+      emitInbound(port, 'om_r22c', 'seed the scope')
+      await sleep(20)
+      const agent = host.created[0]
+      if (agent === undefined) throw new Error('agent missing')
+      const state = dispose.state
+      // The inbound turn left one unconsumed anchor behind (no user/message
+      // restoration yet), and one session event creates the queue tail.
+      expect(state.replyTargets.size).toBeGreaterThan(0)
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+      await sleep(20)
+      expect(state.renderQueues.size).toBe(1)
+
+      emitInbound(port, 'om_r22c_new', '/new')
+      await sleep(30)
+
+      // Both bookkeeping structures for THIS scope are gone again…
+      expect(state.renderQueues.size).toBe(0)
+      expect(state.replyTargets.size).toBe(0)
+      // …while the command still confirmed normally.
+      expect(port.sent.some(m => String(m.input.markdown ?? '').includes('新会话'))).toBe(true)
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('R22-d: dispose empties renderQueues/chats/sessionScopes/replyTargets/streamedTurns', async () => {
+    const env = makeR22Env({ replyReadyTimeoutMs: 5000, replyFinishTimeoutMs: 5000 })
+    const { host, port, dispose } = env
+    try {
+      emitInbound(port, 'om_r22d', 'seed the scope')
+      await sleep(20)
+      const agent = host.created[0]
+      if (agent === undefined) throw new Error('agent missing')
+      const state = dispose.state
+      // Populate all five collections before teardown.
+      host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk', data: { turn: 1, chunk: { type: 'text-delta', text: 'draft' } },
+      })
+      await sleep(20)
+      expect(state.chats.size).toBeGreaterThan(0)
+      expect(state.sessionScopes.size).toBeGreaterThan(0)
+      expect(state.replyTargets.size).toBeGreaterThan(0)
+      expect(state.streamedTurns.size).toBeGreaterThan(0)
+      expect(state.renderQueues.size).toBeGreaterThan(0)
+
+      await dispose()
+
+      expect(state.renderQueues.size).toBe(0)
+      expect(state.chats.size).toBe(0)
+      expect(state.sessionScopes.size).toBe(0)
+      expect(state.replyTargets.size).toBe(0)
+      expect(state.streamedTurns.size).toBe(0)
+    } finally {
+      // Idempotent: a second dispose over empty tables is a no-op.
+      await dispose().catch(() => undefined)
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('R22-e: turn/end prunes stale reply anchors beyond the backstop cap, oldest first', async () => {
+    const env = makeR22Env({ replyReadyTimeoutMs: 5000, replyFinishTimeoutMs: 5000 })
+    const { host, port, dispose } = env
+    try {
+      emitInbound(port, 'om_r22e', 'seed the scope')
+      await sleep(20)
+      const agent = host.created[0]
+      if (agent === undefined) throw new Error('agent missing')
+      const state = dispose.state
+      // Stuff the map past the cap with synthetic stale anchors.
+      state.replyTargets.set('real_anchor', { scopeKey: 'oc_scope', messageId: 'om_r22e' })
+      for (let i = 0; i < REPLY_TARGETS_MAX + 20; i++) {
+        state.replyTargets.set(`stale_${i}`, { scopeKey: 'oc_scope', messageId: `om_stale_${i}` })
+      }
+      // Seed anchor + real_anchor + 120 synthetic = 122 entries.
+      expect(state.replyTargets.size).toBe(REPLY_TARGETS_MAX + 22)
+
+      // Any completed turn runs the deterministic sweep.
+      host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+      await sleep(30)
+
+      expect(state.replyTargets.size).toBe(REPLY_TARGETS_MAX)
+      // The OLDEST surplus entries were dropped, insertion order preserved.
+      expect(state.replyTargets.has('real_anchor')).toBe(false)
+      expect(state.replyTargets.has('stale_19')).toBe(false)
+      expect(state.replyTargets.has('stale_20')).toBe(true)
+      expect(state.replyTargets.has(`stale_${REPLY_TARGETS_MAX + 19}`)).toBe(true)
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('R22-f: a synchronously throwing updateCard degrades to exactly one markdown fallback (legacy catch parity)', async () => {
+    const env = makeR22Env({ replyReadyTimeoutMs: 5000, replyFinishTimeoutMs: 5000 })
+    const { host, port, reportLines, dispose } = env
+    try {
+      emitInbound(port, 'om_r22f', 'seed the scope')
+      await sleep(20)
+      const agent = host.created[0]
+      if (agent === undefined) throw new Error('agent missing')
+      // The placeholder itself arrived fine; only the re-render throws.
+      expect(port.sent.some(m => m.input.card !== undefined)).toBe(true)
+
+      port.throwUpdate = true
+      driveTurn(host, agent.id, 1, 'sync-throw card answer')
+      await until(() => port.sent.some(m => m.input.markdown === 'sync-throw card answer'))
+
+      // Exactly one degradation send — the synchronous throw must not escape
+      // finish() and leave the answer undelivered (pre-R22 catch parity).
+      const markdowns = port.sent.filter(m => typeof m.input.markdown === 'string')
+      expect(markdowns).toHaveLength(1)
+      expect(markdowns[0]?.options).toEqual({ replyTo: 'om_r22f', replyInThread: true })
+      expect(port.updateAttempts).toBe(1)
+      expect(reportLines.some(line => line.includes('card update failed'))).toBe(true)
+    } finally {
+      await dispose()
+      rmSync(env.workspace, { recursive: true, force: true })
     }
   })
 })
