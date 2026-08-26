@@ -181,18 +181,18 @@ describe('R14 中文路径兼容（目录解析）', () => {
   })
 
   it('resolveWorkspaceDirectory finds dirs misspelled with full-width spaces', async () => {
-    const misspelled = join(wsRoot, '读\u3000书', '目标　-　项目')
+    const misspelled = join(wsRoot, '示\u3000例', '目标　-　项目')
     expect(await resolveWorkspaceDirectory(misspelled)).toBe(join(wsRoot, '示例', '目标-项目'))
   })
 
   it('resolveWorkspaceDirectory finds dirs misspelled with stray ASCII spaces', async () => {
-    const misspelled = join(wsRoot, '读 书', '目标 - 项目')
+    const misspelled = join(wsRoot, '示 例', '目标 - 项目')
     expect(await resolveWorkspaceDirectory(misspelled)).toBe(join(wsRoot, '示例', '目标-项目'))
   })
 
   it('resolveWorkspaceDirectory keeps a verbatim existing path (legit spaces win)', async () => {
-    await mkdir(join(wsRoot, '读 书', '目标-项目'), { recursive: true })
-    const legit = join(wsRoot, '读 书', '目标-项目')
+    await mkdir(join(wsRoot, '示 例', '目标-项目'), { recursive: true })
+    const legit = join(wsRoot, '示 例', '目标-项目')
     expect(await resolveWorkspaceDirectory(legit)).toBe(await realpath(legit))
   })
 
