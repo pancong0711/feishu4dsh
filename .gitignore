@@ -18,7 +18,7 @@ coverage/
 # 归档/临时保留，不纳入版本控制
 archive/
 
-# 部署/发布预览 clone（暂存目录，不纳入主仓库版本控制）
+# 部署/发布预览 clone（与 origin/main 同步；对外发布走白名单快照流程）
 publish/
 
 # 后台 subagent 工作痕迹（日志/报告），不提交

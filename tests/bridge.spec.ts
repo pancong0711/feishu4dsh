@@ -635,6 +635,27 @@ describe('bridge: commands', () => {
     expect(host.created[1]?.id).not.toBe(first?.id)
   })
 
+  it('/new keeps the /model pin into the fresh session', async () => {
+    const { host, port } = makeEnv()
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p_default', model: 'm_default' }),
+    })
+    const installed = captureSelections(host)
+
+    await textMessage(port, 'hello')
+    await textMessage(port, '/model p_pin/m_pin')
+    expect(installed[0]?.selection.current).toEqual({ provider: 'p_pin', model: 'm_pin' })
+
+    // /new clears context only: the next agent re-installs the SAME selection
+    // object, so the pinned model carries over instead of dropping to default.
+    await textMessage(port, '/new')
+    await textMessage(port, 'hello again')
+    expect(host.created).toHaveLength(2)
+    expect(installed).toHaveLength(2)
+    expect(installed[1]?.selection).toBe(installed[0]?.selection)
+    expect(installed[1]?.selection.current).toEqual({ provider: 'p_pin', model: 'm_pin' })
+  })
+
   it('/stop cancels the active agent', async () => {
     const { host, port } = makeEnv()
     await textMessage(port, 'long task')

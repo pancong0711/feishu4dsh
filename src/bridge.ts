@@ -1170,9 +1170,10 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
         await entry.handle.dispose().catch(() => undefined)
       }
       state.ledger.reset(agentKey)
-      // The old agent's selection dies with it; drop the stale pin so /status
-      // reflects the fresh session until a new one is installed.
-      state.selections.delete(agentKey)
+      // The /model pin is bridge-owned (state.selections), not agent-owned:
+      // ensureSelection hands the SAME object to the next agent when
+      // installModelSelectionForAgent runs, so the choice survives the reset.
+      // /new clears CONTEXT only — workspace binding and model choice stay.
       for (const [sessionId] of [...state.sessionScopes]) {
         if (entry !== undefined && sessionId === entry.sessionId) state.sessionScopes.delete(sessionId)
       }

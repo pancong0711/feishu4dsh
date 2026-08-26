@@ -1,25 +1,34 @@
 # Changelog
 
+## 0.4.2 (2026-08-26)
+
+**R16：`/new` 语义收敛——只开新会话**
+
+- **变更**：`/new` 现在只清空当前工作区的会话上下文（generation +1 换新 sessionId）；不再清除该会话的 `/model` pin，工作区绑定保持不变（此前也未重置）。模型 pin 由 bridge 持有（`state.selections`），跨会话重开保留并自动装回新 agent。
+- **迁移**：此前可借 `/new` 清除 pin 回到部署默认模型；如需指回请显式 `/model <provider>/<model>`。`/model default`（把当前选择存为部署默认）语义不变。
+- 测试：新增回归「`/new` keeps the `/model` pin into the fresh session」，共 **146/146** 通过。
+
 ## 0.4.1 (2026-08-25)
 
 **R13：私聊话题回复归属修复（入站批合并）**
 
-- **修复**：私聊中创建话题后，dsh 的回答落到私聊根而不进话题。根因是飞书 SDK 入站 **600ms 文本批合并**（批合并取批次最后一条的 messageId/threadId）——话题消息与相邻主界面消息同时到达时丢失 thread_id。修复：`channelOptions` 增加 `safety.batch.text.delayMs: 0` 关闭批合并窗口（`chatQueue.enabled` 只能串行，不能关闭该窗口）；新增适配器回归测试。
+- **修复**：私聊中创建话题后，dsh 的回答落到私聊根而不进话题。根因是飞书 SDK 入站**600ms 文本批合并**（`mergeBatch` 取批次最后一条的 messageId/threadId）——话题消息与相邻主界面消息同时到达时丢失 thread_id。修复：`channelOptions` 增加 `safety.batch.text.delayMs: 0` 关闭批合并窗口（`chatQueue.enabled` 只能串行不能关闭该窗口）；新增 `tests/adapter.spec.ts` 回归。
 
 **R14：中文路径兼容加固（写权限误申请）**
 
-- **修复**：含中文（全角空格 U+3000 / 多余空格 / NFC 变体）的工作区路径导致「明明有写权限却反复申请写权限」。
-  - 工作区路径解析新增规范化：NFC + 逐段剥离全部 Unicode 空白（含全角空格 U+3000），覆盖任意层级目录；
-  - 绑定工作区时若配置拼写被规范化，会提示异常并回写规范化后的真实路径，使沙箱写权限根与 `/status` 重新对齐。
-- 版本号 0.4.0 → 0.4.1；测试 145/145 通过（含 R13/R14 回归）。
+- **修复**：含中文（全角空格 U+3000 / 多余空格 / NFC 变体）的工作区路径导致 dsh 「明明有写权限却反复申请写权限」且 feishu4dsh 无任何异常提示。
+  - `src/workspaces.ts`：新增 `normalizeWorkspacePath`（NFC + 逐段剥离全部 Unicode 空白，含 U+3000）；`canonicalPath` / `resolveWorkspaceDirectory` 回退前先尝试规范化拼写（覆盖任意层级，不再只处理末段 ASCII 空格）。
+  - `src/bridge.ts`：绑定工作区时若配置拼写被规范化，**报告异常**并**回写 canonical 路径**自愈（dsh 沙箱 workspace-write 写权限根 = 会话 header.cwd，回写后新会话以正确 cwd 创建，沙箱根与 `/status` 对齐）。
+  - workspaces 测试新增 R14 九项。
 
 ## 0.4.0 (2026-08-25)
 
 **R12：远程仓库管理定稿 + CI 修复 + 版本发布**
 
-- **远程仓库管理定稿**：远程仓库仅发布**测试过、去敏的白名单快照**；日常开发提交保留在本地全量仓库，本地主分支不再直接推送远程（发布流程见 `docs/PUBLISHING.md`「三个仓库」）。
-- **CI 修复**：pnpm ≥10 默认忽略依赖构建脚本，导致 `pnpm install` 报 `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: protobufjs@7.6.5`、每次 push 后 CI 失败；已在 `pnpm-workspace.yaml` 放行 `protobufjs` 构建脚本。
-- 版本号 0.3.0 → 0.4.0。
+- **远程同步边界二次定稿（模型 A）**：GitHub 仅发布测试过、去敏的白名单快照；主仓 main 为内部全量权威，解除对 origin 的 upstream 跟踪，**不得直接 push 主仓到远程**。
+- **沉淀 git 管理经验**：「全量 / 去敏 / 远程」三个仓库的职责与同步规则定稿，含本次事故教训与后续约定。
+- **CI 修复**：`pnpm-workspace.yaml` 的 `allowBuilds` 由占位符改为 `protobufjs: true`，修复 `pnpm install` 报 `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: protobufjs@7.6.5` 导致每次 push 后 CI 全红的问题。
+- 文档去敏：`docs/CONFIG.md` 移除对内部规格「R11 规格 §0」的悬空引用，改为指向公开的 TROUBLESHOOTING §3。
 
 **R11：模型/工作区切换加固**
 
@@ -32,7 +41,7 @@
 
 **R10：工作区路径校验与控制台兼容性更新**
 
-- 工作区路径校验与规范化：`/cd`、`/ws add` 之外进入的工作区路径（含 `chatWorkspaces` / 新话题继承）使用前会校验为真实存在的目录；含错误空格的路径或指向不存在目录的路径，会回退默认工作区并告警，避免 `/status` 显示的工作区与 Agent 实际沙盒目录不一致。
+- 工作区路径校验与规范化：`/cd`、`/ws add` 之外进入的工作区路径（含 `chatWorkspaces` / 新话题继承）使用前会校验为真实存在的目录；含错误空格（如 `20260730 - 示例目录`）或指向不存在目录的路径，会回退默认工作区并告警，避免 `/status` 显示的工作区与 Agent 实际沙盒目录不一致。
 - 版本兼容：文档从 dsh `0.1.0-rc.6` 更正为当前实际验证的 dsh `0.1.1-rc.2`。
 
 ## 0.3.0 (2026-08-19)
@@ -65,6 +74,7 @@
 ## 0.1.1 (2026-08-19)
 
 - **重命名**：`dsh-feishu-channel` → **`feishu4dsh`**（npm 包名、Cordis 插件名、settings 命名空间、日志前缀、运行时收件箱目录 `.feishu4dsh/` 同步更新）。
+- 新增会话记录（SESSION-LOG）文档：prompt / 时间 / 模型 / 用量口径。
 - 新增 `docs/PUBLISHING.md`（发布到 GitHub / npm 的操作指南）与 `.github/workflows/ci.yml`。
 
 ## 0.1.0 (2026-08-19)
