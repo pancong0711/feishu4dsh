@@ -140,7 +140,7 @@ describe('registeredPathsOf', () => {
 describe('R14 中文路径兼容（normalizeWorkspacePath）', () => {
   it('strips full-width space U+3000 in every segment', () => {
     expect(normalizeWorkspacePath('/home/user/20260730　-　示例目录')).toBe('/home/user/20260730-示例目录')
-    expect(normalizeWorkspacePath('/home/user/A　B/读　书')).toBe('/home/user/AB/读书')
+    expect(normalizeWorkspacePath('/home/user/A　B/示　例')).toBe('/home/user/AB/示例')
   })
 
   it('strips ASCII spaces, tabs and NBSP-like whitespace', () => {
@@ -173,7 +173,7 @@ describe('R14 中文路径兼容（目录解析）', () => {
     wsRoot = await mkdtemp(join(tmpdir(), 'feishu4dsh-r14-'))
     // 磁盘上只存在「无空格」的真实目录；配置值里带空格/全角空格的拼写都是坏值。
     // 真实名含连字符：`目标-项目`；坏拼写 `目标 - 项目` / `目标　-　项目` 去空格后回到原名。
-    await mkdir(join(wsRoot, '读书', '目标-项目'), { recursive: true })
+    await mkdir(join(wsRoot, '示例', '目标-项目'), { recursive: true })
   })
 
   afterEach(async () => {
@@ -182,12 +182,12 @@ describe('R14 中文路径兼容（目录解析）', () => {
 
   it('resolveWorkspaceDirectory finds dirs misspelled with full-width spaces', async () => {
     const misspelled = join(wsRoot, '读\u3000书', '目标　-　项目')
-    expect(await resolveWorkspaceDirectory(misspelled)).toBe(join(wsRoot, '读书', '目标-项目'))
+    expect(await resolveWorkspaceDirectory(misspelled)).toBe(join(wsRoot, '示例', '目标-项目'))
   })
 
   it('resolveWorkspaceDirectory finds dirs misspelled with stray ASCII spaces', async () => {
     const misspelled = join(wsRoot, '读 书', '目标 - 项目')
-    expect(await resolveWorkspaceDirectory(misspelled)).toBe(join(wsRoot, '读书', '目标-项目'))
+    expect(await resolveWorkspaceDirectory(misspelled)).toBe(join(wsRoot, '示例', '目标-项目'))
   })
 
   it('resolveWorkspaceDirectory keeps a verbatim existing path (legit spaces win)', async () => {
