@@ -831,7 +831,10 @@ async function collectMedia(
       }
 
       const resourceType = isImage ? 'image' : 'file'
-      const data = await env.port.downloadResource(resource.fileKey, resourceType)
+      // R24: message_id only exists in bridge memory state — it must be
+      // carried here so the port can use the message-scoped download API
+      // (user-uploaded resources 400 on the legacy bot-scoped endpoints).
+      const data = await env.port.downloadResource(resource.fileKey, resourceType, message.messageId)
       if (data.byteLength > env.config.maxReceiveFileBytes) {
         notes.push(state.copy.unsupportedMediaNote(`${resource.type} (> ${formatBytes(env.config.maxReceiveFileBytes)})`))
         continue

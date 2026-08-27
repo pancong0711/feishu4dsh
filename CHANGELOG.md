@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.4 (2026-08-27)
+
+**R24：用户消息资源改用 message-scoped API 下载**
+
+- **修复**：用户通过飞书发送的图片/文件下载一律 400（`im.v1.image.get` 仅限机器人自传资源，实测 `234008 not resource sender`）——现优先走消息域接口 `messages/{message_id}/resources/{file_key}`（`rawClient.im.v1.messageResource.get`），字节经 `bufferFromStream` 收集；消息域不可用（bot 自传/卡片资源等场景）时回退旧接口并保留运维日志。
+- **落盘策略不变**：仍写 `<会话绑定工作区>/.feishu4dsh/inbox/<createTime-hash>/<文件名>`，随回复附路径提示。
+
 ## 0.4.3 (2026-08-27)
 
 **兼容性修复：撤下 dsh-std 阶段 1 双轨产物**

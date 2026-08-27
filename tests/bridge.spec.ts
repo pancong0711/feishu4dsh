@@ -7,7 +7,7 @@ import { installBridge, REPLY_TARGETS_MAX } from '../src/bridge.js'
 import { resolveConfig } from '../src/config.js'
 import type { ResolvedConfig } from '../src/config.js'
 import { resolveAuthorization } from '../src/acl.js'
-import type { ChannelPort } from '../src/adapter.js'
+import type { ChannelPort, ResourceType } from '../src/adapter.js'
 import type { HostAgent, HostAgentOptions, HostRequestHeaderConfig, HostSession, HostUserMessage } from '../src/host.js'
 import type { MutableSelection } from '../src/model-selection.js'
 import { sleep } from '../src/util.js'
@@ -50,6 +50,8 @@ class FakePort implements ChannelPort {
   readonly sent: SentMessage[] = []
   readonly cardUpdates: { messageId: string; card: object }[] = []
   readonly downloads = new Map<string, Buffer>()
+  /** Every `downloadResource` invocation, in order (R24 signature probe). */
+  readonly downloadCalls: { fileKey: string; type: ResourceType; messageId: string }[] = []
   private readonly handlers = new Map<string, ((...args: unknown[]) => unknown)[]>()
   botIdentity: undefined = undefined
 
@@ -77,7 +79,8 @@ class FakePort implements ChannelPort {
   }
 
   async editMessage(): Promise<void> {}
-  async downloadResource(fileKey: string): Promise<Buffer> {
+  async downloadResource(fileKey: string, type: ResourceType, messageId: string): Promise<Buffer> {
+    this.downloadCalls.push({ fileKey, type, messageId })
     const data = this.downloads.get(fileKey)
     if (data === undefined) throw new Error(`no fixture for ${fileKey}`)
     return data
@@ -705,6 +708,20 @@ describe('bridge: media inbound', () => {
     const note = blocks.find(b => b.type === 'text' && b.text.includes('.feishu4dsh/inbox'))
     expect(note).toBeDefined()
     expect(String((note as { text: string }).text)).toContain('notes.txt')
+  })
+
+  // R24: the adaptive port signature is (fileKey, type, messageId) — the
+  // bridge must forward the inbound message's own id so the transport can use
+  // the message-scoped download API (user resources 400 on the legacy path).
+  it('forwards (fileKey, type, messageId) to downloadResource', async () => {
+    const { port } = makeEnv()
+    port.downloads.set('file_key', Buffer.from('file-bytes'))
+    await textMessage(port, 'summarize', {
+      messageId: 'om_r24_pinned',
+      resources: [{ type: 'file', fileKey: 'file_key', fileName: 'notes.txt' }],
+    })
+    await sleep(30)
+    expect(port.downloadCalls).toEqual([{ fileKey: 'file_key', type: 'file', messageId: 'om_r24_pinned' }])
   })
 
   it('saves inbound images into the inbox when vision is off', async () => {

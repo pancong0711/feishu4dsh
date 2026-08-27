@@ -12,6 +12,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import type { Readable } from 'node:stream'
 import {
   Domain,
   EventDispatcher,
@@ -49,7 +50,18 @@ export interface ChannelPort {
   stream(to: string, input: StreamInput, options?: SendOptions): Promise<SendResult>
   updateCard(messageId: string, cardObject: object): Promise<void>
   editMessage(messageId: string, text: string): Promise<void>
-  downloadResource(fileKey: string, type: ResourceType): Promise<Buffer>
+  /**
+   * Fetch a message's resource bytes. Prefer the message-scoped API
+   * (`messages/{message_id}/resources/{file_key}`): the legacy bot-scoped
+   * endpoints (`im.v1.image.get` / `im.v1.file.get`) only serve resources the
+   * bot itself uploaded and 400 on resources sent by users. Where the
+   * message-scoped call fails (bot-self uploads, card payloads, …) the
+   * implementation falls back to the legacy path.
+   * @param fileKey - the resource file key.
+   * @param type - SDK ResourceType the fetch must be scoped to ('image' | 'file').
+   * @param messageId - the message that carried the resource (bridge memory state).
+   */
+  downloadResource(fileKey: string, type: ResourceType, messageId: string): Promise<Buffer>
   addReaction(messageId: string, emojiType: string): Promise<string>
   removeReactionByEmoji(messageId: string, emojiType: string): Promise<boolean>
 }
@@ -162,6 +174,20 @@ export function createWebhookEndpoint(
   }
 }
 
+/**
+ * Drain a Node `Readable` into a single `Buffer` (for-await collects chunks,
+ * `Buffer.concat` joins them). The SDK code-gen download endpoints expose the
+ * body as a readable stream wrapper (`{ getReadableStream }`), so both the
+ * message-scoped and the legacy download paths funnel through here.
+ */
+async function bufferFromStream(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  return Buffer.concat(chunks)
+}
+
 /** One production Feishu port behind the bridge. */
 export interface FeishuPort extends ChannelPort {
   readonly channel: LarkChannel
@@ -205,7 +231,26 @@ export function createFeishuPort(
     stream: (to, input, options) => channel.stream(to, input, options),
     updateCard: (messageId, cardObject) => channel.updateCard(messageId, cardObject),
     editMessage: (messageId, text) => channel.editMessage(messageId, text),
-    downloadResource: (fileKey, type) => channel.downloadResource(fileKey, type),
+    downloadResource: async (fileKey, type, messageId) => {
+      try {
+        // R24: message-scoped fetch — the only path that serves resources the
+        // USER uploaded; the legacy bot-scoped endpoints 400 on those
+        // (`234008 not resource sender`). `params.type` stays within the SDK
+        // ResourceType enum ('image' | 'file'); never a free-form string.
+        const r = await channel.rawClient.im.v1.messageResource.get({
+          path: { message_id: messageId, file_key: fileKey },
+          params: { type },
+        })
+        return await bufferFromStream(r.getReadableStream())
+      } catch (error) {
+        // Fallback: bot-self-uploaded resources / card payloads that the
+        // message-scoped endpoint does not serve. Keep the operator console
+        // line so a regression back to the old 400s stays visible.
+        const detail = error instanceof Error ? error.message : String(error)
+        report(`feishu4dsh: messageResource.get failed (${fileKey}, ${type}): ${detail}; falling back to channel.downloadResource`)
+        return await channel.downloadResource(fileKey, type)
+      }
+    },
     addReaction: (messageId, emojiType) => channel.addReaction(messageId, emojiType),
     removeReactionByEmoji: (messageId, emojiType) => channel.removeReactionByEmoji(messageId, emojiType),
   }
@@ -219,6 +264,7 @@ export type {
   NormalizedMessage,
   ReactionEvent,
   RejectEvent,
+  ResourceType,
   SendInput,
   SendOptions,
   SendResult,
