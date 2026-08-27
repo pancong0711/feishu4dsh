@@ -2,7 +2,11 @@
 
 把 **DeepSeek Harness（dsh）** 接进飞书：在聊天里给 Agent 派任务、看执行过程、批准或拒绝工具调用；提问与授权确认直接在飞书卡片上点按钮处理。
 
-独立 dsh 插件代码库（TypeScript / Cordis），思路与 Hermes 官方飞书适配器一致：**传输层模块化 + 对接层可移植**。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+## 定位
+
+- **面向个人用户**：一个 dsh 实例 + 一个飞书自建应用（单机器人），服务主人自己的多项目工作台——不是 one-person-company 式「多机器人分工协作」的编排方案；
+- **话题即项目**：以飞书群聊/私聊的话题（thread）为项目边界，每个话题独立 Agent 会话与工作区，`/cd` 切换、`/new` 重开、重启可恢复；
+- **出身**：交互形态对标 Hermes Agent 的飞书插件，早期借鉴社区 lark-bot 通道代码的经验，随后以独立 dsh 插件库用 TypeScript / Cordis 重写——传输层模块化 + 对接层可移植，开发过程本身也由 dsh 会话协作推进。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 快速开始
 
@@ -72,21 +76,22 @@ journalctl --user -u dsh-feishu4dsh.service -f
 ```sh
 pnpm install
 pnpm typecheck    # 严格类型检查
-pnpm test         # vitest，100 项单测
+pnpm test         # vitest 全量单测
 pnpm build        # tsc 产出 lib/
 ```
 
 ## 文档
 
-- 📂 [docs/README.md](docs/README.md) — 文档索引
+- 📂 [docs/README.md](docs/README.md) — 文档索引（长期记忆中心，先读它）
 - 架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - 配置：[docs/CONFIG.md](docs/CONFIG.md) ｜ 飞书应用：[docs/FEISHU-SETUP.md](docs/FEISHU-SETUP.md)
 - 排障（含 `has no provider/model`）：[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- 发布与推送前检查清单：[docs/PUBLISHING.md](docs/PUBLISHING.md)
+- 📜 开发史与发布模型：[HISTORY.md](HISTORY.md)
+- 发布：[docs/PUBLISHING.md](docs/PUBLISHING.md)
 
 ## 版本与兼容性
 
-针对 **dsh `0.1.1-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.1.1-rc.2` 上验证。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。
+针对 **dsh `0.1.1-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.1.1-rc.2` 上验证（本地与 publish 发布副本均使用该版本）。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。
 
 ## 路线图
 

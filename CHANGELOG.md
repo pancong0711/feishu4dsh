@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.3 (2026-08-27)
+
+**兼容性修复：撤下 dsh-std 阶段 1 双轨产物**
+
+- **影响**：装有 `@dsh-std/adapter-dsh` 的宿主在安装本插件后启动失败——标准清单声明的入口是阶段 1 占位实现，不满足适配层的 `defineFacet(...)` 对象契约（默认导出需为含 `activate/deactivate?/snapshot?` 的 FacetModule）。legacy 路径不受任何影响。
+- **修复**：从发布面整体移除 `dsh-plugin.json`、标准入口与其配套校验脚本/CI 步骤；待真实实现经 spike 验证后再随新版本回归。
+- **建议**：使用本插件无需安装任何 dsh-std 包；此前因该问题移除过 adapter-dsh 的部署可直接恢复正常配置。
+
 ## Unreleased
 
 **R17：提权/发文件审批卡片跟随来源话题**

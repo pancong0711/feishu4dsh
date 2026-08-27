@@ -1,7 +1,7 @@
 {
   "name": "feishu4dsh",
   "description": "Feishu/Lark IM channel for DeepSeek Harness: chats drive dsh agents, replies stream as cards, approvals and questions return as interactive buttons",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "type": "module",
   "keywords": [
     "dsh",
@@ -24,8 +24,7 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",
-    "test": "vitest run",
-    "check:manifest": "node scripts/check-manifest.mjs"
+    "test": "vitest run"
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -41,7 +40,6 @@
     "src",
     "docs",
     "cordis.patch.yml",
-    "dsh-plugin.json",
     "HISTORY.md",
     "README.md",
     "CHANGELOG.md",

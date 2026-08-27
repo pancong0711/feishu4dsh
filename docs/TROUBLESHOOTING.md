@@ -97,8 +97,8 @@ agent "feishu-<sessionId>" has no provider/model: set AgentOptions.provider and 
   - 有 `agentDefaultModel` 服务时，新建 Agent 的 `agentOptions` 应为默认 `{provider, model}`；
   - 无 `agentDefaultModel` 服务时，`agentOptions` 安全降级为 `{}` 不抛错。
   - 合计 **91/91 通过**（原 89 + 新增 2）。
-- **服务回归**：`systemctl --user restart dsh-feishu4dsh` 后服务 `active (running)`，飞书长连接正常（`connected as YUNBOT-FEISHU`），启动日志无新增错误。
-- **真人回归**：重启后在飞书（含手机端）发送新消息，新建会话应能正常驱动默认模型返回回复；可用 `/status` 确认模型为 `opencode-go/deepseek-v4-flash`。
+- **服务回归**：`systemctl --user restart dsh-feishu4dsh` 后服务 `active (running)`，飞书长连接正常（`connected as <机器人名>`），启动日志无新增错误。
+- **真人回归**：重启后在飞书（含手机端）发送新消息，新建会话应能正常驱动默认模型返回回复；可用 `/status` 确认模型为部署默认模型。
 
 ---
 
