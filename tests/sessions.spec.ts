@@ -84,4 +84,21 @@ describe('AgentLedger', () => {
     expect(ledger.get('oc_a§/w1')?.handle.id).toBe('h1')
     expect(ledger.get('oc_a§/w2')?.handle.id).toBe('h2')
   })
+
+  it('accepts an explicit next generation (R29: no id reuse after switch-back)', () => {
+    const ledger = new AgentLedger<{ id: string }>()
+    ledger.pointerTo('oc_a§/ws', 1)
+    expect(ledger.generationOf('oc_a§/ws')).toBe(1)
+    expect(ledger.reset('oc_a§/ws', 4)).toBe(4)
+    expect(ledger.generationOf('oc_a§/ws')).toBe(4)
+  })
+
+  it('pointerTo re-points the active generation without dropping entries', () => {
+    const ledger = new AgentLedger<{ id: string }>()
+    ledger.set('oc_a§/ws', { handle: { id: 'h' }, generation: 2, sessionId: 'feishu-x-r2' })
+    ledger.pointerTo('oc_a§/ws', 0)
+    expect(ledger.generationOf('oc_a§/ws')).toBe(0)
+    // The live entry survives the re-point; callers dispose explicitly.
+    expect(ledger.get('oc_a§/ws')?.sessionId).toBe('feishu-x-r2')
+  })
 })

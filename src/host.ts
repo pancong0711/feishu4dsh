@@ -335,8 +335,11 @@ export interface HostWorkspace {
    * Account one session under this workspace. Validates the session header's
    * cwd against {@link path}, so a session created with that exact value
    * attaches and one created with an uncanonicalized variant is rejected.
+   * This accounting is what dsh web uses to GROUP sessions under a
+   * workspace -- without it sessions land in the ungrouped bucket. Optional:
+   * absent on older hosts, where grouping is simply unavailable.
    */
-  attachSession(id: string): Promise<unknown>
+  attachSession?(id: string): Promise<unknown>
 }
 
 /**
@@ -351,6 +354,18 @@ export interface HostWorkspaceRegistry {
   create(path: string, title?: string): Promise<HostWorkspace>
   /** Every registered workspace; absent on older registries. */
   list?(): readonly HostWorkspace[]
+  /**
+   * The registry-global archive set (R29; dsh ≥ 0.1.1-rc.2): session ids the
+   * web UI hides everywhere. Sessions themselves are untouched on disk.
+   * Absent on older hosts — archive commands then degrade to "unsupported".
+   */
+  archivedSessionIds?(): readonly string[]
+  /**
+   * Durably add one session id to the archive set. Idempotent for already
+   * archived ids; throws for ids that are neither live nor in persistence.
+   * No unarchive exists upstream yet — the set is one-way by design.
+   */
+  archiveSession?(sessionId: string): Promise<void>
 }
 
 /** The Cordis loader service; awaited so agents never see a half-grown tree. */

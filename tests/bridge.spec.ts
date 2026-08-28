@@ -2794,3 +2794,288 @@ describe('bridge: R28 /model effort per-model reasoning effort', () => {
     expect(texts(port).at(-1)).toContain('推理强度：default')
   })
 })
+
+/* ------------------------------------------------------------------ */
+/* R29: /session — list / switch / rename / archive                    */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R29 /session registry, switch, rename, archive', () => {
+  function emitInbound(port: FakePort, messageId: string, content: string): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+  }
+
+  function texts(port: FakePort): string[] {
+    return port.sent
+      .filter(m => typeof m.input.markdown === 'string')
+      .map(m => m.input.markdown as string)
+  }
+
+  function lastText(port: FakePort): string {
+    return texts(port).at(-1) ?? ''
+  }
+
+  function mountArchiveService(host: ReturnType<typeof fakeHost>): { archived: Set<string>; archivedCalls: string[] } {
+    const archived = new Set<string>()
+    const archivedCalls: string[] = []
+    host.services.set('workspaceRegistry', {
+      resolveByPath: async () => undefined,
+      create: async () => undefined,
+      archivedSessionIds: () => [...archived],
+      archiveSession: async (sessionId: string) => {
+        archived.add(sessionId)
+        archivedCalls.push(sessionId)
+      },
+    })
+    return { archived, archivedCalls }
+  }
+
+  it('R29-a: sessions register with auto titles; /new keeps the old one listed', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', '修复登录页的会话跳转问题')
+    await sleep(20)
+    await textMessage(port, '/new')
+    emitInbound(port, 'm2', '第二个会话')
+    await sleep(20)
+
+    await textMessage(port, '/session')
+    const list = lastText(port)
+    expect(list).toContain('会话列表')
+    expect(list).toContain('0828 修复登录页的会话跳转问题')
+    expect(list).toContain('0828 第二个会话')
+    // The CURRENT session carries the cursor.
+    const currentLine = list.split('\n').find(l => l.startsWith('●'))
+    expect(currentLine).toContain('0828 第二个会话')
+  })
+
+  it('R29-b: /session <n> stops the task, re-points, and the next message resumes the old session', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', '第一个会话')
+    await sleep(20)
+    const firstSessionId = host.created[0]?.id
+    expect(firstSessionId).toBe('feishu-' + firstSessionId!.slice('feishu-'.length))
+
+    await textMessage(port, '/new')
+    emitInbound(port, 'm2', '第二个会话')
+    await sleep(20)
+    const secondAgent = host.created[1]
+    expect(secondAgent?.id).not.toBe(firstSessionId)
+
+    // /session numbering: gen desc, current first.
+    await textMessage(port, '/session')
+    expect(lastText(port)).toMatch(/● 1 · 0828 第二个会话/)
+
+    await textMessage(port, '/session 2')
+    expect(lastText(port)).toContain('已停止当前任务，并切换到「0828 第一个会话」')
+    // D1: the superseded agent was cancelled with the switch cause.
+    expect(secondAgent?.cancels).toContain('session switch')
+
+    emitInbound(port, 'm3', '回到旧会话')
+    await sleep(20)
+    expect(host.created[2]?.id).toBe(firstSessionId)
+  })
+
+  it('R29-c: /session rename wins over the auto title and /status shows it', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', '原始自动标题')
+    await sleep(20)
+
+    await textMessage(port, '/session rename 需求讨论')
+    expect(lastText(port)).toContain('当前会话已重命名为「需求讨论」')
+
+    await textMessage(port, '/status')
+    expect(lastText(port)).toContain('会话：需求讨论 (')
+
+    // Hints no longer upgrade a user title.
+    emitInbound(port, 'm2', 'hint should not rename')
+    await sleep(20)
+    await textMessage(port, '/session')
+    expect(lastText(port)).toContain('需求讨论')
+  })
+
+  it('R29-d: /session archive by number and by age share the host archive set', async () => {
+    const { dispose, host, port } = makeEnv()
+    const { archived, archivedCalls } = mountArchiveService(host)
+    emitInbound(port, 'm1', '旧会话')
+    await sleep(20)
+    const firstSessionId = host.created[0]?.id
+    await textMessage(port, '/new')
+    emitInbound(port, 'm2', '新会话')
+    await sleep(20)
+
+    // Backdate the FIRST session so `archive old` (2 days) selects it.
+    const state = dispose.state
+    for (const records of Object.values(state.chatSessions)) {
+      for (const record of records) {
+        if (record.sessionId === firstSessionId) record.lastActiveAt = Date.now() - 3 * 86_400_000
+      }
+    }
+
+    await textMessage(port, '/session archive old')
+    expect(lastText(port)).toContain('已归档 1 个陈旧会话')
+    expect(archivedCalls).toEqual([firstSessionId])
+    expect(archived.has(firstSessionId!)).toBe(true)
+
+    // The default list hides it; `all` shows it with the tag.
+    await textMessage(port, '/session')
+    expect(lastText(port)).not.toContain('旧会话')
+    await textMessage(port, '/session all')
+    expect(lastText(port)).toContain('[已归档]')
+
+    // Re-archiving a listed-but-already-archived session reports no-op.
+    await textMessage(port, '/session all')
+    const allText = lastText(port)
+    expect(allText).toContain('2 · ')
+    await textMessage(port, '/session archive 2')
+    expect(lastText(port)).toContain('已在归档中')
+
+    // Archived sessions remain switchable (no unarchive upstream yet).
+    await textMessage(port, '/session all')
+    await textMessage(port, '/session 2')
+    expect(lastText(port)).toContain('已停止当前任务，并切换到「0828 旧会话」')
+  })
+
+  it('R29-e: the approver list gates switch / rename / archive', async () => {
+    const { host, port } = makeEnv({ approvers: ['ou_admin'] })
+    mountArchiveService(host)
+    emitInbound(port, 'm1', '会话一')
+    await sleep(20)
+
+    await textMessage(port, '/session rename X', { senderId: 'ou_user' })
+    expect(lastText(port)).toContain('无权切换/重命名/归档会话')
+
+    await textMessage(port, '/session archive 1', { senderId: 'ou_user' })
+    expect(lastText(port)).toContain('无权切换/重命名/归档会话')
+
+    await textMessage(port, '/session rename 正题', { senderId: 'ou_admin' })
+    expect(lastText(port)).toContain('当前会话已重命名为「正题」')
+  })
+
+  it('R29-f: without the host archive API the command degrades gracefully', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', '会话一')
+    await sleep(20)
+
+    await textMessage(port, '/session archive 1')
+    expect(lastText(port)).toContain('当前部署不支持会话归档')
+  })
+
+  it('R29-g: the active-generation pointer survives a restart (persistence)', async () => {
+    const captured: { sessions: unknown; activeGen: unknown }[] = []
+    const first = makeEnv({}, {
+      onSessionsChange: async payload => { captured.push(payload) },
+    })
+    emitInbound(first.port, 'm1', '第一个会话')
+    await sleep(20)
+    const originalSessionId = first.host.created[0]?.id
+    await textMessage(first.port, '/new')
+    emitInbound(first.port, 'm2', '第二个会话')
+    await sleep(20)
+    const newSessionId = first.host.created[1]?.id
+    await first.dispose()
+    expect(captured.length).toBeGreaterThan(0)
+
+    // A fresh bridge (the post-restart world) seeded from the persisted
+    // payload must resume the session the chat was actually ON (gen 1).
+    const config = { ...first.config, chatSessions: captured.at(-1)!.sessions, chatActiveGen: captured.at(-1)!.activeGen }
+    const secondPort = new FakePort()
+    const secondHost = fakeHost()
+    installBridge(secondHost, config, secondPort, resolveAuthorization(config), () => undefined)
+    emitInboundFor(secondPort, 'm3', '重启后继续')
+    await sleep(20)
+    expect(secondHost.created[0]?.id).toBe(newSessionId)
+    expect(secondHost.created[0]?.id).not.toBe(originalSessionId)
+  })
+
+  function emitInboundFor(port: FakePort, messageId: string, content: string): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+  }
+
+  it('R29-i: sessions are attached to their workspace for dsh web grouping', async () => {
+    const attached: string[] = []
+    const { host, port, workspace } = makeEnv()
+    host.services.set('workspaceRegistry', {
+      resolveByPath: async () => ({
+        id: 'w1',
+        path: workspace,
+        attachSession: async (sessionId: string) => { attached.push(sessionId) },
+      }),
+      create: async () => undefined,
+    })
+    emitInbound(port, 'm1', '需要分组')
+    await sleep(20)
+
+    // Without attachSession accounting, dsh web shows channel sessions as
+    // ungrouped; the channel now attaches every created/resumed session.
+    expect(attached).toEqual([host.created[0]?.id])
+  })
+
+  it('R29-j: archiving refuses sessions not created on the Feishu side', async () => {
+    const { dispose, host, port } = makeEnv()
+    mountArchiveService(host)
+    emitInbound(port, 'm1', '会话一')
+    await sleep(20)
+
+    // A dsh-web-created session must never be archivable from the channel.
+    const state = dispose.state
+    for (const records of Object.values(state.chatSessions)) {
+      records.push({
+        gen: 9,
+        sessionId: 'session-web-created-1',
+        title: '0828 web 会话',
+        titleIsAuto: true,
+        createdAt: Date.now(),
+        lastActiveAt: Date.now(),
+      })
+    }
+
+    await textMessage(port, '/session all')
+    const allLine = lastText(port).split('\n').find(l => l.includes('web 会话'))
+    expect(allLine).toBeDefined()
+
+    const numberOfWebSession = lastText(port).split('\n').find(l => l.includes('web 会话'))?.trim().split(' ')[0]
+    await textMessage(port, `/session archive ${numberOfWebSession}`)
+    expect(lastText(port)).toContain('仅可归档飞书端创建的会话')
+  })
+
+  it('R29-h: unknown list numbers and bare archive answer usage', async () => {
+    const { host, port } = makeEnv()
+    mountArchiveService(host)
+    emitInbound(port, 'm1', '会话一')
+    await sleep(20)
+
+    await textMessage(port, '/session 9')
+    expect(lastText(port)).toContain('列表中没有第 9 个会话')
+
+    await textMessage(port, '/session archive')
+    expect(lastText(port)).toContain('用法：/session archive')
+
+    await textMessage(port, '/session 0')
+    expect(lastText(port)).toContain('用法：/session')
+  })
+})

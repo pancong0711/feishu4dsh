@@ -48,6 +48,10 @@ export interface Config {
   chatPresets?: Record<string, string>
   /** Runtime map of `provider/model` → reasoning-effort preference; managed by `/model effort` (R28). */
   modelEfforts?: Record<string, string>
+  /** Runtime session registry (agentKey → records); managed by `/session` (R29), not hand-edited. */
+  chatSessions?: Record<string, unknown[]>
+  /** Runtime map of agentKey → active generation; the `/session <n>` pointer (R29). */
+  chatActiveGen?: Record<string, number>
   /** Group chats need an @ mention to trigger the bot. */
   requireMention?: boolean
   /** How one turn renders in the chat. */
@@ -100,6 +104,8 @@ export const Config = Schema.object({
   agentPreset: Schema.union([...AGENT_PRESETS]).default('standard'),
   chatPresets: Schema.any().default({}).hidden(),
   modelEfforts: Schema.any().default({}).hidden(),
+  chatSessions: Schema.any().default({}).hidden(),
+  chatActiveGen: Schema.any().default({}).hidden(),
   requireMention: Schema.boolean().default(true),
   output: Schema.union(['stream', 'card']).default('stream'),
   showProcess: Schema.boolean().default(true),
@@ -168,6 +174,11 @@ export function resolveConfig(config: Config): Required<Config> {
     chatWorkspaces: cleanStringMap(config.chatWorkspaces),
     chatPresets: cleanStringMap(config.chatPresets),
     modelEfforts: cleanStringMap(config.modelEfforts),
+    chatSessions: (config.chatSessions ?? {}) as NonNullable<Config['chatSessions']>,
+    chatActiveGen: Object.fromEntries(
+      Object.entries(config.chatActiveGen ?? {})
+        .map(([key, gen]) => [key.trim(), Number.isFinite(gen) ? gen : 0]),
+    ),
     agentPreset: config.agentPreset ?? 'standard',
     userWorkspaces: cleanList(config.userWorkspaces),
     sessionScope: config.sessionScope ?? 'chat',

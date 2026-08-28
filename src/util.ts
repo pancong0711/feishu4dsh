@@ -88,3 +88,10 @@ export function timingSafeEqualString(a: string, b: string): boolean {
   if (ba.length !== bb.length) return false
   return timingSafeEqual(ba, bb)
 }
+
+/** `MM-DD HH:mm` of a date, local time — `/session` list rendering (R29). */
+export function formatStamp(epochMs: number): string {
+  const d = new Date(epochMs)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}

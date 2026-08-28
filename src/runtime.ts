@@ -3,6 +3,7 @@
  * @module feishu4dsh/runtime
  */
 
+import { createRequire } from 'node:module'
 import type { Context } from '@deepseek-ai/cordis'
 import { Config, resolveConfig, hasCredentials } from './config.js'
 import type { ResolvedConfig } from './config.js'
@@ -12,6 +13,11 @@ import { installBridge, type BridgeHost, type BridgeHooks } from './bridge.js'
 
 /** Resolved configuration whose credentials are present. */
 export type ChannelConfig = ResolvedConfig
+
+/** The running plugin version, logged at bootstrap so operators can confirm
+ * WHICH build a deployment serves (ops lesson 2026-08-28: a restarted service
+ * is not by itself proof that the new build is live). */
+const pluginVersion: string = (createRequire(import.meta.url)('../package.json') as { version?: string }).version ?? 'unknown'
 
 /** Substitutable production boundaries; tests replace them with fakes. */
 export const internals: {
@@ -35,6 +41,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => () => { active = false }, 'feishu:lifetime')
 
   const bootstrap = async (): Promise<void> => {
+    internals.notify(`feishu4dsh: plugin v${pluginVersion} bootstrap (pid ${process.pid})`)
     // Loader siblings mount concurrently; wait for the complete application
     // so a first message never sees a half-grown agent world.
     const loader = ctx.get('loader') as { await(): Promise<unknown> } | undefined
@@ -104,6 +111,12 @@ export function apply(ctx: Context, config: Config): void {
         ? undefined
         : async (efforts) => {
             await settingsScope.update({ modelEfforts: efforts })
+          },
+      // Persist the session registry + active-generation pointers (R29).
+      onSessionsChange: settingsScope === undefined
+        ? undefined
+        : async ({ sessions, activeGen }) => {
+            await settingsScope.update({ chatSessions: sessions, chatActiveGen: activeGen })
           },
     }
     const disposeBridge = installBridge(host, resolved, port, authorization, internals.notify, hooks)

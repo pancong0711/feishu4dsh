@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0 (2026-08-28)
+
+**R29：会话回溯与命名（/session）——把 TUI 的会话管理三件套轻量带进飞书**
+
+- **`/session`**：列出当前话题 × 工作区的历史会话（自动标题 = `日期 + 首条消息首行≤12字`；全局稳定编号；默认隐藏已归档，`all` 含归档，当前会话永远可见）。
+- **`/session <n>`**：切回旧会话——自动停止进行中任务、重指活跃代，下一条消息从旧上下文继续；**顺带修复存量缺陷**：重启后 generation 归零导致回到最初会话（活跃指针现持久化）。
+- **`/session rename <标题>`**：重命名当前会话（用户标题为准），`/status` 会话行联动显示。
+- **`/session archive <n>` / `archive old [天数]`**：归档会话——直调宿主 `workspaceRegistry.archiveSession`，与 dsh web **共用同一归档集合**（`~/.dsh/storages/workspace.json`）；`/new` 不自动归档；宿主缺该 API 时优雅降级。当前 dsh 无 unarchive，归档单向（通道 `all` 视图仍可切回）。
+- **工作区分组修复**：通道创建/恢复会话后调用 `workspace.attachSession` 记账——此前通道从不记账，飞书会话在 dsh web 全部落入"未分组"；失败自动重试（resume 时自愈历史会话）。
+- **归档边界**：通道侧仅可归档飞书端创建的会话（`feishu-` 前缀校验），dsh web 会话不受通道影响。
+- 配置新增：`chatSessions` / `chatActiveGen`（运行时状态，勿手改）。测试 208/208（新增 18 条）。
+
 ## 0.5.0 (2026-08-27)
 
 **R25–R28：话题锚修复 · /status 增强 · /mode 模式设置 · /model effort 推理强度**

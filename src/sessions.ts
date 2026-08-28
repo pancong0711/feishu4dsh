@@ -93,6 +93,13 @@ export interface LedgerEntry<TAgent> {
  * (scope × workspace). Ownership is what the approval waterfall checks: a
  * question from an agent not present here is answered by somebody else, so
  * this channel delegates via `next()`.
+ *
+ * R29: the per-key generation is an ACTIVE POINTER, not a monotonic counter —
+ * `/session <n>` re-points it at any historical generation, while `/new`
+ * advances it (callers pass an explicit next generation computed from the
+ * session registry so switched-back generations are never reused). The map
+ * itself is in-memory only; the bridge persists the pointer via settings and
+ * re-seeds it on startup (`pointerTo`).
  */
 export class AgentLedger<TAgent> {
   private readonly entries = new Map<string, LedgerEntry<TAgent>>()
@@ -121,21 +128,31 @@ export class AgentLedger<TAgent> {
   }
 
   /**
-   * Advance one agent key's reset generation and forget its handle. The NEXT
-   * agent for this key gets a fresh session id, so cleared context can not
-   * be resumed by accident.
+   * Drop one agent key's handle and point it at the NEXT generation — by
+   * default one past the active pointer, or an explicit generation computed
+   * by the caller (R29: registry max + 1, so a pointer sitting on a
+   * switched-back historical generation never reuses ids).
    * @returns the generation the next agent starts under.
    */
-  reset(agentKey: string): number {
+  reset(agentKey: string, nextGen?: number): number {
     this.entries.delete(agentKey)
-    const next = (this.generations.get(agentKey) ?? 0) + 1
+    const next = nextGen ?? this.generationOf(agentKey) + 1
     this.generations.set(agentKey, next)
     return next
   }
 
-  /** The generation an agent key's next agent starts under. */
+  /** The ACTIVE generation an agent key currently points at. */
   generationOf(agentKey: string): number {
     return this.generations.get(agentKey) ?? 0
+  }
+
+  /**
+   * Re-point an agent key at a (historical) generation without dropping any
+   * live entry — callers dispose explicitly. Used by `/session <n>` (R29)
+   * and by startup seeding from the persisted pointer.
+   */
+  pointerTo(agentKey: string, gen: number): void {
+    this.generations.set(agentKey, gen)
   }
 
   /** Whether one session id belongs to this ledger's agents. */

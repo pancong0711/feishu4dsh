@@ -85,6 +85,27 @@ export interface Strings {
   modeAlready: (preset: string) => string
   modeUsage: string
   modeNoPermission: string
+  /* Session registry (/session, R29): list / switch / rename / archive. */
+  sessionTitle: string
+  sessionListEmpty: string
+  sessionArchivedTag: string
+  sessionUsage: string
+  sessionSwitched: (title: string) => string
+  sessionAlreadyCurrent: (title: string) => string
+  sessionUnknown: (n: number) => string
+  sessionRenamed: (title: string) => string
+  sessionRenameUsage: string
+  sessionNothingToRename: string
+  sessionNoPermission: string
+  sessionArchiveUnsupported: string
+  sessionArchiveUsage: string
+  sessionArchivedOne: (title: string) => string
+  sessionArchivedMany: (count: number, titles: string) => string
+  sessionArchivedAlready: (title: string) => string
+  sessionArchiveNone: (days: number) => string
+  sessionArchiveFailed: (detail: string) => string
+  /** Boundary note: only Feishu-side sessions are archivable from the channel. */
+  sessionArchiveForeign: string
   /* Workspace listing & switching (/ws, /cd). */
   wsTitle: string
   wsEmpty: string
@@ -147,6 +168,7 @@ const zhCN: Strings = {
     '/help — 查看命令列表',
     '/new — 开启新会话（清空上下文）',
     '/mode — 查看/设置会话模式（standard/minimal，设置后开启新会话）',
+    '/session — 会话列表 / 切换 / 重命名 / 归档（/session 查看用法）',
     '/stop — 停止当前任务',
     '/status — 会话 / 工作区 / 模式 / 模型 / 推理强度 / 轮次与 Token 累计',
     '/ws — 列出可用工作区',
@@ -200,6 +222,25 @@ const zhCN: Strings = {
   modeAlready: preset => `已是 ${preset} 模式；如需重开会话请用 /new`,
   modeUsage: '用法：/mode 查看 · /mode <standard|minimal> 设置（设置后开启新会话）',
   modeNoPermission: '无权切换会话模式',
+  sessionTitle: '会话列表',
+  sessionListEmpty: '当前话题 × 工作区还没有已登记的会话。',
+  sessionArchivedTag: ' [已归档]',
+  sessionUsage: '用法：/session 列表 · /session all 含已归档 · /session <序号> 切换 · /session rename <标题> · /session archive <序号> · /session archive old [天数，默认2]',
+  sessionSwitched: title => `已停止当前任务，并切换到「${title}」`,
+  sessionAlreadyCurrent: title => `「${title}」已是当前会话`,
+  sessionUnknown: n => `列表中没有第 ${n} 个会话（/session 查看编号）`,
+  sessionRenamed: title => `当前会话已重命名为「${title}」`,
+  sessionRenameUsage: '用法：/session rename <新标题>',
+  sessionNothingToRename: '当前会话尚未登记（先发一条消息），无标题可改。',
+  sessionNoPermission: '无权切换/重命名/归档会话',
+  sessionArchiveUnsupported: '当前部署不支持会话归档（宿主缺 workspaceRegistry.archiveSession）。',
+  sessionArchiveUsage: '用法：/session archive <序号> · /session archive old [天数，默认2]',
+  sessionArchivedOne: title => `已归档「${title}」`,
+  sessionArchivedMany: (count, titles) => `已归档 ${count} 个陈旧会话：${titles}`,
+  sessionArchivedAlready: title => `「${title}」已在归档中`,
+  sessionArchiveNone: days => `没有超过 ${days} 天未更新的未归档会话。`,
+  sessionArchiveFailed: detail => `归档失败：${detail}`,
+  sessionArchiveForeign: '仅可归档飞书端创建的会话（dsh web 端会话请在 web 管理）。',
   wsTitle: '可用工作区',
   wsEmpty: '当前没有可用的工作区。',
   wsCurrentTag: '当前',
@@ -296,6 +337,25 @@ const enUS: Strings = {
   modeAlready: preset => `Already in ${preset} mode; use /new to re-open the session`,
   modeUsage: 'Usage: /mode to view · /mode <standard|minimal> to set (opens a new session)',
   modeNoPermission: 'Not allowed to switch the session mode',
+  sessionTitle: 'Sessions',
+  sessionListEmpty: 'No registered sessions for this topic × workspace yet.',
+  sessionArchivedTag: ' [archived]',
+  sessionUsage: 'Usage: /session list · /session all includes archived · /session <n> switch · /session rename <title> · /session archive <n> · /session archive old [days, default 2]',
+  sessionSwitched: title => `Stopped the running task and switched to "${title}"`,
+  sessionAlreadyCurrent: title => `"${title}" is already the current session`,
+  sessionUnknown: n => `No session #${n} in the list (see /session)`,
+  sessionRenamed: title => `Session renamed to "${title}"`,
+  sessionRenameUsage: 'Usage: /session rename <new title>',
+  sessionNothingToRename: 'The current session is not registered yet (send a message first).',
+  sessionNoPermission: 'Not allowed to switch/rename/archive sessions',
+  sessionArchiveUnsupported: 'Archiving is not supported by this deployment (workspaceRegistry.archiveSession missing).',
+  sessionArchiveUsage: 'Usage: /session archive <n> · /session archive old [days, default 2]',
+  sessionArchivedOne: title => `Archived "${title}"`,
+  sessionArchivedMany: (count, titles) => `Archived ${count} stale session(s): ${titles}`,
+  sessionArchivedAlready: title => `"${title}" is already archived`,
+  sessionArchiveNone: days => `No unarchived sessions older than ${days} day(s).`,
+  sessionArchiveFailed: detail => `Archive failed: ${detail}`,
+  sessionArchiveForeign: 'Only sessions created on the Feishu side can be archived (manage dsh web sessions there).',
   modelTitle: 'Model',
   modelSourceSession: '',
   modelDefaultNotStarted: ' (default; no turn yet)',

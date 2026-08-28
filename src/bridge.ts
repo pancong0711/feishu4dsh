@@ -17,13 +17,17 @@ import type { ChannelPort, CardActionEvent, NormalizedMessage, RejectEvent } fro
 import { resolveScopeKey, agentKeyOf, sessionIdOf, AgentLedger, type SessionScopeInput } from './sessions.js'
 import { buildCatalog, listWorkspaces, resolveCdTarget, registeredPathsOf, resolveWorkspaceDirectory, normalizeWorkspacePath, type WorkspaceCatalog } from './workspaces.js'
 import { approvalCard, decodeActionValue, settledApprovalCard, type CardActionPayload } from './cards.js'
-import type { HostAgentHandle, HostAgentOptions, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostModelSelection, HostSession, HostSessionEvent, HostTools, HostWorkspaceRegistry, TokenUsageData } from './host.js'
+import type { HostAgentHandle, HostAgentOptions, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostModelSelection, HostSession, HostSessionEvent, HostTools, HostWorkspace, HostWorkspaceRegistry, TokenUsageData } from './host.js'
 import { assistantText, isAssistantChunkEvent, isAssistantMessageEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
 import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedSelection, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
 import { readOutboundFile, sendFileTool, storeInboundFile, type OutboundFile, type SendFilePorts } from './files.js'
 import { accumulateSessionUsage, emptySessionUsage, hasSessionUsage, statsOfEvents, type SessionUsage } from './session-stats.js'
+import {
+  activeRecordOf, listSessions, nextGenOf, renameSession, staleSessionsOf, touchSession,
+  upsertSession, type ActiveGenMap, type SessionRecord, type SessionRegistry,
+} from './session-registry.js'
 import { resolveLocale, strings, type Locale, type Strings } from './strings.js'
-import { formatBytes, formatNumber, shortHash } from './util.js'
+import { formatBytes, formatNumber, formatStamp, shortHash } from './util.js'
 
 /* ------------------------------------------------------------------ */
 /* Host surface the bridge needs (structurally satisfied by cordis ctx) */
@@ -134,6 +138,11 @@ export interface BridgeHooks {
   onPresetChange?: (scopeKey: string, preset: string) => void | Promise<void>
   /** Persist the per-model reasoning-effort preference table (R28). */
   onModelEffortsChange?: (efforts: Record<string, string>) => void | Promise<void>
+  /** Persist the session registry + active-generation pointers (R29). */
+  onSessionsChange?: (payload: {
+    sessions: SessionRegistry
+    activeGen: ActiveGenMap
+  }) => void | Promise<void>
 }
 
 /**
@@ -231,6 +240,17 @@ export function installBridge(
   for (const workspace of config.userWorkspaces) state.userWorkspaces.add(workspace)
   Object.assign(state.chatPresets, config.chatPresets)
   Object.assign(state.modelEfforts, config.modelEfforts)
+  // R29: seed the session registry and re-point every agent key's ACTIVE
+  // generation -- this is what makes a restart resume the session the chat
+  // was actually on (a fresh ledger pointer alone would reset to generation
+  // 0, silently dropping /new history).
+  for (const [agentKey, records] of Object.entries(config.chatSessions)) {
+    state.chatSessions[agentKey] = records as SessionRecord[]
+  }
+  for (const [agentKey, gen] of Object.entries(config.chatActiveGen)) {
+    state.chatActiveGen[agentKey] = gen
+    state.ledger.pointerTo(agentKey, gen)
+  }
   wirePortEvents(env, state)
   wireSessionEvents(env, state)
   wireApprovals(env, state)
@@ -271,6 +291,10 @@ export interface BridgeState {
   readonly chatPresets: Record<string, string>
   /** `provider/model` -> reasoning-effort preference (seeded from config) (R28). */
   readonly modelEfforts: Record<string, string>
+  /** agentKey -> known sessions with titles/stamps (R29). */
+  readonly chatSessions: SessionRegistry
+  /** agentKey -> ACTIVE generation pointer (R29). */
+  readonly chatActiveGen: Record<string, number>
   /** Cached workspace catalog; rebuilt by {@link workspaceCatalogFor}. */
   workspaceCatalog: WorkspaceCatalog | undefined
   locale: Locale
@@ -293,6 +317,8 @@ function createBridgeState(): BridgeState {
     sessionPresets: new Map(),
     chatPresets: {},
     modelEfforts: {},
+    chatSessions: {},
+    chatActiveGen: {},
     workspaceCatalog: undefined,
     locale: 'zh-CN',
     copy: strings('zh-CN'),
@@ -658,7 +684,7 @@ async function handleInboundMessage(env: BridgeEnv, state: BridgeState, message:
 
   let handle
   try {
-    handle = await ensureAgent(env, state, binding)
+    handle = await ensureAgent(env, state, binding, text !== '' ? text : undefined)
   } catch (error) {
     env.report(`feishu4dsh: agent unavailable: ${describeError(error)}`)
     await safeSend(env, message.chatId, state.copy.turnFailed(describeError(error)), message.messageId)
@@ -914,7 +940,7 @@ function advertisedDefaultSelection(env: BridgeEnv): HostModelSelection | undefi
   }
 }
 
-async function ensureAgent(env: BridgeEnv, state: BridgeState, binding: ChatBinding): Promise<HostAgentHandle> {
+async function ensureAgent(env: BridgeEnv, state: BridgeState, binding: ChatBinding, hintText?: string): Promise<HostAgentHandle> {
   const agentKey = agentKeyOf(binding.scopeKey, binding.workspacePath)
   const existing = state.ledger.get(agentKey)
   if (existing !== undefined) return existing.handle
@@ -925,7 +951,7 @@ async function ensureAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
   const pending = state.pendingAgents.get(agentKey)
   if (pending !== undefined) return pending
 
-  const creation = createAgent(env, state, binding, agentKey)
+  const creation = createAgent(env, state, binding, agentKey, hintText)
   state.pendingAgents.set(agentKey, creation)
   try {
     return await creation
@@ -959,7 +985,7 @@ function nextPresetOf(env: BridgeEnv, state: BridgeState, binding: ChatBinding):
 }
 
 /** Create (or resume) the one agent for an agent key; see {@link ensureAgent}. */
-async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBinding, agentKey: string): Promise<HostAgentHandle> {
+async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBinding, agentKey: string, hintText?: string): Promise<HostAgentHandle> {
   // Wait for the loader so a first message never sees a half-grown tree.
   const loader = env.host.get('loader') as { await(): Promise<unknown> } | undefined
   if (loader !== undefined) await loader.await().catch(() => undefined)
@@ -968,6 +994,10 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
 
   const generation = state.ledger.generationOf(agentKey)
   const sessionId = sessionIdOf(binding.scopeKey, binding.workspacePath, generation)
+  // R29b: resolve (or lazily create) the workspace record so the session can
+  // be ACCOUNTED under it below -- without attachSession, dsh web groups
+  // every channel session as ungrouped.
+  const workspaceRecord = await registerWorkspace(env, binding.workspacePath)
   const setup = composeAgentSetup(env, state, binding)
   // New agents need an explicit provider/model; without one the agent/request
   // waterfall has nothing to seed and turns fail with "has no provider/model".
@@ -1001,6 +1031,20 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
   state.sessionPresets.set(sessionId, preset)
   state.ledger.set(agentKey, { handle, generation, sessionId })
   state.sessionScopes.set(sessionId, binding.scopeKey)
+  // R29: register the session (title from the first message's hint) and mark
+  // it ACTIVE -- the pointer this chat resumes after a restart.
+  upsertSession(state.chatSessions, agentKey, generation, sessionId, { hintText, now: Date.now() })
+  state.chatActiveGen[agentKey] = generation
+  persistSessions(env, state)
+  // R29b: account the session under its workspace (best-effort -- failures
+  // are logged and retried on the next resume, which also heals sessions
+  // created before this change). Without this, dsh web shows every channel
+  // session as ungrouped.
+  try {
+    await workspaceRecord?.attachSession?.(sessionId)
+  } catch (error) {
+    env.report(`feishu4dsh: attach session to workspace failed: ${describeError(error)}`)
+  }
   return handle
 }
 
@@ -1009,15 +1053,16 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
  * shows up in `/ws` for every chat. Failures are non-fatal — the channel's
  * own bookkeeping still works without a registry.
  */
-async function registerWorkspace(env: BridgeEnv, workspacePath: string): Promise<void> {
+async function registerWorkspace(env: BridgeEnv, workspacePath: string): Promise<HostWorkspace | undefined> {
   const registry = env.host.get('workspaceRegistry') as HostWorkspaceRegistry | undefined
-  if (registry === undefined) return
+  if (registry === undefined) return undefined
   try {
     const existing = await registry.resolveByPath(workspacePath)
-    if (existing !== undefined) return
-    await registry.create(workspacePath, basename(workspacePath))
-  } catch {
+    if (existing !== undefined) return existing
     // Registration is cosmetic; never block a turn on it.
+    return await registry.create(workspacePath, basename(workspacePath))
+  } catch {
+    return undefined
   }
 }
 
@@ -1347,6 +1392,9 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
     binding.toolCallCounts = new Map()
     binding.turnUsage = emptySessionUsage()
     binding.turnHasOutput = false
+    // R29: the session is alive -- refresh its activity stamp for
+    // `/session archive old`.
+    touchSession(state.chatSessions, currentAgentKey(binding), state.ledger.generationOf(currentAgentKey(binding)), Date.now())
     return
   }
 
@@ -1564,6 +1612,10 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
       await cmdMode(env, state, binding, line.slice('/mode'.length).trim(), senderId, replyTo)
       return
     }
+    case '/session': {
+      await cmdSession(env, state, binding, line.slice('/session'.length).trim(), senderId, replyTo)
+      return
+    }
     case '/stop': {
       const entry = state.ledger.get(currentAgentKey(binding))
       if (entry === undefined) {
@@ -1627,7 +1679,12 @@ async function resetSessionScope(env: BridgeEnv, state: BridgeState, binding: Ch
     entry.handle.agent.cancel(cause)
     await entry.handle.dispose().catch(() => undefined)
   }
-  state.ledger.reset(agentKey)
+  // R29: the next generation is one past the highest KNOWN generation (the
+  // registry), never reusing ids a `/session` switch-back pointed at.
+  const nextGen = nextGenOf(state.chatSessions, agentKey, state.ledger.generationOf(agentKey))
+  state.ledger.reset(agentKey, nextGen)
+  state.chatActiveGen[agentKey] = nextGen
+  persistSessions(env, state)
   for (const [sessionId] of [...state.sessionScopes]) {
     if (entry !== undefined && sessionId === entry.sessionId) {
       state.sessionScopes.delete(sessionId)
@@ -1638,6 +1695,231 @@ async function resetSessionScope(env: BridgeEnv, state: BridgeState, binding: Ch
   for (const [id, anchor] of [...state.replyTargets]) {
     if (anchor.scopeKey === binding.scopeKey) state.replyTargets.delete(id)
   }
+}
+
+/**
+ * Fire-and-forget persistence of the session registry + active pointers
+ * (R29). JSON round-trip detaches the persisted payload from live mutations.
+ */
+function persistSessions(env: BridgeEnv, state: BridgeState): void {
+  void (async () => {
+    try {
+      await env.hooks.onSessionsChange?.({
+        sessions: JSON.parse(JSON.stringify(state.chatSessions)) as SessionRegistry,
+        activeGen: { ...state.chatActiveGen },
+      })
+    } catch (error) {
+      env.report(`feishu4dsh: persist sessions failed: ${describeError(error)}`)
+    }
+  })()
+}
+
+/**
+ * The host's global archive set (shared with dsh web), or undefined when the
+ * deployment does not support archiving — the single fact source for which
+ * sessions `/session` hides; the channel never stores archived flags itself.
+ */
+function archivedSetOf(env: BridgeEnv): Set<string> | undefined {
+  const registryService = env.host.get('workspaceRegistry') as HostWorkspaceRegistry | undefined
+  if (registryService?.archivedSessionIds === undefined) return undefined
+  try {
+    return new Set(registryService.archivedSessionIds())
+  } catch {
+    return undefined
+  }
+}
+
+/** `/session`'s default view: everything except archived, PLUS the current. */
+function visibleSessions(state: BridgeState, agentKey: string, activeGen: number, archived?: Set<string>): SessionRecord[] {
+  return listSessions(state.chatSessions, agentKey)
+    .filter(record => record.gen === activeGen || !(archived?.has(record.sessionId) ?? false))
+}
+
+/**
+ * `/session` (R29): list, switch, rename, and archive the sessions of the
+ * CURRENT agent key (scope × workspace).
+ * - `/session` / `/session all` -- list (all includes `[已归档]` entries; the
+ *   ACTIVE session is always shown, even when archived);
+ * - `/session <n>` -- switch (D1: cancels the running task, disposes the live
+ *   agent, re-points the ACTIVE generation; the next message resumes the
+ *   target session);
+ * - `/session rename <title>` -- rename the current session (user title wins);
+ * - `/session archive <n>` / `/session archive old [days]` -- archive via the
+ *   HOST's registry-global set (shared with dsh web); the default view always
+ *   hides archived entries except the active one.
+ * Switch/rename/archive are gated like `/cd`; listing is free.
+ */
+async function cmdSession(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  rest: string,
+  senderId: string,
+  replyTo?: string,
+): Promise<void> {
+  const chatId = binding.chatId
+  const copy = state.copy
+  const agentKey = currentAgentKey(binding)
+  const activeGen = state.ledger.generationOf(agentKey)
+  const archived = archivedSetOf(env)
+  const archiveSupported = archived !== undefined
+
+  if (rest === '' || rest === 'all') {
+    // Numbering is GLOBAL and stable (full registry, newest gen first, like
+    // TUI buffer ids): the default view omits archived lines but never
+    // renumbers, so `/session <n>` and `/session archive <n>` always match
+    // whatever list the user just saw.
+    const records = listSessions(state.chatSessions, agentKey)
+    if (records.length === 0) {
+      await safeSend(env, chatId, copy.sessionListEmpty, replyTo)
+      return
+    }
+    const lines = [`**${copy.sessionTitle}**`]
+    records.forEach((record, index) => {
+      const isArchived = archived?.has(record.sessionId) ?? false
+      if (isArchived && rest !== 'all' && record.gen !== activeGen) return
+      const flag = record.gen === activeGen ? '● ' : '  '
+      const tag = isArchived ? copy.sessionArchivedTag : ''
+      lines.push(`${flag}${index + 1} · ${record.title} · ${formatStamp(record.lastActiveAt)}${tag}`)
+    })
+    lines.push(copy.sessionUsage)
+    await safeSend(env, chatId, lines.join('\n'), replyTo)
+    return
+  }
+
+  if (rest === 'rename' || rest.startsWith('rename ')) {
+    if (!canManageWorkspaces(env, senderId)) {
+      await safeSend(env, chatId, copy.sessionNoPermission, replyTo)
+      return
+    }
+    const title = rest.slice('rename'.length).trim()
+    if (title === '') {
+      await safeSend(env, chatId, copy.sessionRenameUsage, replyTo)
+      return
+    }
+    if (!renameSession(state.chatSessions, agentKey, activeGen, title)) {
+      await safeSend(env, chatId, copy.sessionNothingToRename, replyTo)
+      return
+    }
+    persistSessions(env, state)
+    env.report(`feishu4dsh: session renamed by ${senderId}: ${title}`)
+    await safeSend(env, chatId, copy.sessionRenamed(title), replyTo)
+    return
+  }
+
+  if (rest === 'archive' || rest.startsWith('archive ')) {
+    if (!canManageWorkspaces(env, senderId)) {
+      await safeSend(env, chatId, copy.sessionNoPermission, replyTo)
+      return
+    }
+    const registryService = env.host.get('workspaceRegistry') as HostWorkspaceRegistry | undefined
+    if (!archiveSupported || registryService?.archiveSession === undefined) {
+      await safeSend(env, chatId, copy.sessionArchiveUnsupported, replyTo)
+      return
+    }
+    const arg = rest.slice('archive'.length).trim()
+    const staleMatch = /^old(?:\s+(\d+))?$/.exec(arg)
+    if (arg === '' || staleMatch !== null) {
+      if (arg === '') {
+        await safeSend(env, chatId, copy.sessionArchiveUsage, replyTo)
+        return
+      }
+      const days = Math.max(1, Number(staleMatch?.[1] ?? 2))
+      const stale = staleSessionsOf(state.chatSessions, agentKey, activeGen, Date.now(), days, id => archived.has(id))
+        .filter(record => record.sessionId.startsWith('feishu-'))
+      if (stale.length === 0) {
+        await safeSend(env, chatId, copy.sessionArchiveNone(days), replyTo)
+        return
+      }
+      const titles: string[] = []
+      for (const record of stale) {
+        try {
+          await registryService.archiveSession(record.sessionId)
+          titles.push(record.title)
+        } catch (error) {
+          env.report(`feishu4dsh: archive failed for ${record.sessionId}: ${describeError(error)}`)
+        }
+      }
+      if (titles.length === 0) {
+        await safeSend(env, chatId, copy.turnFailed('archive'), replyTo)
+        return
+      }
+      env.report(`feishu4dsh: archived ${titles.length} stale session(s) by ${senderId}`)
+      await safeSend(env, chatId, copy.sessionArchivedMany(titles.length, titles.join('、')), replyTo)
+      return
+    }
+    const n = Number(arg)
+    if (!Number.isInteger(n) || n < 1) {
+      await safeSend(env, chatId, copy.sessionArchiveUsage, replyTo)
+      return
+    }
+    const record = listSessions(state.chatSessions, agentKey)[n - 1]
+    if (record === undefined) {
+      await safeSend(env, chatId, copy.sessionUnknown(n), replyTo)
+      return
+    }
+    // Boundary (owner decision): ONLY sessions created on the Feishu side are
+    // archivable from here -- dsh web sessions are the user's to manage.
+    if (!record.sessionId.startsWith('feishu-')) {
+      await safeSend(env, chatId, copy.sessionArchiveForeign, replyTo)
+      return
+    }
+    if (archived.has(record.sessionId)) {
+      await safeSend(env, chatId, copy.sessionArchivedAlready(record.title), replyTo)
+      return
+    }
+    try {
+      await registryService.archiveSession(record.sessionId)
+    } catch (error) {
+      await safeSend(env, chatId, copy.sessionArchiveFailed(describeError(error)), replyTo)
+      return
+    }
+    env.report(`feishu4dsh: session archived by ${senderId}: ${record.sessionId}`)
+    await safeSend(env, chatId, copy.sessionArchivedOne(record.title), replyTo)
+    return
+  }
+
+  // `/session <n>`: switch the ACTIVE pointer (same numbering as the list).
+  const n = Number(rest)
+  if (!Number.isInteger(n) || n < 1) {
+    await safeSend(env, chatId, copy.sessionUsage, replyTo)
+    return
+  }
+  const target = listSessions(state.chatSessions, agentKey)[n - 1]
+  if (target === undefined) {
+    await safeSend(env, chatId, copy.sessionUnknown(n), replyTo)
+    return
+  }
+  if (target.gen === activeGen) {
+    await safeSend(env, chatId, copy.sessionAlreadyCurrent(target.title), replyTo)
+    return
+  }
+  if (!canManageWorkspaces(env, senderId)) {
+    await safeSend(env, chatId, copy.sessionNoPermission, replyTo)
+    return
+  }
+
+  // D1: the running task dies with the switch, exactly like /stop.
+  const entry = state.ledger.get(agentKey)
+  if (entry !== undefined) {
+    entry.handle.agent.cancel('session switch')
+    await entry.handle.dispose().catch(() => undefined)
+  }
+  // pointerTo keeps any live entry by contract -- drop the disposed one so
+  // the next message really creates the target session's agent.
+  state.ledger.delete(agentKey)
+  state.ledger.pointerTo(agentKey, target.gen)
+  state.chatActiveGen[agentKey] = target.gen
+  for (const [sessionId] of [...state.sessionScopes]) {
+    if (entry !== undefined && sessionId === entry.sessionId) state.sessionScopes.delete(sessionId)
+  }
+  await drainRenderQueue(state, binding.scopeKey)
+  for (const [id, anchor] of [...state.replyTargets]) {
+    if (anchor.scopeKey === binding.scopeKey) state.replyTargets.delete(id)
+  }
+  persistSessions(env, state)
+  env.report(`feishu4dsh: session switched by ${senderId}: gen ${target.gen} (${target.title})`)
+  await safeSend(env, chatId, copy.sessionSwitched(target.title), replyTo)
 }
 
 /**
@@ -1717,9 +1999,12 @@ async function cmdStatus(env: BridgeEnv, state: BridgeState, binding: ChatBindin
   const turns = stats === undefined ? copy.statusStatsUnavailable : String(stats.turns)
   const steps = stats === undefined ? copy.statusStatsUnavailable : String(stats.steps)
   const effort = displayEffortOf(env, state, binding)
+  const sessionId = currentSessionId(state, binding)
+  const record = activeRecordOf(state.chatSessions, currentAgentKey(binding), state.ledger.generationOf(currentAgentKey(binding)))
+  const sessionLine = record === undefined ? sessionId : `${record.title} (${sessionId})`
   const lines = [
     `**${copy.statusTitle}**`,
-    copy.statusSession(currentSessionId(state, binding)),
+    copy.statusSession(sessionLine),
     copy.statusScope(copy.scopeLabel(env.config.sessionScope)),
     copy.statusWorkspace(binding.workspaceName, binding.workspacePath),
     copy.statusPreset(sessionPresetOf(env, state, binding)),

@@ -23,6 +23,8 @@ describe('resolveConfig', () => {
     expect(resolved.chatWorkspaces).toEqual({})
     expect(resolved.agentPreset).toBe('standard')
     expect(resolved.chatPresets).toEqual({})
+    expect(resolved.chatSessions).toEqual({})
+    expect(resolved.chatActiveGen).toEqual({})
     expect(resolved.senderAllowlist).toEqual([])
     expect(resolved.groupAllowlist).toEqual([])
     expect(resolved.approvers).toEqual([])
