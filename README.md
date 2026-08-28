@@ -6,7 +6,8 @@
 
 - **面向个人用户**：一个 dsh 实例 + 一个飞书自建应用（单机器人），服务主人自己的多项目工作台——不是 one-person-company 式「多机器人分工协作」的编排方案；
 - **话题即项目**：以飞书群聊/私聊的话题（thread）为项目边界，每个话题独立 Agent 会话与工作区，`/cd` 切换、`/new` 重开、重启可恢复；
-- **出身**：交互形态对标 Hermes Agent 的飞书插件，早期借鉴社区 lark-bot 通道代码的经验，随后以独立 dsh 插件库用 TypeScript / Cordis 重写——传输层模块化 + 对接层可移植，开发过程本身也由 dsh 会话协作推进。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+- **为什么做这个插件**：我们的日常是「在飞书里驱动 Agent 干活」——此前用 Hermes Agent 的飞书插件，交互顺手、体验对味；而早期的 dsh 飞书通道与这套使用习惯差距较大，问题修复链路也长。于是以 Hermes 飞书插件的体验为对标，把 dsh 接进飞书：早期借鉴社区 lark-bot 通道代码的经验，随后以独立 dsh 插件库用 TypeScript / Cordis 重写——传输层模块化 + 对接层可移植，开发过程本身也由 dsh 会话协作推进。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；
+- **把 dsh web 的体验带进飞书**：dsh 自带的 Web 控制台很好用——会话的模式、模型、推理强度、轮次与 Token 统计一目了然。本插件把这些能力逐步搬进聊天命令（`/status` `/mode` `/model` `/model effort`），不开电脑也能在飞书里看到同样多的信息、调到同样的开关。
 
 ## 快速开始
 
@@ -56,7 +57,7 @@ journalctl --user -u dsh-feishu4dsh.service -f
 | 会话隔离 | 按聊天/话题/发送人三种粒度，重启可恢复，`/new` 重开 |
 | **多工作区** | 会话 = scope×工作区；`/ws` 列/加/删、`/cd` 手机端切换，均持久化 |
 | 授权 | 应用可用范围 + 发送人/群白名单 + 审批人名单（只收窄） |
-| 命令 | `/help` `/new` `/stop` `/status` `/ws` `/cd` |
+| 命令 | `/help` `/new` `/mode` `/stop` `/status` `/ws` `/cd` `/model`（含 `/model effort`） |
 | 文件 | 入站进 `.feishu4dsh/inbox/`；`send_file` 回传，群聊逐次审批 |
 | i18n | `locale: auto` 跟随读者语言，默认中文 |
 
@@ -95,7 +96,7 @@ pnpm build        # tsc 产出 lib/
 
 ## 路线图
 
-原生思考过程消息 · `/model` 切换 · 提问卡片（对接 `ask_user_question`）· 多机器人 @ 交接 · 斜杠命令面板同步。
+原生思考过程消息 · 提问卡片（对接 `ask_user_question`）· 多机器人 @ 交接 · 斜杠命令面板同步。
 
 ## License
 

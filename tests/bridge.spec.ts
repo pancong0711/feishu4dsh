@@ -8,7 +8,7 @@ import { resolveConfig } from '../src/config.js'
 import type { ResolvedConfig } from '../src/config.js'
 import { resolveAuthorization } from '../src/acl.js'
 import type { ChannelPort, ResourceType } from '../src/adapter.js'
-import type { HostAgent, HostAgentOptions, HostRequestHeaderConfig, HostSession, HostUserMessage } from '../src/host.js'
+import type { HostAgent, HostAgentOptions, HostRequestHeaderConfig, HostSession, HostSessionEvent, HostUserMessage } from '../src/host.js'
 import type { MutableSelection } from '../src/model-selection.js'
 import { sleep } from '../src/util.js'
 
@@ -30,11 +30,14 @@ class FakeAgent implements HostAgent {
    * undefined models an older host whose sessions have no such capability.
    */
   headerReader?: () => { config?: HostRequestHeaderConfig } | undefined
+  /** When set, the fake session exposes the dsh session log (R26). */
+  sessionEvents?: readonly HostSessionEvent[]
   constructor(readonly id: string) {}
   get session(): HostSession {
-    return this.headerReader === undefined
+    const base: HostSession = this.headerReader === undefined
       ? { id: this.id }
       : { id: this.id, requestHeader: this.headerReader }
+    return this.sessionEvents === undefined ? base : { ...base, events: this.sessionEvents }
   }
   followup(message: HostUserMessage): void { this.followups.push(message) }
   cancel(cause: string): void { this.cancels.push(cause) }
@@ -94,17 +97,27 @@ function fakeHost() {
   const created: FakeAgent[] = []
   const handlers = new Map<string, ((...args: unknown[]) => unknown)[]>()
   const services = new Map<string, unknown>()
+  /** Tool definitions the bridge registered on agent contexts (R25 probing). */
+  const registeredTools: { name: string; execute: (args: unknown, exec: unknown) => Promise<unknown> }[] = []
+  const toolsRegistry = {
+    register: (definition: { name: string; execute: (args: unknown, exec: unknown) => Promise<unknown> }) => {
+      registeredTools.push(definition)
+      return () => undefined
+    },
+  }
   const host: BridgeHost & {
     created: FakeAgent[]
     emit(name: string, ...args: unknown[]): unknown[]
     services: Map<string, unknown>
+    registeredTools: { name: string; execute: (args: unknown, exec: unknown) => Promise<unknown> }[]
   } = {
     created,
     services,
+    registeredTools,
     agents: {
       async resume(): Promise<never> { throw new Error('nothing to resume in tests') },
-      async create(options: { sessionId: string; meta?: { cwd?: string }; agentOptions?: HostAgentOptions; setup?: (ctx: { get(): undefined }) => Promise<void> }) {
-        if (options.setup !== undefined) await options.setup({ get: () => undefined, on: () => () => undefined })
+      async create(options: { sessionId: string; meta?: { cwd?: string }; agentOptions?: HostAgentOptions; setup?: (ctx: { get(name: string): unknown }) => Promise<void> }) {
+        if (options.setup !== undefined) await options.setup({ get: (name: string) => name === 'tools' ? toolsRegistry : undefined, on: () => () => undefined })
         const agent = new FakeAgent(options.sessionId)
         agent.cwd = options.meta?.cwd
         agent.preset = options.meta?.agentPreset
@@ -2339,5 +2352,445 @@ describe('bridge: R22 card-mode convergence and memory hygiene', () => {
       await dispose()
       rmSync(env.workspace, { recursive: true, force: true })
     }
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R25: send_file threads under the current topic anchor               */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R25 send_file threads under the current topic anchor', () => {
+  interface InboundSpec {
+    chatId: string
+    chatType: 'p2p' | 'group'
+    messageId: string
+    threadId?: string
+  }
+
+  function emitInbound(port: FakePort, content: string, spec: InboundSpec): void {
+    port.emit('message', {
+      messageId: spec.messageId,
+      chatId: spec.chatId,
+      chatType: spec.chatType,
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+      ...(spec.threadId === undefined ? {} : { threadId: spec.threadId }),
+    })
+  }
+
+  /** Invoke the bridge-registered send_file tool as the given agent. */
+  async function sendFileViaTool(
+    host: ReturnType<typeof fakeHost>,
+    agent: FakeAgent,
+    path: string,
+  ): Promise<unknown> {
+    const tool = host.registeredTools.find(t => t.name === 'send_file')
+    if (tool === undefined) throw new Error('send_file tool not registered')
+    return tool.execute({ path }, { agent: { session: { id: agent.id } }, signal: undefined })
+  }
+
+  function lastFileMessage(port: FakePort): SentMessage | undefined {
+    return port.sent.filter(m => 'file' in m.input).at(-1)
+  }
+
+  it('R25-a: a file sent in a p2p topic threads under the inbound message', async () => {
+    const { workspace, host, port } = makeEnv({ sessionScope: 'chat-thread' })
+    writeFileSync(join(workspace, 'a.txt'), 'hello')
+    emitInbound(port, 'send me the file', {
+      chatId: 'oc_dm1', chatType: 'p2p', messageId: 'm_dm_anchor', threadId: 'om_topic1',
+    })
+    await sleep(20)
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    expect(await sendFileViaTool(host, agent, 'a.txt')).toEqual({ sent: true })
+
+    // The file used to be the ONLY anchor-less output and fell at the chat
+    // root of the DM; it must thread under the topic's inbound message now.
+    const fileMessage = lastFileMessage(port)
+    expect(fileMessage).toBeDefined()
+    expect(fileMessage?.to).toBe('oc_dm1')
+    expect(fileMessage?.options).toEqual({ replyTo: 'm_dm_anchor', replyInThread: true })
+  })
+
+  it('R25-b: after group approval, the file lands in the same topic as its card', async () => {
+    const { workspace, host, port } = makeEnv({ sessionScope: 'chat-thread' })
+    writeFileSync(join(workspace, 'a.txt'), 'hello')
+    emitInbound(port, 'send the report', {
+      chatId: 'oc_chat1', chatType: 'group', messageId: 'm_grp_anchor', threadId: 'om_topic1',
+    })
+    await sleep(20)
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    const pending = sendFileViaTool(host, agent, 'a.txt')
+    await sleep(10)
+
+    const cardMessage = port.sent.find(m => 'card' in m.input)
+    expect(cardMessage).toBeDefined()
+    expect(cardMessage?.options).toEqual({ replyTo: 'm_grp_anchor', replyInThread: true })
+
+    // Approve through the card's approve button payload, as the chat driver.
+    const cardObject = cardMessage?.input.card as {
+      elements: { tag: string; actions?: { value: Record<string, unknown> }[] }[]
+    }
+    const row = cardObject.elements.find(el => el.tag === 'action')
+    const approve = row?.actions?.find(b => (b.value as { decision?: string }).decision === 'approve')
+    port.emit('cardAction', {
+      messageId: cardMessage?.messageId,
+      chatId: 'oc_chat1',
+      operator: { openId: 'ou_user', name: 'User' },
+      action: { value: approve?.value, tag: 'button' },
+    })
+
+    expect(await pending).toEqual({ sent: true })
+    const fileMessage = lastFileMessage(port)
+    expect(fileMessage).toBeDefined()
+    // Card and file share ONE anchor: both land inside the asking topic.
+    expect(fileMessage?.options).toEqual({ replyTo: 'm_grp_anchor', replyInThread: true })
+  })
+
+  it('R25-c: a stale session’s file send degrades to unthreaded delivery', async () => {
+    const { workspace, host, port } = makeEnv({ sessionScope: 'chat-thread', workspaceRoots: [tmpdir()] })
+    writeFileSync(join(workspace, 'a.txt'), 'hello')
+    emitInbound(port, 'task before switch', {
+      chatId: 'oc_dm1', chatType: 'p2p', messageId: 'm_old',
+    })
+    await sleep(20)
+    const oldAgent = host.created[0]
+    if (oldAgent === undefined) throw new Error('agent missing')
+
+    const sibling = mkdtempSync(join(tmpdir(), 'feishu4dsh-r25c-'))
+    try {
+      // /cd re-points the binding (same object) at another workspace; give the
+      // new cwd the same file so the stale agent's path still resolves.
+      writeFileSync(join(sibling, 'a.txt'), 'hello')
+      emitInbound(port, `/cd ${sibling}`, {
+        chatId: 'oc_dm1', chatType: 'p2p', messageId: 'm_cd_cmd',
+      })
+      await sleep(20)
+      expect(await sendFileViaTool(host, oldAgent, 'a.txt')).toEqual({ sent: true })
+
+      // R17 semantics: a stale session gets NO anchor — root delivery, no
+      // crash. (A group stale send parks on its anchor-less approval card by
+      // design; the p2p branch shows the degraded delivery immediately.)
+      const fileMessage = lastFileMessage(port)
+      expect(fileMessage).toBeDefined()
+      expect(fileMessage?.options).toBeUndefined()
+    } finally {
+      rmSync(sibling, { recursive: true, force: true })
+    }
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R26: /status statistics block                                       */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R26 /status statistics block', () => {
+  function emitInbound(port: FakePort, messageId: string, content: string): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+  }
+
+  function lastStatusText(port: FakePort): string {
+    return port.sent
+      .filter(m => typeof m.input.markdown === 'string')
+      .map(m => m.input.markdown as string)
+      .at(-1) ?? ''
+  }
+
+  it('R26-a: shows preset, effort, turns and token totals from the session log', async () => {
+    const { host, port } = makeEnv({ sessionScope: 'chat-thread' })
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    agent.sessionEvents = [
+      { type: 'turn/start', data: { turn: 1 } },
+      {
+        type: 'assistant/message',
+        data: { turn: 1, message: { content: [] }, usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 500 } },
+      },
+      { type: 'turn/start', data: { turn: 2 } },
+      { type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'usage', usage: { inputTokens: 12, outputTokens: 5, reasoningTokens: 7 } } } },
+      {
+        type: 'assistant/message',
+        data: { turn: 2, message: { content: [] }, usage: { inputTokens: 8, outputTokens: 2 } },
+      },
+    ]
+
+    await textMessage(port, '/status')
+    const statusText = lastStatusText(port)
+    expect(statusText).toContain('会话粒度：按话题（chat-thread）')
+    expect(statusText).toContain('模式：standard')
+    expect(statusText).toContain('推理强度：default')
+    expect(statusText).toContain('轮次：2 · 步：2')
+    expect(statusText).toContain('Token 累计：输入 1,020 · 输出 107 · 缓存读 500 · 推理 7')
+  })
+
+  it('R26-b: an old host without the session log degrades to “—”', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/status')
+    const statusText = lastStatusText(port)
+    expect(statusText).toContain('模式：standard')
+    expect(statusText).toContain('轮次：— · 步：—')
+    expect(statusText).toContain('Token 累计：—')
+    // The prospective-session case (no agent at all) degrades the same way.
+    expect(statusText).not.toContain('undefined')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R27: /mode — view / set the scope's agent preset                    */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R27 /mode preset command', () => {
+  function emitInbound(port: FakePort, messageId: string, content: string): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+  }
+
+  function lastText(port: FakePort): string {
+    return port.sent
+      .filter(m => typeof m.input.markdown === 'string')
+      .map(m => m.input.markdown as string)
+      .at(-1) ?? ''
+  }
+
+  it('R27-a: /mode minimal persists the override and the next session uses it', async () => {
+    const persisted: Record<string, string>[] = []
+    const { host, port } = makeEnv({}, {
+      onPresetChange: async (_scopeKey, preset) => { persisted.push({ preset }) },
+    })
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+    const first = host.created[0]
+    expect(first?.preset).toBe('standard')
+
+    await textMessage(port, '/mode minimal')
+    expect(lastText(port)).toContain('已切换到 minimal 模式')
+
+    // The replacement session is created lazily on the next message.
+    emitInbound(port, 'm2', 'hello again')
+    await sleep(20)
+    const second = host.created[1]
+    expect(second).toBeDefined()
+    expect(second?.preset).toBe('minimal')
+    // A preset change means a NEW session: generation advanced, id differs.
+    expect(second?.id).not.toBe(first?.id)
+    expect(persisted.some(p => p.preset === 'minimal')).toBe(true)
+  })
+
+  it('R27-b: /mode view shows current, next and deployment default', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/mode')
+    const text = lastText(port)
+    expect(text).toContain('当前会话模式：standard')
+    expect(text).toContain('下次新会话模式：standard')
+    expect(text).toContain('部署默认：standard')
+  })
+
+  it('R27-c: an unknown preset answers usage; /new semantics stay intact', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/mode turbo')
+    expect(lastText(port)).toContain('用法：/mode')
+
+    // /new still resets without touching the preset.
+    await textMessage(port, '/new')
+    emitInbound(port, 'm2', 'again')
+    await sleep(20)
+    expect(host.created[1]?.preset).toBe('standard')
+  })
+
+  it('R27-d: the approver list gates /mode like /model and /cd', async () => {
+    const { host, port } = makeEnv({ approvers: ['ou_admin'] })
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/mode minimal', { senderId: 'ou_user' })
+    expect(lastText(port)).toContain('无权切换会话模式')
+
+    await textMessage(port, '/mode minimal', { senderId: 'ou_admin' })
+    expect(lastText(port)).toContain('已切换到 minimal 模式')
+    emitInbound(port, 'm2', 'again')
+    await sleep(20)
+    expect(host.created[1]?.preset).toBe('minimal')
+  })
+
+  it('R27-e: /status reflects the scope preset after the switch', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/mode minimal')
+    emitInbound(port, 'm2', 'hello again')
+    await sleep(20)
+    await textMessage(port, '/status')
+    const statusText = port.sent
+      .filter(m => typeof m.input.markdown === 'string')
+      .map(m => m.input.markdown as string)
+      .at(-1) ?? ''
+    expect(statusText).toContain('模式：minimal')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R28: /model effort — per-model reasoning effort                     */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R28 /model effort per-model reasoning effort', () => {
+  function emitInbound(port: FakePort, messageId: string, content: string): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+  }
+
+  function texts(port: FakePort): string[] {
+    return port.sent
+      .filter(m => typeof m.input.markdown === 'string')
+      .map(m => m.input.markdown as string)
+  }
+
+  it('R28-a: /model effort high sets, persists and displays the model preference', async () => {
+    const persisted: Record<string, string>[] = []
+    const { host, port } = makeEnv({}, {
+      onModelEffortsChange: async efforts => { persisted.push(efforts) },
+    })
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p_default', model: 'm_default' }),
+    })
+    const installed = captureSelections(host)
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model effort high')
+    expect(texts(port).at(-1)).toContain('已将 m_default 的推理强度设为 high')
+    expect(persisted.some(p => p['p_default/m_default'] === 'high')).toBe(true)
+
+    // The composed selection carries the effort for the next request.
+    expect(installed[0]?.selection.current).toEqual({
+      provider: 'p_default', model: 'm_default', reasoningEffort: 'high',
+    })
+
+    // /model overview and /status both show the preference with its source.
+    await textMessage(port, '/model')
+    expect(texts(port).at(-1)).toContain('推理强度：high（模型偏好）')
+    await textMessage(port, '/status')
+    expect(texts(port).at(-1)).toContain('推理强度：high（模型偏好）')
+  })
+
+  it('R28-b: /model effort default clears the override; view shows the source', async () => {
+    const persisted: Record<string, string>[] = []
+    const { host, port } = makeEnv({}, {
+      onModelEffortsChange: async efforts => { persisted.push(efforts) },
+    })
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p1', model: 'm1' }),
+    })
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model effort low')
+    await textMessage(port, '/model effort')
+    expect(texts(port).at(-1)).toContain('推理强度：low（模型偏好）')
+
+    await textMessage(port, '/model effort default')
+    expect(texts(port).at(-1)).toContain('已恢复 m1 的推理强度为默认')
+    expect(persisted.at(-1)).toEqual({})
+
+    await textMessage(port, '/model effort')
+    expect(texts(port).at(-1)).toContain('推理强度：default')
+  })
+
+  it('R28-c: unknown levels answer usage; unknown model answers guidance', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model effort turbo')
+    expect(texts(port).at(-1)).toContain('用法：/model effort')
+
+    // `medium` is not in the owner enumeration (default/low/high/max) — same usage.
+    await textMessage(port, '/model effort medium')
+    expect(texts(port).at(-1)).toContain('用法：/model effort')
+
+    // No default model service and no logged header: no model is known.
+    await textMessage(port, '/model effort high')
+    expect(texts(port).at(-1)).toContain('尚未确定模型')
+  })
+
+  it('R28-d: the approver list gates /model effort; switching models follows', async () => {
+    const { host, port } = makeEnv({ approvers: ['ou_admin'] })
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p1', model: 'm1' }),
+    })
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model effort high', { senderId: 'ou_user' })
+    expect(texts(port).at(-1)).toContain('无权切换模型')
+
+    await textMessage(port, '/model effort high', { senderId: 'ou_admin' })
+    expect(texts(port).at(-1)).toContain('已将 m1 的推理强度设为 high')
+
+    // Switching to another model: the preference of THAT model applies
+    // (empty here), so the effort falls back to default, not to m1's high.
+    // (The switch itself is approver-gated too — send it as ou_admin.)
+    await textMessage(port, '/model p2/m2', { senderId: 'ou_admin' })
+    await textMessage(port, '/model effort')
+    expect(texts(port).at(-1)).toContain('推理强度：default')
   })
 })

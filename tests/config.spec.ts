@@ -21,6 +21,8 @@ describe('resolveConfig', () => {
     expect(resolved.locale).toBe('auto')
     expect(resolved.workspaceRoots).toEqual([])
     expect(resolved.chatWorkspaces).toEqual({})
+    expect(resolved.agentPreset).toBe('standard')
+    expect(resolved.chatPresets).toEqual({})
     expect(resolved.senderAllowlist).toEqual([])
     expect(resolved.groupAllowlist).toEqual([])
     expect(resolved.approvers).toEqual([])
@@ -44,6 +46,17 @@ describe('resolveConfig', () => {
     expect(resolved.requireMention).toBe(false)
     expect(resolved.locale).toBe('en-US')
     expect(resolved.senderAllowlist).toEqual(['ou_a', 'ou_b'])
+  })
+
+  it('keeps agentPreset and cleans the chatPresets map (R27)', () => {
+    const resolved = resolveConfig({
+      appId: 'cli_abc',
+      appSecret: 'secret',
+      agentPreset: 'minimal',
+      chatPresets: { 'oc_a@om_t': ' minimal ', 'oc_b': '' },
+    })
+    expect(resolved.agentPreset).toBe('minimal')
+    expect(resolved.chatPresets).toEqual({ 'oc_a@om_t': 'minimal' })
   })
 
   it('clamps numbers to sane lower bounds', () => {

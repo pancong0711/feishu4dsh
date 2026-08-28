@@ -42,8 +42,20 @@ export interface Strings {
   statusTitle: string
   statusSession: (sessionId: string) => string
   statusScope: (scope: string) => string
+  /** Bilingual scope label: Chinese name + English in parentheses (R26). */
+  scopeLabel: (scope: string) => string
   statusWorkspace: (name: string, path: string) => string
   statusModel: (model: string) => string
+  /* /status statistics block (R26): preset / effort / turns / token totals. */
+  statusPreset: (preset: string) => string
+  statusEffort: (effort: string, source: string) => string
+  statusTurns: (turns: string, steps: string) => string
+  statusTokens: (input: string, output: string, cacheRead: string | undefined, cacheWrite: string | undefined, reasoning: string | undefined) => string
+  statusTokensUnavailable: string
+  /** Source tag when the shown effort was measured from the last request. */
+  effortSourceMeasured: string
+  /** The “—” placeholder for unavailable statistics. */
+  statusStatsUnavailable: string
   /* Model display & switching (/model, R7/R8). */
   modelTitle: string
   /** Marker appended when the shown model comes from this session; '' = none. */
@@ -56,6 +68,23 @@ export interface Strings {
   modelUnknown: string
   modelNoPermission: string
   modelUsage: string
+  /* Reasoning effort (/model effort, R28). */
+  modelEffortLine: (effort: string, source: string) => string
+  effortSourcePreferred: string
+  effortUnknown: string
+  effortUsage: string
+  effortSet: (level: string, model: string) => string
+  effortCleared: (model: string) => string
+  /* Session mode (/mode, R27): view / set the scope's agent preset. */
+  modeTitle: string
+  modeCurrent: (preset: string) => string
+  modeNotStarted: string
+  modeNext: (preset: string) => string
+  modeDefaultLine: (preset: string) => string
+  modeSwitched: (preset: string) => string
+  modeAlready: (preset: string) => string
+  modeUsage: string
+  modeNoPermission: string
   /* Workspace listing & switching (/ws, /cd). */
   wsTitle: string
   wsEmpty: string
@@ -117,19 +146,35 @@ const zhCN: Strings = {
   channelCommands: [
     '/help — 查看命令列表',
     '/new — 开启新会话（清空上下文）',
+    '/mode — 查看/设置会话模式（standard/minimal，设置后开启新会话）',
     '/stop — 停止当前任务',
-    '/status — 查看会话 / 当前工作区 / 模型',
+    '/status — 会话 / 工作区 / 模式 / 模型 / 推理强度 / 轮次与 Token 累计',
     '/ws — 列出可用工作区',
     '/ws add <路径> — 添加一个可用工作区（手机上添加）',
     '/ws remove <名称或路径> — 移除一个已添加的工作区',
     '/cd <名称或路径> — 切换当前会话的工作区',
-    '/model <provider>/<model> — 切换当前会话模型',
+    '/model <provider>/<model> — 切换当前会话模型（/model effort 设置推理强度）',
   ],
   statusTitle: '会话状态',
   statusSession: id => `会话：${id}`,
   statusScope: scope => `会话粒度：${scope}`,
+  scopeLabel: scope => scope === 'chat'
+    ? '整个聊天（chat）'
+    : scope === 'chat-thread'
+      ? '按话题（chat-thread）'
+      : scope === 'chat-sender'
+        ? '按发送人（chat-sender）'
+        : scope,
   statusWorkspace: (name, path) => `工作区：${name}\n  路径：${path}`,
   statusModel: model => `模型：${model}`,
+  statusPreset: preset => `模式：${preset}`,
+  statusEffort: (effort, source) => `推理强度：${effort}${source}`,
+  statusTurns: (turns, steps) => `轮次：${turns} · 步：${steps}`,
+  statusTokens: (input, output, cacheRead, cacheWrite, reasoning) =>
+    `Token 累计：输入 ${input} · 输出 ${output}${cacheRead === undefined ? '' : ` · 缓存读 ${cacheRead}`}${cacheWrite === undefined ? '' : ` · 缓存写 ${cacheWrite}`}${reasoning === undefined ? '' : ` · 推理 ${reasoning}`}`,
+  statusTokensUnavailable: 'Token 累计：—',
+  effortSourceMeasured: '（会话实测）',
+  statusStatsUnavailable: '—',
   modelTitle: '模型',
   modelSourceSession: '',
   modelDefaultNotStarted: '（默认，尚未开始对话）',
@@ -140,6 +185,21 @@ const zhCN: Strings = {
   modelUnknown: '暂无已知模型（部署未声明默认模型，会话也尚未开始对话）。',
   modelNoPermission: '当前发送者无权切换模型（需为配置的审批人/授权用户）。',
   modelUsage: '用法：/model（查看当前模型） · /model <provider>/<model>（切换会话模型） · /model default（写入部署默认）',
+  modelEffortLine: (effort, source) => `推理强度：${effort}${source}`,
+  effortSourcePreferred: '（模型偏好）',
+  effortUnknown: '尚未确定模型：先发起一轮对话，或用 /model <provider>/<model> 指定。',
+  effortUsage: '用法：/model effort（查看） · /model effort <default|low|high|max>（设置当前模型的推理强度，下一轮生效并全局记住） · /model effort default（恢复默认）',
+  effortSet: (level, model) => `已将 ${model} 的推理强度设为 ${level}，下一轮生效（该模型的偏好已全局记住）。`,
+  effortCleared: model => `已恢复 ${model} 的推理强度为默认（请求不再携带 reasoning_effort 参数）。`,
+  modeTitle: '会话模式',
+  modeCurrent: preset => `当前会话模式：${preset}`,
+  modeNotStarted: '当前会话尚未开启（下次新会话将使用下方模式）',
+  modeNext: preset => `下次新会话模式：${preset}`,
+  modeDefaultLine: preset => `部署默认：${preset}`,
+  modeSwitched: preset => `已切换到 ${preset} 模式，并已开启新会话`,
+  modeAlready: preset => `已是 ${preset} 模式；如需重开会话请用 /new`,
+  modeUsage: '用法：/mode 查看 · /mode <standard|minimal> 设置（设置后开启新会话）',
+  modeNoPermission: '无权切换会话模式',
   wsTitle: '可用工作区',
   wsEmpty: '当前没有可用的工作区。',
   wsCurrentTag: '当前',
@@ -200,7 +260,7 @@ const enUS: Strings = {
     '/help — list commands',
     '/new — start a fresh session (clears context)',
     '/stop — stop the current task',
-    '/status — show session / current workspace / model',
+    '/status — session / workspace / mode / model / reasoning effort / token totals',
     '/ws — list available workspaces',
     '/ws add <path> — add a workspace (from your phone)',
     '/ws remove <name or path> — remove an added workspace',
@@ -210,8 +270,32 @@ const enUS: Strings = {
   statusTitle: 'Session status',
   statusSession: id => `Session: ${id}`,
   statusScope: scope => `Scope: ${scope}`,
+  scopeLabel: scope => scope === 'chat'
+    ? 'whole chat (chat)'
+    : scope === 'chat-thread'
+      ? 'per topic (chat-thread)'
+      : scope === 'chat-sender'
+        ? 'per sender (chat-sender)'
+        : scope,
   statusWorkspace: (name, path) => `Workspace: ${name}\n  Path: ${path}`,
   statusModel: model => `Model: ${model}`,
+  statusPreset: preset => `Mode: ${preset}`,
+  statusEffort: (effort, source) => `Reasoning effort: ${effort}${source}`,
+  statusTurns: (turns, steps) => `Turns: ${turns} · Steps: ${steps}`,
+  statusTokens: (input, output, cacheRead, cacheWrite, reasoning) =>
+    `Tokens (session): ${input} in · ${output} out${cacheRead === undefined ? '' : ` · cache read ${cacheRead}`}${cacheWrite === undefined ? '' : ` · cache write ${cacheWrite}`}${reasoning === undefined ? '' : ` · reasoning ${reasoning}`}`,
+  statusTokensUnavailable: 'Tokens (session): —',
+  effortSourceMeasured: ' (last request)',
+  statusStatsUnavailable: '—',
+  modeTitle: 'Session mode',
+  modeCurrent: preset => `Current session mode: ${preset}`,
+  modeNotStarted: 'No session yet (the next new session will use the mode below)',
+  modeNext: preset => `Next new session mode: ${preset}`,
+  modeDefaultLine: preset => `Deployment default: ${preset}`,
+  modeSwitched: preset => `Switched to ${preset} mode and opened a new session`,
+  modeAlready: preset => `Already in ${preset} mode; use /new to re-open the session`,
+  modeUsage: 'Usage: /mode to view · /mode <standard|minimal> to set (opens a new session)',
+  modeNoPermission: 'Not allowed to switch the session mode',
   modelTitle: 'Model',
   modelSourceSession: '',
   modelDefaultNotStarted: ' (default; no turn yet)',
@@ -222,6 +306,12 @@ const enUS: Strings = {
   modelUnknown: 'No model is known yet (the deployment advertises no default and no turn has run).',
   modelNoPermission: 'This sender may not switch models (must be a configured approver / authorized user).',
   modelUsage: 'Usage: /model (show current) · /model <provider>/<model> (switch this session) · /model default (save as deployment default)',
+  modelEffortLine: (effort, source) => `Reasoning effort: ${effort}${source}`,
+  effortSourcePreferred: ' (model preference)',
+  effortUnknown: 'No model is known yet: run a turn first, or pin one with /model <provider>/<model>.',
+  effortUsage: 'Usage: /model effort (view) · /model effort <default|low|high|max> (set for the current model; takes effect next turn and is remembered globally) · /model effort default (reset)',
+  effortSet: (level, model) => `Set ${model} reasoning effort to ${level}; takes effect next turn and is remembered for this model.`,
+  effortCleared: model => `Reset ${model} reasoning effort to default (requests carry no reasoning_effort).`,
   wsTitle: 'Workspaces',
   wsEmpty: 'No workspaces available.',
   wsCurrentTag: 'current',

@@ -93,6 +93,18 @@ export function apply(ctx: Context, config: Config): void {
         : async (workspaces) => {
             await settingsScope.update({ userWorkspaces: workspaces })
           },
+      // Persist one scope's /mode preset override so it survives restarts (R27).
+      onPresetChange: settingsScope === undefined
+        ? undefined
+        : async (scopeKey, preset) => {
+            await settingsScope.update({ chatPresets: { [scopeKey]: preset } })
+          },
+      // Persist the per-model reasoning-effort preference table (R28).
+      onModelEffortsChange: settingsScope === undefined
+        ? undefined
+        : async (efforts) => {
+            await settingsScope.update({ modelEfforts: efforts })
+          },
     }
     const disposeBridge = installBridge(host, resolved, port, authorization, internals.notify, hooks)
 

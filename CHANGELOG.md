@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0 (2026-08-27)
+
+**R25–R28：话题锚修复 · /status 增强 · /mode 模式设置 · /model effort 推理强度**
+
+- **R25（修复）**：`send_file` 的文件消息现跟随当前话题锚——私聊话题/群聊话题内不再落聊天根；群聊审批卡与文件共用同一锚；锚缺失降级落根不报错。（此前文件是全插件唯一不带锚的输出路径）
+- **R26**：`/status` 新增「模式 / 推理强度 / 轮次·步 / Token 累计」四行，粒度行双语（如「按话题（chat-thread）」）；统计直接读 dsh 会话日志（`session.events`），重启恢复不归零；旧宿主优雅降级「—」；新模块 `session-stats.ts`（与每轮摘要共用同一累加函数，统一口径）。耗时类指标（LLM/工具/TTFT/tok-s）待核实 dsh 日志时间戳后二期跟进。
+- **R27**：新增 `/mode`——查看/设置会话模式（standard/minimal，`AGENT_PRESETS` 清单可扩展）；按 scope 持久化（`chatPresets`），部署默认 `agentPreset: standard`；**设置即开启新会话**（`resume()` 不能换预设）；与 `/new` 共用重开逻辑，模型 pin 与工作区保留。
+- **R28**：`/model effort`——按模型设置推理强度（`default/low/high/max`；`default` = 请求不携带 `reasoning_effort`，即模型内置行为）；偏好按 `provider/model` 全局持久化（`modelEfforts`），调整即更新该模型默认；`/model` 总览与 `/status` 显示生效强度及来源（模型偏好 / 会话实测 / 默认）。
+- 命令面：`/help` 新增 `/mode`；`/model`、`/status` 描述更新。新增配置：`agentPreset` / `chatPresets` / `modelEfforts`（后两者为运行时状态，勿手改）。
+- 测试：190/190（R25 回归 3 + R26 6 + R27 6 + R28 9）。
+
 ## 0.4.4 (2026-08-27)
 
 **R24：用户消息资源改用 message-scoped API 下载**

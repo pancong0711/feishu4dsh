@@ -18,6 +18,22 @@ export interface MutableSelection {
   assembled: unknown
 }
 
+/**
+ * Reasoning-effort levels `/model effort` accepts (R28). `default` is the
+ * RESET value, not a wire value: it means the request carries NO explicit
+ * `reasoning_effort` and the model's built-in behaviour applies. Align with
+ * dsh when its enumeration grows (owner enumeration: default/low/high/max).
+ */
+export const EFFORT_LEVELS = ['default', 'low', 'high', 'max'] as const
+export type EffortLevel = (typeof EFFORT_LEVELS)[number]
+
+/**
+ * Resolve the reasoning effort a composed selection should carry: reads the
+ * per-model preference table and returns undefined for "no preference" —
+ * which keeps the base selection (and thus the host default) intact.
+ */
+export type EffortResolver = (selection: HostModelSelection) => string | undefined
+
 /** Narrow a request-header payload into a concrete selection, if usable. */
 function headerToSelection(config: HostRequestHeaderConfig | undefined): HostModelSelection | undefined {
   const provider = config?.provider
@@ -79,10 +95,19 @@ export type SelectionFallback = () => HostModelSelection | undefined
 export class AgentModelSelection implements MutableSelection {
   private picked: HostModelSelection | undefined
 
-  constructor(private readonly fallback: SelectionFallback) {}
+  constructor(
+    private readonly fallback: SelectionFallback,
+    private readonly effortOf?: EffortResolver,
+  ) {}
 
   get current(): HostModelSelection | undefined {
-    return this.picked ?? this.fallback()
+    const base = this.picked ?? this.fallback()
+    if (base === undefined || base.reasoningEffort !== undefined || this.effortOf === undefined) return base
+    // R28: compose the per-model preference WITHOUT overwriting an explicit
+    // effort the base already carries (log or default). The channel keeps the
+    // preference table, so both installer paths see the same composition.
+    const effort = this.effortOf(base)
+    return effort === undefined ? base : { ...base, reasoningEffort: effort }
   }
 
   set current(next: HostModelSelection | undefined) {
@@ -102,8 +127,8 @@ export class AgentModelSelection implements MutableSelection {
   assembled: unknown = undefined
 }
 
-export function createAgentModelSelection(fallback: SelectionFallback): AgentModelSelection {
-  return new AgentModelSelection(fallback)
+export function createAgentModelSelection(fallback: SelectionFallback, effortOf?: EffortResolver): AgentModelSelection {
+  return new AgentModelSelection(fallback, effortOf)
 }
 
 

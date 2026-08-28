@@ -26,12 +26,16 @@
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `sessionScope` | `chat` | `chat`（整个聊天一个会话）/ `chat-thread`（按话题）/ `chat-sender`（按发送人） |
+| `agentPreset` | `standard` | 新会话默认模式（R27）；会话内用 `/mode` 按 scope 覆盖 |
+| `chatPresets` | `{}` | 运行时状态（`/mode` 写入）：scopeKey → 模式覆盖，勿手改 |
 | `requireMention` | `true` | 群聊是否需要 @ 机器人 |
 | `output` | `stream` | `stream` 流式逐块输出 / `card` 单卡片聚合 |
 | `showProcess` | `true` | 是否展示每轮聚合的工具调用与 Token 用量摘要；例如“调用工具 bash × 3 次 · Token：输入 1,234 · 输出 56 · 缓存读 890”，并跟随入站消息的 `replyTo` 显示在话题内 |
 | `locale` | `auto` | 渠道文案语言；`auto` 无提示时默认 zh-CN |
 
 > **话题/线程说明**：飞书话题 = thread。`sessionScope: chat` 时所有话题共享一个 Agent 会话；`chat-thread` 时每个话题独立会话。`/status` 显示的是配置原文（如 `chat` / `chat-thread`），不是自动判断的“话题”。
+
+> **模式与推理强度**（R27/R28）：`/mode` 查看/设置会话模式（standard/minimal，设置即开启新会话——`resume()` 不能换预设）；`/model effort` 按模型设置推理强度（`default/low/high/max`，`default` = 请求不携带 `reasoning_effort`；调整即全局记住该模型的偏好）。两者 ACL 与 `/model` 一致。
 
 ## 工作区
 

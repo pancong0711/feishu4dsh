@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { HostModelSelection, HostRequestHeaderConfig, HostSession } from '../src/host.js'
 import {
   createAgentModelSelection,
+  EFFORT_LEVELS,
   defaultSelectionOf,
   displayedModelOf,
   formatSelection,
@@ -13,6 +14,39 @@ import {
 function sessionWith(reader: () => { config?: HostRequestHeaderConfig } | undefined): Pick<HostSession, 'requestHeader'> {
   return { requestHeader: reader }
 }
+
+describe('model-selection: effort composition (R28)', () => {
+  it('composes the per-model effort preference into the lazy fallback', () => {
+    const selection = createAgentModelSelection(
+      () => ({ provider: 'p1', model: 'm1' }),
+      sel => (sel.model === 'm1' ? 'high' : undefined),
+    )
+    expect(selection.current).toEqual({ provider: 'p1', model: 'm1', reasoningEffort: 'high' })
+  })
+
+  it('never overwrites an explicit effort the base already carries', () => {
+    const selection = createAgentModelSelection(
+      () => ({ provider: 'p1', model: 'm1', reasoningEffort: 'low' }),
+      () => 'high',
+    )
+    expect(selection.current).toEqual({ provider: 'p1', model: 'm1', reasoningEffort: 'low' })
+  })
+
+  it('a pinned model still receives the composed effort', () => {
+    const selection = createAgentModelSelection(() => ({ provider: 'p1', model: 'm1' }), () => 'max')
+    selection.current = { provider: 'p2', model: 'm2' }
+    expect(selection.current).toEqual({ provider: 'p2', model: 'm2', reasoningEffort: 'max' })
+  })
+
+  it('an undefined resolver result keeps the base selection untouched', () => {
+    const selection = createAgentModelSelection(() => ({ provider: 'p1', model: 'm1' }), () => undefined)
+    expect(selection.current).toEqual({ provider: 'p1', model: 'm1' })
+  })
+
+  it('EFFORT_LEVELS stays aligned with the owner enumeration (D4/D8)', () => {
+    expect(EFFORT_LEVELS).toEqual(['default', 'low', 'high', 'max'])
+  })
+})
 
 describe('model-selection: parseModelTarget', () => {
   it('parses provider/model on the first slash and trims whitespace', () => {

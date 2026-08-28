@@ -6,6 +6,16 @@
 
 import Schema from '@deepseek-ai/schemastery'
 
+/**
+ * Agent presets (dsh `agentPreset` values) this channel can set via `/mode`
+ * (R27). Single source of truth: the config schema's union and the command's
+ * validation both read this list — extend here when dsh ships more presets.
+ * User-defined presets are a future work item (D2): the structure, not the
+ * surface, is what ships now.
+ */
+export const AGENT_PRESETS = ['standard', 'minimal'] as const
+export type AgentPreset = (typeof AGENT_PRESETS)[number]
+
 /** Resolved plugin configuration, one instance per mounted row. */
 export interface Config {
   /** Feishu/Lark app id (`cli_...`). */
@@ -32,6 +42,12 @@ export interface Config {
   userWorkspaces?: string[]
   /** Session granularity. */
   sessionScope?: 'chat' | 'chat-thread' | 'chat-sender'
+  /** Deployment-default agentPreset for NEW sessions (R27). */
+  agentPreset?: string
+  /** Runtime map of scopeKey → preset override; managed by `/mode`, not hand-edited. */
+  chatPresets?: Record<string, string>
+  /** Runtime map of `provider/model` → reasoning-effort preference; managed by `/model effort` (R28). */
+  modelEfforts?: Record<string, string>
   /** Group chats need an @ mention to trigger the bot. */
   requireMention?: boolean
   /** How one turn renders in the chat. */
@@ -81,6 +97,9 @@ export const Config = Schema.object({
   // Hidden runtime state managed by `/ws add` / `/ws remove`.
   userWorkspaces: Schema.array(String).default([]).hidden(),
   sessionScope: Schema.union(['chat', 'chat-thread', 'chat-sender']).default('chat'),
+  agentPreset: Schema.union([...AGENT_PRESETS]).default('standard'),
+  chatPresets: Schema.any().default({}).hidden(),
+  modelEfforts: Schema.any().default({}).hidden(),
   requireMention: Schema.boolean().default(true),
   output: Schema.union(['stream', 'card']).default('stream'),
   showProcess: Schema.boolean().default(true),
@@ -128,7 +147,7 @@ export function resolveConfig(config: Config): Required<Config> {
   // binding is built (`bridge.ensureBinding`) and falls back to the default
   // workspace for invalid ones, so a bad saved value can never desync
   // `/status` from the Agent's real sandbox directory.
-  const cleanChatWorkspaces = (value: Record<string, string> | undefined): Record<string, string> => {
+  const cleanStringMap = (value: Record<string, string> | undefined): Record<string, string> => {
     const out: Record<string, string> = {}
     for (const [key, path] of Object.entries(value ?? {})) {
       const trimmedPath = String(path).trim()
@@ -146,7 +165,10 @@ export function resolveConfig(config: Config): Required<Config> {
     webhookPort: numberAtLeast(config.webhookPort, 1, 3081),
     workspace: config.workspace ?? process.cwd(),
     workspaceRoots: cleanList(config.workspaceRoots),
-    chatWorkspaces: cleanChatWorkspaces(config.chatWorkspaces),
+    chatWorkspaces: cleanStringMap(config.chatWorkspaces),
+    chatPresets: cleanStringMap(config.chatPresets),
+    modelEfforts: cleanStringMap(config.modelEfforts),
+    agentPreset: config.agentPreset ?? 'standard',
     userWorkspaces: cleanList(config.userWorkspaces),
     sessionScope: config.sessionScope ?? 'chat',
     requireMention: config.requireMention ?? true,

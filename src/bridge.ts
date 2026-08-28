@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import type { ResolvedConfig } from './config.js'
+import { AGENT_PRESETS, type ResolvedConfig } from './config.js'
 import type { Authorization } from './acl.js'
 import { mayApprove } from './acl.js'
 import type { ChannelPort, CardActionEvent, NormalizedMessage, RejectEvent } from './adapter.js'
@@ -19,8 +19,9 @@ import { buildCatalog, listWorkspaces, resolveCdTarget, registeredPathsOf, resol
 import { approvalCard, decodeActionValue, settledApprovalCard, type CardActionPayload } from './cards.js'
 import type { HostAgentHandle, HostAgentOptions, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostModelSelection, HostSession, HostSessionEvent, HostTools, HostWorkspaceRegistry, TokenUsageData } from './host.js'
 import { assistantText, isAssistantChunkEvent, isAssistantMessageEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
-import { installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedSelection, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
+import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedSelection, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
 import { readOutboundFile, sendFileTool, storeInboundFile, type OutboundFile, type SendFilePorts } from './files.js'
+import { accumulateSessionUsage, emptySessionUsage, hasSessionUsage, statsOfEvents, type SessionUsage } from './session-stats.js'
 import { resolveLocale, strings, type Locale, type Strings } from './strings.js'
 import { formatBytes, formatNumber, shortHash } from './util.js'
 
@@ -90,14 +91,12 @@ interface ReplyStream {
   hasPayload(): boolean
 }
 
-/** Accumulated token usage for one turn. */
-interface TurnUsage {
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  cacheWriteTokens: number
-  reasoningTokens: number
-}
+/**
+ * Accumulated token usage for one turn — the same shape and accumulator as
+ * the session totals in `session-stats.ts`, so `/status` and the per-turn
+ * summary can never drift apart (R26 D6, one shared口径).
+ */
+type TurnUsage = SessionUsage
 
 /**
  * One remembered reply anchor: the Feishu message a turn's eventual output
@@ -107,32 +106,6 @@ interface TurnUsage {
 interface ReplyTarget {
   readonly scopeKey: string
   readonly messageId: string
-}
-
-function emptyTurnUsage(): TurnUsage {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    reasoningTokens: 0,
-  }
-}
-
-function accumulateUsage(target: TurnUsage, usage: TokenUsageData): void {
-  target.inputTokens += usage.inputTokens
-  target.outputTokens += usage.outputTokens
-  target.cacheReadTokens += usage.cacheReadTokens ?? 0
-  target.cacheWriteTokens += usage.cacheWriteTokens ?? 0
-  target.reasoningTokens += usage.reasoningTokens ?? 0
-}
-
-function hasUsage(usage: TurnUsage): boolean {
-  return usage.inputTokens > 0
-    || usage.outputTokens > 0
-    || usage.cacheReadTokens > 0
-    || usage.cacheWriteTokens > 0
-    || usage.reasoningTokens > 0
 }
 
 /** One pending approval-question card. */
@@ -157,6 +130,10 @@ export interface BridgeHooks {
   onWorkspaceChange?: (scopeKey: string, workspacePath: string) => void | Promise<void>
   /** Persist the list of user-added workspaces (from `/ws add` / `/ws remove`). */
   onUserWorkspacesChange?: (workspaces: string[]) => void | Promise<void>
+  /** Persist one scope's `/mode` preset override (R27). */
+  onPresetChange?: (scopeKey: string, preset: string) => void | Promise<void>
+  /** Persist the per-model reasoning-effort preference table (R28). */
+  onModelEffortsChange?: (efforts: Record<string, string>) => void | Promise<void>
 }
 
 /**
@@ -252,6 +229,8 @@ export function installBridge(
   }
   const state = createBridgeState()
   for (const workspace of config.userWorkspaces) state.userWorkspaces.add(workspace)
+  Object.assign(state.chatPresets, config.chatPresets)
+  Object.assign(state.modelEfforts, config.modelEfforts)
   wirePortEvents(env, state)
   wireSessionEvents(env, state)
   wireApprovals(env, state)
@@ -286,6 +265,12 @@ export interface BridgeState {
   readonly renderQueues: Map<string, Promise<void>>
   /** Workspace paths added at runtime via `/ws add`. */
   readonly userWorkspaces: Set<string>
+  /** session id -> the agentPreset the agent was actually CREATED with (R26). */
+  readonly sessionPresets: Map<string, string>
+  /** scope key -> `/mode` preset override (seeded from config, mutated live) (R27). */
+  readonly chatPresets: Record<string, string>
+  /** `provider/model` -> reasoning-effort preference (seeded from config) (R28). */
+  readonly modelEfforts: Record<string, string>
   /** Cached workspace catalog; rebuilt by {@link workspaceCatalogFor}. */
   workspaceCatalog: WorkspaceCatalog | undefined
   locale: Locale
@@ -305,6 +290,9 @@ function createBridgeState(): BridgeState {
     replyTargets: new Map(),
     renderQueues: new Map(),
     userWorkspaces: new Set(),
+    sessionPresets: new Map(),
+    chatPresets: {},
+    modelEfforts: {},
     workspaceCatalog: undefined,
     locale: 'zh-CN',
     copy: strings('zh-CN'),
@@ -946,6 +934,30 @@ async function ensureAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
   }
 }
 
+/**
+ * The agentPreset this channel creates sessions with (R18: the deployment
+ * default `minimal` cannot carry the fs/subagent collaboration flow). R27
+ * turns this into a configurable chain (scope override -> deployment default).
+ */
+const CHANNEL_DEFAULT_PRESET = 'standard'
+
+/**
+ * Validate a configured preset value against the known list, falling back to
+ * the given default when it is missing or unknown (hand-edited settings must
+ * not poison `agents.create`).
+ */
+function resolvePreset(raw: string | undefined, fallback: string): string {
+  const value = raw?.trim()
+  return value !== undefined && value !== '' && (AGENT_PRESETS as readonly string[]).includes(value)
+    ? value
+    : fallback
+}
+
+/** The preset the NEXT new session of this scope will be created with (R27). */
+function nextPresetOf(env: BridgeEnv, state: BridgeState, binding: ChatBinding): string {
+  return resolvePreset(state.chatPresets[binding.scopeKey], resolvePreset(env.config.agentPreset, CHANNEL_DEFAULT_PRESET))
+}
+
 /** Create (or resume) the one agent for an agent key; see {@link ensureAgent}. */
 async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBinding, agentKey: string): Promise<HostAgentHandle> {
   // Wait for the loader so a first message never sees a half-grown tree.
@@ -960,6 +972,9 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
   // New agents need an explicit provider/model; without one the agent/request
   // waterfall has nothing to seed and turns fail with "has no provider/model".
   const agentOptions = defaultModelOf(env)
+  // R27: preset chain — scope override (`/mode`) first, deployment default
+  // second, channel fallback last.
+  const preset = nextPresetOf(env, state, binding)
 
   let handle: HostAgentHandle
   try {
@@ -974,12 +989,16 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
         // a bash terminal and cannot carry the requirement-doc → subagent
         // collaboration flow. resume() cannot change presets, so existing
         // sessions keep theirs until /new starts a fresh one. (R18)
-        agentPreset: 'standard',
+        agentPreset: preset,
       },
       agentOptions,
       setup,
     })
   }
+  // R26: remember what THIS session was created with so /status can show the
+  // real mode; resumed sessions stay unrecorded (the host does not report the
+  // preset of a persisted session) and fall back to the channel default.
+  state.sessionPresets.set(sessionId, preset)
   state.ledger.set(agentKey, { handle, generation, sessionId })
   state.sessionScopes.set(sessionId, binding.scopeKey)
   return handle
@@ -1038,7 +1057,9 @@ function ensureSelection(env: BridgeEnv, state: BridgeState, binding: ChatBindin
   if (existing !== undefined) return existing
   const fallback = (): HostModelSelection | undefined =>
     readLoggedSelection(state.ledger.get(agentKey)?.handle.agent.session) ?? advertisedDefaultSelection(env)
-  const selection = createAgentModelSelection(fallback)
+  // R28: the selection composes the per-model effort preference, so BOTH
+  // installer paths (host service and local waterfall) route it.
+  const selection = createAgentModelSelection(fallback, sel => state.modelEfforts[`${sel.provider}/${sel.model}`])
   state.selections.set(agentKey, selection)
   return selection
 }
@@ -1092,7 +1113,16 @@ async function deliverFile(
 ): Promise<string | undefined> {
   const isGroup = binding.chatType === 'group'
 
-  if (!isGroup) return sendFileBytes(env, binding.chatId, file)
+  // R25: file messages thread under the conversation's current anchor exactly
+  // like every other output path (text / stream / approval cards). ONE anchor
+  // is taken here and reused for both the group's approval card and the
+  // delivered file, so card and file land in the same topic — the file used
+  // to be the only anchor-less output and fell at the chat root (p2p topic or
+  // group alike).
+  const anchor = replyAnchorFor(state, binding, sessionId)
+  const options = anchor === undefined ? undefined : { replyTo: anchor, replyInThread: true }
+
+  if (!isGroup) return sendFileBytes(env, binding.chatId, file, options)
 
   const token = randomUUID()
   const payload = { kind: 'file-send' as const, token, decision: 'deny' as const, chatId: binding.chatId }
@@ -1103,21 +1133,26 @@ async function deliverFile(
     denyLabel: state.copy.denyButton,
     payload,
   })
-  const anchor = replyAnchorFor(state, binding, sessionId)
-  const options = anchor === undefined ? undefined : { replyTo: anchor, replyInThread: true }
   const sent = await env.port.send(binding.chatId, { card: cardObject }, options).catch(() => undefined)
   if (sent === undefined) return 'send_file could not ask the group for approval'
 
   const decision = await waitForCardDecision(env, state, {
     token, kind: 'file-send', chatId: binding.chatId, sessionId, messageId: sent.messageId, file,
   }, signal)
-  return decision === 'approve' ? sendFileBytes(env, binding.chatId, file) : 'The group declined to send that file.'
+  return decision === 'approve'
+    ? sendFileBytes(env, binding.chatId, file, options)
+    : 'The group declined to send that file.'
 }
 
-async function sendFileBytes(env: BridgeEnv, chatId: string, file: OutboundFile): Promise<string | undefined> {
+async function sendFileBytes(
+  env: BridgeEnv,
+  chatId: string,
+  file: OutboundFile,
+  options?: { replyTo?: string; replyInThread?: boolean },
+): Promise<string | undefined> {
   try {
     const data = await readOutboundFile(file)
-    await env.port.send(chatId, { file: { source: data, fileName: file.fileName } })
+    await env.port.send(chatId, { file: { source: data, fileName: file.fileName } }, options)
     return undefined
   } catch (error) {
     return `send_file failed to deliver: ${describeError(error)}`
@@ -1310,7 +1345,7 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
     }
     binding.turn = event.data.turn
     binding.toolCallCounts = new Map()
-    binding.turnUsage = emptyTurnUsage()
+    binding.turnUsage = emptySessionUsage()
     binding.turnHasOutput = false
     return
   }
@@ -1330,8 +1365,8 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
   if (isAssistantChunkEvent(event)) {
     const chunk = event.data.chunk
     if (chunk.type === 'usage' && chunk.usage !== undefined) {
-      if (binding.turnUsage === undefined) binding.turnUsage = emptyTurnUsage()
-      accumulateUsage(binding.turnUsage, chunk.usage)
+      if (binding.turnUsage === undefined) binding.turnUsage = emptySessionUsage()
+      accumulateSessionUsage(binding.turnUsage, chunk.usage)
       return
     }
     if (chunk.type !== 'text-delta' || chunk.text === undefined || chunk.text === '') return
@@ -1344,8 +1379,8 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
 
   if (isAssistantMessageEvent(event)) {
     if (event.data.usage !== undefined) {
-      if (binding.turnUsage === undefined) binding.turnUsage = emptyTurnUsage()
-      accumulateUsage(binding.turnUsage, event.data.usage)
+      if (binding.turnUsage === undefined) binding.turnUsage = emptySessionUsage()
+      accumulateSessionUsage(binding.turnUsage, event.data.usage)
     }
     // Non-streaming routes commit one assembled message; when no chunk
     // streamed anything for this binding's current turn, this IS the answer.
@@ -1389,7 +1424,7 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
       const summary = state.copy.toolCallSummary(parts)
       if (summary !== '') summaryLines.push(`> ${summary}`)
     }
-    if (usage !== undefined && hasUsage(usage)) {
+    if (usage !== undefined && hasSessionUsage(usage)) {
       const cacheRead = usage.cacheReadTokens > 0 ? formatNumber(usage.cacheReadTokens) : undefined
       const cacheWrite = usage.cacheWriteTokens > 0 ? formatNumber(usage.cacheWriteTokens) : undefined
       const reasoning = usage.reasoningTokens > 0 ? formatNumber(usage.reasoningTokens) : undefined
@@ -1521,29 +1556,12 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
       return
     }
     case '/new': {
-      const agentKey = currentAgentKey(binding)
-      const entry = state.ledger.get(agentKey)
-      if (entry !== undefined) {
-        entry.handle.agent.cancel('session reset')
-        await entry.handle.dispose().catch(() => undefined)
-      }
-      state.ledger.reset(agentKey)
-      // The /model pin is bridge-owned (state.selections), not agent-owned:
-      // ensureSelection hands the SAME object to the next agent when
-      // installModelSelectionForAgent runs, so the choice survives the reset.
-      // /new clears CONTEXT only — workspace binding and model choice stay.
-      for (const [sessionId] of [...state.sessionScopes]) {
-        if (entry !== undefined && sessionId === entry.sessionId) state.sessionScopes.delete(sessionId)
-      }
-      // R22 §2.2 memory hygiene: a reset must not leak this scope's
-      // bookkeeping. The render-queue slot is drained and dropped; reply
-      // anchors of messages this scope will never restore (its agent was just
-      // cancelled) would otherwise sit in replyTargets forever.
-      await drainRenderQueue(state, binding.scopeKey)
-      for (const [id, target] of [...state.replyTargets]) {
-        if (target.scopeKey === binding.scopeKey) state.replyTargets.delete(id)
-      }
+      await resetSessionScope(env, state, binding, 'session reset')
       await safeSend(env, chatId, state.copy.newSessionDone, replyTo)
+      return
+    }
+    case '/mode': {
+      await cmdMode(env, state, binding, line.slice('/mode'.length).trim(), senderId, replyTo)
       return
     }
     case '/stop': {
@@ -1593,21 +1611,166 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
   }
 }
 
+/**
+ * Tear down the scope's live agent and advance its generation — the shared
+ * body of `/new` and `/mode` (R27). The /model pin is bridge-owned
+ * (state.selections), not agent-owned: ensureSelection hands the SAME object
+ * to the next agent when installModelSelectionForAgent runs, so the choice
+ * survives the reset; workspace binding stays too. R22 §2.2 memory hygiene:
+ * the scope's render-queue slot and reply anchors die with the session, and
+ * the R26 preset recording for the dead session id is dropped.
+ */
+async function resetSessionScope(env: BridgeEnv, state: BridgeState, binding: ChatBinding, cause: string): Promise<void> {
+  const agentKey = currentAgentKey(binding)
+  const entry = state.ledger.get(agentKey)
+  if (entry !== undefined) {
+    entry.handle.agent.cancel(cause)
+    await entry.handle.dispose().catch(() => undefined)
+  }
+  state.ledger.reset(agentKey)
+  for (const [sessionId] of [...state.sessionScopes]) {
+    if (entry !== undefined && sessionId === entry.sessionId) {
+      state.sessionScopes.delete(sessionId)
+      state.sessionPresets.delete(sessionId)
+    }
+  }
+  await drainRenderQueue(state, binding.scopeKey)
+  for (const [id, anchor] of [...state.replyTargets]) {
+    if (anchor.scopeKey === binding.scopeKey) state.replyTargets.delete(id)
+  }
+}
+
+/**
+ * `/mode`: show or set THIS scope's agent preset (R27).
+ * - `/mode`            — current session's mode / next new session's mode / deployment default;
+ * - `/mode <preset>`   — validate, persist per scope, then open a NEW session
+ *   (resume() cannot change presets, so switching modes always means a fresh
+ *   session — the action `/new` performs, with the new preset recorded).
+ * Mutating is gated like `/ws add` / `/model` / `/cd`.
+ */
+async function cmdMode(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  rest: string,
+  senderId: string,
+  replyTo?: string,
+): Promise<void> {
+  const chatId = binding.chatId
+  const copy = state.copy
+
+  if (rest === '') {
+    const entry = state.ledger.get(currentAgentKey(binding))
+    const current = entry === undefined ? undefined : state.sessionPresets.get(entry.sessionId)
+    const lines = [
+      `**${copy.modeTitle}**`,
+      current === undefined ? copy.modeNotStarted : copy.modeCurrent(current),
+      copy.modeNext(nextPresetOf(env, state, binding)),
+      copy.modeDefaultLine(env.config.agentPreset),
+    ]
+    await safeSend(env, chatId, lines.join('\n'), replyTo)
+    return
+  }
+
+  if (!canManageWorkspaces(env, senderId)) {
+    await safeSend(env, chatId, copy.modeNoPermission, replyTo)
+    return
+  }
+
+  const target = rest.trim().toLowerCase()
+  if (!(AGENT_PRESETS as readonly string[]).includes(target)) {
+    await safeSend(env, chatId, copy.modeUsage, replyTo)
+    return
+  }
+  if (target === nextPresetOf(env, state, binding)) {
+    await safeSend(env, chatId, copy.modeAlready(target), replyTo)
+    return
+  }
+
+  // Persist the scope override (in-memory first so the very next session uses
+  // it, then settings so it survives a restart).
+  state.chatPresets[binding.scopeKey] = target
+  try {
+    await env.hooks.onPresetChange?.(binding.scopeKey, target)
+  } catch (error) {
+    env.report(`feishu4dsh: persist preset failed: ${describeError(error)}`)
+  }
+  env.report(`feishu4dsh: preset changed by ${senderId}: ${target} (scope ${binding.scopeKey})`)
+
+  await resetSessionScope(env, state, binding, 'preset change')
+  await safeSend(env, chatId, copy.modeSwitched(target), replyTo)
+}
+
 /** `/status`: session id, scope, current workspace (name + path), model. */
 async function cmdStatus(env: BridgeEnv, state: BridgeState, binding: ChatBinding, replyTo?: string): Promise<void> {
+  const copy = state.copy
   const shown = resolveDisplayedModel(env, state, binding)
   const model = shown === undefined
     ? ''
-    : `${shown.text}${shown.isDefaultNotStarted ? state.copy.modelDefaultNotStarted : ''}`
+    : `${shown.text}${shown.isDefaultNotStarted ? copy.modelDefaultNotStarted : ''}`
+  const agentKey = currentAgentKey(binding)
+  const entry = state.ledger.get(agentKey)
+  const session = entry?.handle.agent.session
+  // R26 statistics come from the dsh session log when the host exposes it;
+  // an old host without the log renders “—” instead of misleading zeros.
+  const stats = statsOfEvents(session?.events)
+  const turns = stats === undefined ? copy.statusStatsUnavailable : String(stats.turns)
+  const steps = stats === undefined ? copy.statusStatsUnavailable : String(stats.steps)
+  const effort = displayEffortOf(env, state, binding)
   const lines = [
-    `**${state.copy.statusTitle}**`,
-    state.copy.statusSession(currentSessionId(state, binding)),
-    state.copy.statusScope(env.config.sessionScope),
-    state.copy.statusWorkspace(binding.workspaceName, binding.workspacePath),
-    ...model === '' ? [] : [state.copy.statusModel(model)],
+    `**${copy.statusTitle}**`,
+    copy.statusSession(currentSessionId(state, binding)),
+    copy.statusScope(copy.scopeLabel(env.config.sessionScope)),
+    copy.statusWorkspace(binding.workspaceName, binding.workspacePath),
+    copy.statusPreset(sessionPresetOf(env, state, binding)),
+    ...model === '' ? [] : [copy.statusModel(model)],
+    copy.statusEffort(effort.value, effort.source),
+    copy.statusTurns(turns, steps),
+    stats !== undefined && hasSessionUsage(stats.usage)
+      ? copy.statusTokens(
+        formatNumber(stats.usage.inputTokens),
+        formatNumber(stats.usage.outputTokens),
+        stats.usage.cacheReadTokens > 0 ? formatNumber(stats.usage.cacheReadTokens) : undefined,
+        stats.usage.cacheWriteTokens > 0 ? formatNumber(stats.usage.cacheWriteTokens) : undefined,
+        stats.usage.reasoningTokens > 0 ? formatNumber(stats.usage.reasoningTokens) : undefined,
+      )
+      : copy.statusTokensUnavailable,
     '\n/ws 列出工作区 · /cd <名称或路径> 切换工作区',
   ]
   await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
+}
+
+/**
+ * The preset /status should show for the chat's CURRENT session (R26): what
+ * the agent was actually created with, or the channel default for a session
+ * that does not exist yet (or predates the recording).
+ */
+function sessionPresetOf(env: BridgeEnv, state: BridgeState, binding: ChatBinding): string {
+  const entry = state.ledger.get(currentAgentKey(binding))
+  const fallback = nextPresetOf(env, state, binding)
+  return entry === undefined
+    ? fallback
+    : (state.sessionPresets.get(entry.sessionId) ?? fallback)
+}
+
+/**
+ * The reasoning effort /status should show (R26): what the session's last
+ * request actually carried, or the deployment default. R28 prepends the
+ * per-model preference as a source in front of this chain.
+ */
+function displayEffortOf(env: BridgeEnv, state: BridgeState, binding: ChatBinding): { value: string; source: string } {
+  const effective = effectiveSessionSelection(env, state, binding)
+  const modelKey = effective === undefined ? undefined : `${effective.provider}/${effective.model}`
+  const preferred = modelKey === undefined ? undefined : state.modelEfforts[modelKey]
+  if (preferred !== undefined) {
+    return { value: preferred, source: state.copy.effortSourcePreferred }
+  }
+  const entry = state.ledger.get(currentAgentKey(binding))
+  const logged = readLoggedSelection(entry?.handle.agent.session)
+  if (logged?.reasoningEffort !== undefined) {
+    return { value: String(logged.reasoningEffort), source: state.copy.effortSourceMeasured }
+  }
+  return { value: 'default', source: '' }
 }
 
 /**
@@ -1654,12 +1817,20 @@ async function cmdModel(
   const chatId = binding.chatId
   const copy = state.copy
 
+  // R28: effort is a /model subcommand (`/model effort ...`), not a
+  // standalone command — the command surface stays grouped under /model.
+  if (rest === 'effort' || rest.startsWith('effort ')) {
+    await cmdModelEffort(env, state, binding, rest.slice('effort'.length).trim(), senderId, replyTo)
+    return
+  }
+
   if (rest === '') {
     const shown = resolveDisplayedModel(env, state, binding)
-    const text = shown === undefined
+    const effort = displayEffortOf(env, state, binding)
+    const modelLine = shown === undefined
       ? `${copy.modelTitle}：${copy.modelUnknown}`
       : `${copy.modelTitle}：${shown.text}${shown.isDefaultNotStarted ? copy.modelDefaultNotStarted : ''}${copy.modelSourceSession}`
-    await safeSend(env, chatId, text, replyTo)
+    await safeSend(env, chatId, `${modelLine}\n${copy.modelEffortLine(effort.value, effort.source)}`, replyTo)
     return
   }
 
@@ -1711,6 +1882,69 @@ async function cmdModel(
   selection.current = target
   env.report(`feishu4dsh: model switched by ${senderId}: ${target.provider}/${target.model}`)
   await safeSend(env, chatId, copy.modelSwitched(target.provider, target.model), replyTo)
+}
+
+/**
+ * `/model effort`: view or set the reasoning effort of the session's CURRENT
+ * model (R28). A level is stored per model (`provider/model` → level) and
+ * remembered globally — adjusting one model's effort updates that model's
+ * default everywhere (owner decision D9: no per-session temporary override).
+ * `default` deletes the override: requests then carry no explicit
+ * `reasoning_effort` and the model's built-in behaviour applies. Gated like
+ * the rest of `/model`.
+ */
+async function cmdModelEffort(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  rest: string,
+  senderId: string,
+  replyTo?: string,
+): Promise<void> {
+  const chatId = binding.chatId
+  const copy = state.copy
+  const effective = effectiveSessionSelection(env, state, binding)
+
+  if (rest === '') {
+    if (effective === undefined) {
+      await safeSend(env, chatId, copy.effortUnknown, replyTo)
+      return
+    }
+    const effort = displayEffortOf(env, state, binding)
+    await safeSend(env, chatId, copy.modelEffortLine(effort.value, effort.source), replyTo)
+    return
+  }
+
+  if (!canManageWorkspaces(env, senderId)) {
+    await safeSend(env, chatId, copy.modelNoPermission, replyTo)
+    return
+  }
+
+  const level = rest.trim().toLowerCase()
+  if (!(EFFORT_LEVELS as readonly string[]).includes(level)) {
+    await safeSend(env, chatId, copy.effortUsage, replyTo)
+    return
+  }
+  if (effective === undefined) {
+    await safeSend(env, chatId, copy.effortUnknown, replyTo)
+    return
+  }
+
+  const modelKey = `${effective.provider}/${effective.model}`
+  if (level === 'default') delete state.modelEfforts[modelKey]
+  else state.modelEfforts[modelKey] = level
+  try {
+    await env.hooks.onModelEffortsChange?.({ ...state.modelEfforts })
+  } catch (error) {
+    env.report(`feishu4dsh: persist model efforts failed: ${describeError(error)}`)
+  }
+  env.report(`feishu4dsh: reasoning effort for ${modelKey} set to ${level} by ${senderId}`)
+  await safeSend(
+    env,
+    chatId,
+    level === 'default' ? copy.effortCleared(effective.model) : copy.effortSet(level, effective.model),
+    replyTo,
+  )
 }
 
 /** `/ws`: list every workspace the channel knows, marking the current one. */
@@ -1985,6 +2219,7 @@ async function dispose(env: BridgeEnv, state: BridgeState): Promise<void> {
   state.replyTargets.clear()
   state.streamedTurns.clear()
   state.selections.clear()
+  state.sessionPresets.clear()
   // Settle in-flight agent creations so the sweep below disposes their
   // handles too; failures during creation have nothing to dispose.
   for (const pending of [...state.pendingAgents.values()]) {
