@@ -1,10 +1,70 @@
 import { describe, expect, it } from 'vitest'
 import {
-  autoTitleOf, listSessions, nextGenOf, renameSession, staleSessionsOf, upsertSession,
-  type SessionRegistry,
+  autoTitleOf, hydrateSessionRegistry, listSessions, nextGenOf, renameSession, staleSessionsOf, upsertSession,
+  type SessionRecord, type SessionRegistry,
 } from '../src/session-registry.js'
 
 const NOW = new Date('2026-08-28T14:02:00').getTime()
+
+/** Freeze `value` and every nested object/array (the host's settings contract). */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      deepFreeze((value as Record<string, unknown>)[key])
+    }
+    Object.freeze(value)
+  }
+  return value
+}
+
+function recordOf(gen: number, sessionId: string): SessionRecord {
+  return { gen, sessionId, title: `090${gen} 会话`, titleIsAuto: true, createdAt: NOW, lastActiveAt: NOW }
+}
+
+describe('hydrateSessionRegistry (R30)', () => {
+  it('rebuilds a deep-frozen settings graph into owned, mutable state', () => {
+    const raw = deepFreeze({
+      'oc_a§/tmp/ws': [recordOf(1, 'feishu-a-r1'), recordOf(2, 'feishu-a-r2')],
+    }) as SessionRegistry
+
+    const registry = hydrateSessionRegistry(raw)
+    const list = registry['oc_a§/tmp/ws']!
+    expect(list.map(r => r.sessionId)).toEqual(['feishu-a-r1', 'feishu-a-r2'])
+    // The hydrated graph is plugin-owned: no frozen arrays, no frozen records.
+    expect(Object.isFrozen(list)).toBe(false)
+    expect(list.every(record => !Object.isFrozen(record))).toBe(true)
+
+    // Every registry mutation works — the exact operations that threw on the
+    // aliased frozen graph (upsert touch/push, rename).
+    list[0]!.lastActiveAt = NOW + 5
+    list.push(recordOf(3, 'feishu-a-r3'))
+    list[0]!.title = '用户标题'
+    list.sort((a, b) => b.gen - a.gen)
+    expect(list.map(r => r.gen)).toEqual([3, 2, 1])
+
+    // The frozen source stays untouched (no accidental writes through aliases).
+    expect(Object.isFrozen(raw['oc_a§/tmp/ws']![0])).toBe(true)
+    expect(raw['oc_a§/tmp/ws']![0]!.lastActiveAt).toBe(NOW)
+  })
+
+  it('skips keys without the scope§workspace separator and reports them', () => {
+    const reports: string[] = []
+    const raw = {
+      oc_broken: [recordOf(1, 'feishu-x-r1')],
+      'oc_ok§/tmp/ws': [recordOf(1, 'feishu-ok-r1')],
+    } as unknown as SessionRegistry
+    const registry = hydrateSessionRegistry(raw, line => reports.push(line))
+    expect(Object.keys(registry)).toEqual(['oc_ok§/tmp/ws'])
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toContain('oc_broken')
+  })
+
+  it('tolerates undefined input and non-array values', () => {
+    expect(hydrateSessionRegistry(undefined)).toEqual({})
+    const registry = hydrateSessionRegistry({ 'oc_a§/tmp/ws': undefined } as unknown as SessionRegistry)
+    expect(registry['oc_a§/tmp/ws']).toEqual([])
+  })
+})
 
 describe('autoTitleOf (R29 D5)', () => {
   it('uses the first non-empty line, date first, capped at 12 code points', () => {

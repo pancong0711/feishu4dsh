@@ -68,6 +68,16 @@ export function agentKeyOf(scopeKey: string, workspacePath: string): string {
 }
 
 /**
+ * Shape check for persisted agent keys: {@link agentKeyOf} always joins
+ * `scope§workspace`, so a persisted key without the separator is a leftover
+ * of a failed write — hydration skips it (with a report) instead of carrying
+ * it forever (R30 §4).
+ */
+export function isAgentKey(value: string): boolean {
+  return value.includes('§')
+}
+
+/**
  * The durable session id one (scope × workspace) pair drives. Deterministic
  * and stable across restarts so `agents.resume` can reopen it; a generation
  * suffix separates one `/new` reset from the history before it.

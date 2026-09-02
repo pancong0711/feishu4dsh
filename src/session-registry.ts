@@ -15,6 +15,8 @@
  * @module feishu4dsh/session-registry
  */
 
+import { isAgentKey } from './sessions.js'
+
 /** One known session of one agent key. JSON-shaped: settings persistence. */
 export interface SessionRecord {
   /** Generation the session was created under (unique per agent key). */
@@ -168,4 +170,52 @@ export function staleSessionsOf(
       && !isArchived(entry.sessionId)
       && entry.lastActiveAt <= cutoff,
   )
+}
+
+/**
+ * Rebuild the persisted registry into plugin-owned, MUTABLE state (R30).
+ *
+ * The host hands the settings document over deep-frozen (`dsh-settings`
+ * `deepFreeze` is a design contract, not an incident). The v0.6.0 hydration
+ * seeded `state.chatSessions` by REFERENCE, so the first restart carrying a
+ * non-empty `chatSessions` aliased that frozen graph — every registry
+ * mutation then threw (`read only property 'lastActiveAt'` /
+ * `not extensible`) and every Feishu message failed before its turn started.
+ * Hydration therefore rebuilds the object graph: a fresh array per agent key
+ * and a fresh record per entry. Every `SessionRecord` field is a primitive,
+ * so a shallow copy is complete.
+ *
+ * Hardening (work order §5): persisted keys must look like
+ * `scope§workspace` (`isAgentKey`) — a malformed leftover is skipped with a
+ * report instead of being carried forever; and the freeze canary is a
+ * tripwire — freshly built state is never frozen, and if that ever changes
+ * the deployment gets a loud report plus a `structuredClone` fallback.
+ */
+export function hydrateSessionRegistry(
+  raw: Readonly<Record<string, unknown[]>> | undefined,
+  report?: (line: string) => void,
+): SessionRegistry {
+  const registry: SessionRegistry = {}
+  for (const [agentKey, records] of Object.entries(raw ?? {})) {
+    if (!isAgentKey(agentKey)) {
+      report?.(
+        `feishu4dsh: chatSessions key '${agentKey}' is not scope§workspace — skipped`
+        + ' (leftover of a failed write; clean it up in settings)',
+      )
+      continue
+    }
+    // The persisted records are this module's own `SessionRecord`s (written
+    // by the persistence hook); the config layer only widens them to
+    // `unknown[]`, so the cast is the hydration boundary, and the runtime
+    // array check guards against hand-edited settings.
+    const source = Array.isArray(records) ? (records as SessionRecord[]) : []
+    const list = source.map(record => ({ ...record }))
+    if (Object.isFrozen(list) || (list.length > 0 && Object.isFrozen(list[0]))) {
+      report?.(`feishu4dsh: hydrated session registry for '${agentKey}' is still frozen — re-cloning via structuredClone`)
+      registry[agentKey] = structuredClone(list)
+      continue
+    }
+    registry[agentKey] = list
+  }
+  return registry
 }

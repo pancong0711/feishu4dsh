@@ -72,6 +72,7 @@ journalctl --user -u dsh-feishu4dsh.service -f
 - **入站文件**：统一收口 `.feishu4dsh/inbox/`，文件名清洗。
 - **群聊出站必审批**：无关闭项（防提示注入外泄）。
 - **工作区切换准入**：仅默认 / 已注册 / `/ws add` / `workspaceRoots` 之内。
+- **会话单写入方约定**：请勿在 dsh web 中打开/驱动飞书通道创建的会话（`feishu-*` 前缀）——双写入方会导致输出错乱乃至会话日志损坏、飞书端中断；宿主暂无归属排他能力，此项为长期修复目标（详见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) §4）。
 
 ## 开发
 

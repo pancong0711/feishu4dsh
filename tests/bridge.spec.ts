@@ -10,6 +10,9 @@ import { resolveAuthorization } from '../src/acl.js'
 import type { ChannelPort, ResourceType } from '../src/adapter.js'
 import type { HostAgent, HostAgentOptions, HostRequestHeaderConfig, HostSession, HostSessionEvent, HostUserMessage } from '../src/host.js'
 import type { MutableSelection } from '../src/model-selection.js'
+import type { SessionRecord } from '../src/session-registry.js'
+import { agentKeyOf, sessionIdOf } from '../src/sessions.js'
+import { canonicalPath } from '../src/workspaces.js'
 import { sleep } from '../src/util.js'
 
 /* ------------------------------------------------------------------ */
@@ -140,7 +143,12 @@ function fakeHost() {
   return host
 }
 
-function makeEnv(overrides?: Partial<ResolvedConfig>, hooks?: BridgeHooks) {
+function makeEnv(
+  overrides?: Partial<ResolvedConfig>,
+  hooks?: BridgeHooks,
+  mutateConfig?: (config: ResolvedConfig) => void,
+  report: (line: string) => void = () => undefined,
+) {
   const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-ws-'))
   // resolveConfig floors approvalTimeoutMs at 10s for production safety;
   // timeout tests bypass the floor by overriding the resolved value directly.
@@ -153,6 +161,9 @@ function makeEnv(overrides?: Partial<ResolvedConfig>, hooks?: BridgeHooks) {
     }),
     ...(overrides?.approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs: overrides.approvalTimeoutMs }),
   }
+  // R30-style tests need to harden the config graph (deep-freeze persisted
+  // sections) BEFORE the bridge hydrates it, mirroring the host contract.
+  mutateConfig?.(config)
   const port = new FakePort()
   const host = fakeHost()
   // Install the bridge under test.
@@ -161,7 +172,7 @@ function makeEnv(overrides?: Partial<ResolvedConfig>, hooks?: BridgeHooks) {
     config,
     port,
     resolveAuthorization(config),
-    () => undefined,
+    report,
     hooks,
   )
   return { workspace, config, port, host, dispose }
@@ -2842,6 +2853,17 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     return { archived, archivedCalls }
   }
 
+  /**
+   * The auto-title date stamp (D5) uses the session's creation date, so the
+   * expected `MMDD` prefix moves with the wall clock. Assertions derive it
+   * at runtime instead of hardcoding the day the tests were authored — a
+   * hardcoded `0828` made this suite fail every day after (the "time bomb").
+   */
+  function autoStamp(): string {
+    const now = new Date()
+    return `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+  }
+
   it('R29-a: sessions register with auto titles; /new keeps the old one listed', async () => {
     const { host, port } = makeEnv()
     emitInbound(port, 'm1', '修复登录页的会话跳转问题')
@@ -2850,14 +2872,15 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     emitInbound(port, 'm2', '第二个会话')
     await sleep(20)
 
+    const stamp = autoStamp()
     await textMessage(port, '/session')
     const list = lastText(port)
     expect(list).toContain('会话列表')
-    expect(list).toContain('0828 修复登录页的会话跳转问题')
-    expect(list).toContain('0828 第二个会话')
+    expect(list).toContain(`${stamp} 修复登录页的会话跳转问题`)
+    expect(list).toContain(`${stamp} 第二个会话`)
     // The CURRENT session carries the cursor.
     const currentLine = list.split('\n').find(l => l.startsWith('●'))
-    expect(currentLine).toContain('0828 第二个会话')
+    expect(currentLine).toContain(`${stamp} 第二个会话`)
   })
 
   it('R29-b: /session <n> stops the task, re-points, and the next message resumes the old session', async () => {
@@ -2874,11 +2897,12 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     expect(secondAgent?.id).not.toBe(firstSessionId)
 
     // /session numbering: gen desc, current first.
+    const stamp = autoStamp()
     await textMessage(port, '/session')
-    expect(lastText(port)).toMatch(/● 1 · 0828 第二个会话/)
+    expect(lastText(port)).toMatch(new RegExp(`● 1 · ${stamp} 第二个会话`))
 
     await textMessage(port, '/session 2')
-    expect(lastText(port)).toContain('已停止当前任务，并切换到「0828 第一个会话」')
+    expect(lastText(port)).toContain(`已停止当前任务，并切换到「${stamp} 第一个会话」`)
     // D1: the superseded agent was cancelled with the switch cause.
     expect(secondAgent?.cancels).toContain('session switch')
 
@@ -2944,7 +2968,7 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     // Archived sessions remain switchable (no unarchive upstream yet).
     await textMessage(port, '/session all')
     await textMessage(port, '/session 2')
-    expect(lastText(port)).toContain('已停止当前任务，并切换到「0828 旧会话」')
+    expect(lastText(port)).toContain(`已停止当前任务，并切换到「${autoStamp()} 旧会话」`)
   })
 
   it('R29-e: the approver list gates switch / rename / archive', async () => {
@@ -3077,5 +3101,67 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
 
     await textMessage(port, '/session 0')
     expect(lastText(port)).toContain('用法：/session')
+  })
+
+  it('R30-a: hydration rebuilds the host-frozen settings graph; a data-carrying restart mutates again', async () => {
+    // The host (dsh-settings) deep-freezes the settings document it hands the
+    // plugin. v0.6.0 hydrated `chatSessions` by REFERENCE, so the first
+    // restart that carried a non-empty registry made every mutation throw —
+    // upsert touch → `read only property 'lastActiveAt'`, upsert push →
+    // `not extensible` — and every Feishu message failed before its turn.
+    const deepFreeze = (value: unknown): void => {
+      if (value !== null && typeof value === 'object') {
+        for (const key of Object.keys(value as Record<string, unknown>)) deepFreeze((value as Record<string, unknown>)[key])
+        Object.freeze(value)
+      }
+    }
+    const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-r30-'))
+    const canonical = await canonicalPath(workspace)
+    const agentKey = agentKeyOf('oc_chat1', canonical)
+    // The bridge always resumes the DETERMINISTIC session id for the active
+    // generation (the registry's stored sessionId is display state), so the
+    // seeded record must carry exactly that id.
+    const seeded: SessionRecord = {
+      gen: 1,
+      sessionId: sessionIdOf('oc_chat1', canonical, 1),
+      title: '0901 旧会话',
+      titleIsAuto: false,
+      createdAt: Date.now() - 86_400_000,
+      lastActiveAt: Date.now() - 86_400_000,
+    }
+    const reportLines: string[] = []
+    const { host, port, dispose } = makeEnv(
+      { workspace, chatSessions: { [agentKey]: [seeded] }, chatActiveGen: { [agentKey]: 1, broken_leftover_key: 3 } },
+      {},
+      config => {
+        // Mirror the host contract: freeze the persisted sections pre-hydration.
+        deepFreeze(config.chatSessions)
+        deepFreeze(config.chatActiveGen)
+      },
+      line => reportLines.push(line),
+    )
+
+    // The malformed chatActiveGen key is skipped with a report, not carried.
+    expect(reportLines.join('\n')).toContain('broken_leftover_key')
+
+    // 1) First message after the restart: the agent RESUMES the seeded
+    //    generation and upsert/touch mutates the hydrated record.
+    await textMessage(port, '重启后第一条')
+    expect(host.created[0]?.id).toBe(seeded.sessionId)
+    const state = dispose.state
+    const hydrated = state.chatSessions[agentKey]!
+    expect(Object.isFrozen(hydrated)).toBe(false)
+    expect(Object.isFrozen(hydrated[0])).toBe(false)
+    expect(hydrated[0]!.lastActiveAt).toBeGreaterThan(seeded.lastActiveAt)
+
+    // 2) rename mutates the hydrated record in place.
+    await textMessage(port, '/session rename R30 回归')
+    expect(lastText(port)).toContain('R30 回归')
+
+    // 3) /new + message pushes a NEW record into the hydrated list.
+    await textMessage(port, '/new')
+    await textMessage(port, '重启后新会话')
+    expect(state.chatSessions[agentKey]).toHaveLength(2)
+    expect(state.chatActiveGen[agentKey]).toBe(2)
   })
 })

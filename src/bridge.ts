@@ -14,7 +14,7 @@ import { AGENT_PRESETS, type ResolvedConfig } from './config.js'
 import type { Authorization } from './acl.js'
 import { mayApprove } from './acl.js'
 import type { ChannelPort, CardActionEvent, NormalizedMessage, RejectEvent } from './adapter.js'
-import { resolveScopeKey, agentKeyOf, sessionIdOf, AgentLedger, type SessionScopeInput } from './sessions.js'
+import { resolveScopeKey, agentKeyOf, isAgentKey, sessionIdOf, AgentLedger, type SessionScopeInput } from './sessions.js'
 import { buildCatalog, listWorkspaces, resolveCdTarget, registeredPathsOf, resolveWorkspaceDirectory, normalizeWorkspacePath, type WorkspaceCatalog } from './workspaces.js'
 import { approvalCard, decodeActionValue, settledApprovalCard, type CardActionPayload } from './cards.js'
 import type { HostAgentHandle, HostAgentOptions, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostModelSelection, HostSession, HostSessionEvent, HostTools, HostWorkspace, HostWorkspaceRegistry, TokenUsageData } from './host.js'
@@ -23,7 +23,7 @@ import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, d
 import { readOutboundFile, sendFileTool, storeInboundFile, type OutboundFile, type SendFilePorts } from './files.js'
 import { accumulateSessionUsage, emptySessionUsage, hasSessionUsage, statsOfEvents, type SessionUsage } from './session-stats.js'
 import {
-  activeRecordOf, listSessions, nextGenOf, renameSession, staleSessionsOf, touchSession,
+  activeRecordOf, hydrateSessionRegistry, listSessions, nextGenOf, renameSession, staleSessionsOf, touchSession,
   upsertSession, type ActiveGenMap, type SessionRecord, type SessionRegistry,
 } from './session-registry.js'
 import { resolveLocale, strings, type Locale, type Strings } from './strings.js'
@@ -244,10 +244,19 @@ export function installBridge(
   // generation -- this is what makes a restart resume the session the chat
   // was actually on (a fresh ledger pointer alone would reset to generation
   // 0, silently dropping /new history).
-  for (const [agentKey, records] of Object.entries(config.chatSessions)) {
-    state.chatSessions[agentKey] = records as SessionRecord[]
-  }
+  // R30: the host deep-freezes the settings document it hands us, so the
+  // persisted graph MUST be rebuilt into owned mutable state — aliasing it
+  // by reference made every registry mutation throw the moment a restart
+  // carried a non-empty chatSessions (all messages failed before their turn).
+  Object.assign(
+    state.chatSessions,
+    hydrateSessionRegistry(config.chatSessions, line => env.report(line)),
+  )
   for (const [agentKey, gen] of Object.entries(config.chatActiveGen)) {
+    if (!isAgentKey(agentKey)) {
+      env.report(`feishu4dsh: chatActiveGen key '${agentKey}' is not scope§workspace — skipped`)
+      continue
+    }
     state.chatActiveGen[agentKey] = gen
     state.ledger.pointerTo(agentKey, gen)
   }
