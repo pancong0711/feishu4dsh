@@ -826,7 +826,7 @@ describe('bridge: media inbound', () => {
 describe('bridge: workspace switching', () => {
   it('/ws lists the default workspace', async () => {
     const { port, workspace } = makeEnv()
-    await textMessage(port, '/ws')
+    await textMessage(port, '/ws list')
     const ws = port.sent.find(m => String(m.input.markdown ?? '').includes('可用工作区'))
     expect(ws).toBeDefined()
     expect(String(ws?.input.markdown)).toContain(workspace)
@@ -842,7 +842,7 @@ describe('bridge: workspace switching', () => {
         resolveByPath: async (p: string) => ({ id: 'w', path: p }),
         create: async (p: string) => ({ id: 'w', path: p }),
       })
-      await textMessage(port, '/ws')
+      await textMessage(port, '/ws list')
       const list = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
       expect(list).toContain(sibling1)
       expect(list).toContain(sibling2)
@@ -864,7 +864,7 @@ describe('bridge: workspace switching', () => {
       }
       host.services.set('workspaceRegistry', registry)
 
-      await textMessage(port, '/ws')
+      await textMessage(port, '/ws list')
       let list = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
       expect(list).toContain(sibling1)
       expect(list).not.toContain(sibling2)
@@ -872,7 +872,7 @@ describe('bridge: workspace switching', () => {
       // Simulate the host registering a new workspace after the bridge cached
       // its first catalog; the next /ws must pick it up.
       registry.list = () => [{ path: sibling1 }, { path: sibling2 }]
-      await textMessage(port, '/ws')
+      await textMessage(port, '/ws list')
       list = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
       expect(list).toContain(sibling2)
     } finally {
@@ -1003,7 +1003,7 @@ describe('bridge: /ws add & remove', () => {
       await textMessage(port, `/ws add ${target}`)
       expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已添加工作区'))).toBe(true)
       // It now shows up in the list and is switchable by short name.
-      await textMessage(port, '/ws')
+      await textMessage(port, '/ws list')
       const list = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
       expect(list).toContain(basename(target))
       await textMessage(port, `/cd ${basename(target)}`)
@@ -3163,5 +3163,223 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     await textMessage(port, '重启后新会话')
     expect(state.chatSessions[agentKey]).toHaveLength(2)
     expect(state.chatActiveGen[agentKey]).toBe(2)
+  })
+
+  /* ---------------------------------------------------------------- */
+  /* R32: interactive menus — /ws picker, /ws new browser, /model, /session */
+  /* ---------------------------------------------------------------- */
+
+  function menuButtons(port: FakePort) {
+    const cardMessage = [...port.sent].reverse().find(m => 'card' in m.input)
+    expect(cardMessage).toBeDefined()
+    const card = cardMessage?.input.card as { header?: { title?: { content?: string } }; elements: { actions?: { value?: Record<string, unknown>; tag?: string; text?: { content?: string }; options?: { text: { content: string }; value: string }[] }[] }[] }
+    const flat = card.elements.flatMap(e => e.actions ?? [])
+    return {
+      cardMessage,
+      card,
+      buttons: flat.filter(b => b.tag === 'button' && b.value !== undefined) as { tag: 'button'; value: Record<string, unknown>; text?: { content: string } }[],
+      selects: flat.filter(a => a.tag === 'select_static') as { options?: { text: { content: string }; value: string }[] }[],
+    }
+  }
+
+  function clickMenu(port: FakePort, value: unknown, openId = 'ou_user', chatId = 'oc_chat1') {
+    port.emit('cardAction', {
+      messageId: 'om_menu',
+      chatId,
+      operator: { openId, name: openId },
+      action: { value, tag: 'button' },
+    })
+  }
+
+  it('R32-a: /ws opens a picker card; a click switches the workspace', async () => {
+    const target = mkdtempSync(join(tmpdir(), 'feishu4dsh-r32ws-'))
+    const { host, port } = makeEnv()
+    try {
+      await textMessage(port, `/ws add ${target}`)
+      await textMessage(port, '/ws')
+      const { cardMessage, buttons } = menuButtons(port)
+      expect(cardMessage?.input.card).toBeDefined()
+      // Default workspace (current) plus the freshly added one.
+      expect(buttons.length).toBeGreaterThanOrEqual(2)
+      const targetButton = buttons.find(b => (b.value as { idx?: number }).idx !== 0)
+      expect(targetButton).toBeDefined()
+      clickMenu(port, targetButton?.value)
+      await sleep(10)
+      expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已切换工作区'))).toBe(true)
+      // The menu card is replaced by its settled state.
+      expect(port.cardUpdates.length).toBeGreaterThan(0)
+    } finally {
+      rmSync(target, { recursive: true, force: true })
+    }
+  })
+
+  it('R32-a: menu clicks are guarded — forwarded chats and non-approvers cannot act', async () => {
+    const target = mkdtempSync(join(tmpdir(), 'feishu4dsh-r32g-'))
+    const { port } = makeEnv({ approvers: ['ou_admin'] })
+    try {
+      await textMessage(port, `/ws add ${target}`, { senderId: 'ou_admin' })
+      await textMessage(port, '/ws', { senderId: 'ou_admin' })
+      const { buttons } = menuButtons(port)
+      const targetButton = buttons.find(b => (b.value as { idx?: number }).idx !== 0)
+      expect(targetButton).toBeDefined()
+
+      // A non-approver click: refused, no switch.
+      clickMenu(port, targetButton?.value, 'ou_random')
+      await sleep(10)
+      expect(port.sent.some(m => String(m.input.markdown ?? '').includes('无权切换工作区'))).toBe(true)
+
+      // A forwarded card (different chat): refused.
+      clickMenu(port, targetButton?.value, 'ou_admin', 'oc_other')
+      await sleep(10)
+      expect(port.sent.some(m => String(m.input.markdown ?? '').includes('此菜单仅可在原会话中操作'))).toBe(true)
+
+      // The approver in the original chat still can.
+      clickMenu(port, targetButton?.value, 'ou_admin')
+      await sleep(10)
+      expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已切换工作区'))).toBe(true)
+    } finally {
+      rmSync(target, { recursive: true, force: true })
+    }
+  })
+
+  it('R32-b: /ws new browses allowed roots and confirm-switches', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'feishu4dsh-r32br-'))
+    const alpha = join(root, 'alpha')
+    const inner = join(alpha, 'inner')
+    mkdirSync(alpha)
+    mkdirSync(inner)
+    const { port } = makeEnv({ workspaceRoots: [root] })
+    try {
+      await textMessage(port, '/ws new')
+      const first = menuButtons(port)
+      const alphaButton = first.buttons.find(b => String(b.text?.content).includes('alpha'))
+      expect(alphaButton).toBeDefined()
+      clickMenu(port, alphaButton?.value)
+      await sleep(10)
+      // The card re-rendered in place at alpha, listing inner.
+      const refreshed = port.cardUpdates.at(-1)?.card as { elements: { actions?: { value?: Record<string, unknown> }[] }[] }
+      const innerButton = refreshed.elements.flatMap(e => e.actions ?? [])
+        .find(a => (a.value as { idx?: number } | undefined)?.idx !== undefined)
+      expect(innerButton).toBeDefined()
+      // Confirm the browsed directory.
+      const confirm = refreshed.elements.flatMap(e => e.actions ?? [])
+        .find(a => (a.value as { act?: string } | undefined)?.act === 'ok')
+      expect(confirm).toBeDefined()
+      clickMenu(port, confirm?.value)
+      await sleep(10)
+      expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已切换工作区'))).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('R32-b: /ws new <name> creates a folder and switches; invalid names refuse', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'feishu4dsh-r32mk-'))
+    const reports: string[] = []
+    const { host, port } = makeEnv({ workspaceRoots: [root], workspace: root }, {}, undefined, line => reports.push(line))
+    try {
+      await textMessage(port, '/ws new beta')
+      expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已创建工作区「beta」'))).toBe(true)
+      expect(existsSync(join(root, 'beta'))).toBe(true)
+      // The switch re-roots the binding; the next message creates the agent there.
+      emitInbound(port, 'm1', '在新工作区开工')
+      await sleep(20)
+      expect(host.created.at(-1)?.cwd).toBe(join(root, 'beta'))
+      expect(reports.some(r => r.includes('mkdir failed'))).toBe(false)
+
+      await textMessage(port, '/ws new sub/dir')
+      expect(port.sent.some(m => String(m.input.markdown ?? '').includes('无法创建'))).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('R32-b: /ws new without workspaceRoots is refused (safe default)', async () => {
+    const { port } = makeEnv()
+    await textMessage(port, '/ws new')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('未配置 workspaceRoots'))).toBe(true)
+  })
+
+  it('R32-c: /model opens the catalog picker; a select click switches the model', async () => {
+    const { host, port } = makeEnv({ modelCatalog: ['p1/m1', 'p2/m2', 'q3/m3'] })
+    const installed = captureSelections(host)
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+    // Pin p1/m1 first: the picker must mark the CURRENT model.
+    await textMessage(port, '/model p1/m1')
+
+    await textMessage(port, '/model')
+    const { selects } = menuButtons(port)
+    expect(selects.length).toBeGreaterThan(0)
+    const options = selects[0]?.options ?? []
+    expect(options).toHaveLength(3)
+    expect(options.find(o => o.text.content.includes('p1/m1'))?.text.content).toBe('✅ p1/m1')
+
+    const p2 = options.find(o => o.text.content === 'p2/m2')
+    expect(p2).toBeDefined()
+    clickMenu(port, p2?.value)
+    await sleep(10)
+    expect(installed.at(-1)?.selection.current).toEqual({ provider: 'p2', model: 'm2' })
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已切换当前会话模型为 p2/m2'))).toBe(true)
+  })
+
+  it('R32-c: the model picker paginates large catalogs', async () => {
+    const { host, port } = makeEnv({
+      modelCatalog: Array.from({ length: 17 }, (_, i) => `p/m${i}`),
+    })
+    captureSelections(host)
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model')
+    const firstPage = menuButtons(port)
+    expect(firstPage.selects[0]?.options).toHaveLength(15)
+    const next = (firstPage.card as { elements: { actions?: { value?: Record<string, unknown> }[] }[] })
+      .elements.flatMap(e => e.actions ?? [])
+      .find(a => (a.value as { act?: string; idx?: number } | undefined)?.act === 'page'
+        && (a.value as { idx?: number }).idx === 1)
+    expect(next).toBeDefined()
+    clickMenu(port, next?.value)
+    await sleep(10)
+    const secondPage = port.cardUpdates.at(-1)?.card as { elements: { actions?: { tag: string; options?: unknown[] }[] }[] }
+    const select = secondPage.elements.flatMap(e => e.actions ?? []).find(a => a.tag === 'select_static')
+    expect((select?.options ?? []).length).toBe(2)
+  })
+
+  it('R32-d: /session rides a picker card; a click restores that session', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', '第一个会话')
+    await sleep(20)
+    const firstSessionId = host.created[0]?.id
+    await textMessage(port, '/new')
+    emitInbound(port, 'm2', '第二个会话')
+    await sleep(20)
+    const secondAgent = host.created[1]
+
+    await textMessage(port, '/session')
+    const { buttons } = menuButtons(port)
+    expect(buttons.length).toBeGreaterThanOrEqual(2)
+    const firstSessionButton = buttons.find(b => (b.value as { idx?: number }).idx !== 0)
+    expect(firstSessionButton).toBeDefined()
+    clickMenu(port, firstSessionButton?.value)
+    await sleep(10)
+
+    // D1 semantics on the click path: the running task was stopped…
+    expect(secondAgent?.cancels).toContain('session switch')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已停止当前任务'))).toBe(true)
+    // …and the next message resumes the restored session.
+    emitInbound(port, 'm3', '回到旧会话')
+    await sleep(20)
+    expect(host.created.at(-1)?.id).toBe(firstSessionId)
+  })
+
+  it('R32: dispose retires menus and their timers', async () => {
+    const { port, dispose } = makeEnv()
+    await textMessage(port, '/ws')
+    const state = dispose.state
+    expect(state.cardMenus.size).toBeGreaterThan(0)
+    await dispose()
+    expect(state.cardMenus.size).toBe(0)
+    expect(state.menuTimers.size).toBe(0)
   })
 })

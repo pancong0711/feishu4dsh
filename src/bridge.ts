@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { realpath, stat } from 'node:fs/promises'
+import { mkdir, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { AGENT_PRESETS, type ResolvedConfig } from './config.js'
@@ -15,8 +15,8 @@ import type { Authorization } from './acl.js'
 import { mayApprove } from './acl.js'
 import type { ChannelPort, CardActionEvent, NormalizedMessage, RejectEvent } from './adapter.js'
 import { resolveScopeKey, agentKeyOf, isAgentKey, sessionIdOf, AgentLedger, type SessionScopeInput } from './sessions.js'
-import { buildCatalog, listWorkspaces, resolveCdTarget, registeredPathsOf, resolveWorkspaceDirectory, normalizeWorkspacePath, type WorkspaceCatalog } from './workspaces.js'
-import { approvalCard, decodeActionValue, settledApprovalCard, type CardActionPayload } from './cards.js'
+import { buildCatalog, listSubdirectories, listWorkspaces, resolveCdTarget, registeredPathsOf, resolveWorkspaceDirectory, normalizeWorkspacePath, type WorkspaceCatalog } from './workspaces.js'
+import { approvalCard, decodeActionValue, settledApprovalCard, type CardActionPayload, type MenuActionPayload } from './cards.js'
 import type { HostAgentHandle, HostAgentOptions, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostModelSelection, HostSession, HostSessionEvent, HostTools, HostWorkspace, HostWorkspaceRegistry, TokenUsageData } from './host.js'
 import { assistantText, isAssistantChunkEvent, isAssistantMessageEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
 import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedSelection, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
@@ -26,6 +26,11 @@ import {
   activeRecordOf, hydrateSessionRegistry, listSessions, nextGenOf, renameSession, staleSessionsOf, touchSession,
   upsertSession, type ActiveGenMap, type SessionRecord, type SessionRegistry,
 } from './session-registry.js'
+import {
+  MENU_TTL_MS, MenuRegistry, browseCard, createMenuId, menuDoneCard,
+  menuExpiredCard, modelMenuCard, sessionMenuCard, wsMenuCard, type BrowseLabels, type MenuLabels,
+  type MenuOption, type MenuState,
+} from './card-menu.js'
 import { resolveLocale, strings, type Locale, type Strings } from './strings.js'
 import { formatBytes, formatNumber, formatStamp, shortHash } from './util.js'
 
@@ -286,6 +291,10 @@ export interface BridgeState {
   readonly streamedTurns: Set<ChatBinding>
   /** userMessage.id -> Feishu anchor of the scope that produced it (R22). */
   readonly replyTargets: Map<string, ReplyTarget>
+  /** Live interactive menus (R32): menuId -> state; timers live separately. */
+  readonly cardMenus: MenuRegistry
+  /** menuId -> expiry timer that retires the card (R32). */
+  readonly menuTimers: Map<string, NodeJS.Timeout>
   /**
    * scope key -> tail of that binding's render queue (R21 §3.4). Session
    * events for one chat render strictly one after another, so concurrent
@@ -321,6 +330,8 @@ function createBridgeState(): BridgeState {
     pendingAgents: new Map(),
     streamedTurns: new Set(),
     replyTargets: new Map(),
+    cardMenus: new MenuRegistry(),
+    menuTimers: new Map(),
     renderQueues: new Map(),
     userWorkspaces: new Set(),
     sessionPresets: new Map(),
@@ -1254,9 +1265,407 @@ function waitForCardDecision(
 /* Card clicks                                                         */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Interactive menus (R32): /ws picker, /ws new browser, /model picker, */
+/* /session picker. One live menu per (scope, kind); clicks re-check    */
+/* the ACL of the underlying command with the CLICKER's identity.       */
+/* ------------------------------------------------------------------ */
+
+/** Register a menu and arm its expiry timer. */
+function registerMenu(env: BridgeEnv, state: BridgeState, menu: MenuState): void {
+  state.cardMenus.put(menu)
+  const timer = setTimeout(() => {
+    state.menuTimers.delete(menu.id)
+    if (state.cardMenus.get(menu.id, Date.now()) === 'expired') {
+      state.cardMenus.remove(menu.id)
+      if (menu.messageId !== undefined) {
+        void env.port.updateCard(menu.messageId, menuExpiredCard(state.copy.menuExpired))
+          .catch(() => undefined)
+      }
+    }
+  }, MENU_TTL_MS)
+  timer.unref?.()
+  state.menuTimers.set(menu.id, timer)
+}
+
+/** Retire one menu: stop its timer, drop it, and swap the card to settled. */
+async function settleMenu(env: BridgeEnv, state: BridgeState, menu: MenuState, title: string, body: string): Promise<void> {
+  const timer = state.menuTimers.get(menu.id)
+  if (timer !== undefined) {
+    clearTimeout(timer)
+    state.menuTimers.delete(menu.id)
+  }
+  state.cardMenus.remove(menu.id)
+  if (menu.messageId !== undefined) {
+    await env.port.updateCard(menu.messageId, menuDoneCard(title, body)).catch(() => undefined)
+  }
+}
+
+/** Clear every menu of one scope (session switch / `/new` hygiene). */
+function dropScopeMenus(state: BridgeState, scopeKey: string): void {
+  for (const menu of state.cardMenus.all()) {
+    if (menu.scopeKey !== scopeKey) continue
+    const timer = state.menuTimers.get(menu.id)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      state.menuTimers.delete(menu.id)
+    }
+    state.cardMenus.remove(menu.id)
+  }
+}
+
+/** Re-render one paged/browse card in place after a navigation click. */
+async function refreshMenuCard(env: BridgeEnv, state: BridgeState, menu: MenuState): Promise<void> {
+  if (menu.messageId === undefined) return
+  const cardObject = menu.kind === 'browse'
+    ? browseCard(menu.chatId, menu, browseLabelsFor(state))
+    : menu.kind === 'model'
+      ? modelMenuCard(menu.chatId, menu, modelMenuLabels(state))
+      : undefined
+  if (cardObject === undefined) return
+  await env.port.updateCard(menu.messageId, cardObject).catch(error => {
+    env.report(`feishu4dsh: menu card update failed: ${describeError(error)}`)
+  })
+}
+
+function modelMenuLabels(state: BridgeState): MenuLabels & { title: string } {
+  return {
+    title: state.copy.modelMenuTitle,
+    prev: state.copy.menuPrevLabel,
+    next: state.copy.menuNextLabel,
+    pageOf: state.copy.menuPageOf,
+    placeholder: state.copy.modelMenuPlaceholder,
+    expiredNote: state.copy.modelMenuExpiredNote,
+  }
+}
+
+function browseLabelsFor(state: BridgeState): BrowseLabels {
+  return {
+    title: path => path,
+    empty: state.copy.browseEmpty,
+    confirm: state.copy.browseConfirm,
+    parent: state.copy.browseParent,
+    note: state.copy.browseNote,
+    prev: state.copy.menuPrevLabel,
+    next: state.copy.menuNextLabel,
+    pageOf: state.copy.menuPageOf,
+  }
+}
+
+/**
+ * One menu-card click: expiry, forward and ACL guards, then act routing.
+ * Every action re-checks the ACL of its underlying command with the
+ * CLICKER's identity — a forwarded card or a non-approver group member can
+ * never act (R11 semantics, now on the click path too).
+ */
+async function handleMenuAction(env: BridgeEnv, state: BridgeState, event: CardActionEvent, payload: MenuActionPayload): Promise<void> {
+  const resolved = state.cardMenus.get(payload.menuId, Date.now())
+  if (resolved === undefined) return
+  if (resolved === 'expired') {
+    if (payload.chatId === event.chatId) await safeSend(env, event.chatId, state.copy.menuExpired)
+    return
+  }
+  const menu = resolved
+  if (payload.chatId !== event.chatId) {
+    await safeSend(env, event.chatId, state.copy.menuWrongChat)
+    return
+  }
+  const openId = event.operator.openId
+  if (!canManageWorkspaces(env, openId)) {
+    await safeSend(env, event.chatId, state.copy.cdNoPermission)
+    return
+  }
+  const binding = state.chats.get(menu.scopeKey)
+  if (binding === undefined) return
+
+  if (menu.kind === 'browse') {
+    await handleBrowseAction(env, state, menu, binding, payload)
+    return
+  }
+
+  if (payload.act === 'page' && payload.idx !== undefined) {
+    menu.page = payload.idx
+    await refreshMenuCard(env, state, menu)
+    return
+  }
+  if (payload.act !== 'sel' || payload.idx === undefined) return
+  const option = menu.options[payload.idx]
+  if (option === undefined || option.disabled === true) {
+    await safeSend(env, event.chatId, state.copy.menuExpired)
+    return
+  }
+
+  if (menu.kind === 'ws') {
+    const path = menu.paths?.[payload.idx]
+    const label = option.label
+    if (path === undefined) {
+      await safeSend(env, event.chatId, state.copy.menuExpired)
+      return
+    }
+    await settleMenu(env, state, menu, state.copy.menuWsSettledTitle,
+      state.copy.cdSwitched(label, path))
+    await applyWorkspaceSwitch(env, state, binding, path)
+    return
+  }
+  if (menu.kind === 'model') {
+    const raw = env.config.modelCatalog[payload.idx]
+    const target = raw === undefined ? undefined : parseModelTarget(raw)
+    if (target === undefined) {
+      await safeSend(env, event.chatId, state.copy.menuExpired)
+      return
+    }
+    await settleMenu(env, state, menu, state.copy.menuModelSettledTitle,
+      state.copy.modelSwitched(target.provider, target.model))
+    await applyModelSelection(env, state, binding, target, openId)
+    return
+  }
+  if (menu.kind === 'session') {
+    const record = listSessions(state.chatSessions, currentAgentKey(binding))[payload.idx]
+    if (record === undefined) {
+      await safeSend(env, event.chatId, state.copy.menuExpired)
+      return
+    }
+    await settleMenu(env, state, menu, state.copy.menuSessionSettledTitle,
+      state.copy.sessionSwitched(record.title))
+    await switchSessionToRecord(env, state, binding, record, openId)
+  }
+}
+
+/** `/ws` (no argument): the workspace picker card. `/ws list` = text. */
+async function sendWsMenu(env: BridgeEnv, state: BridgeState, binding: ChatBinding, replyTo?: string): Promise<void> {
+  invalidateWorkspaceCatalog(state)
+  const catalog = await workspaceCatalogFor(env, state)
+  const infos = listWorkspaces(catalog, binding.workspacePath)
+  const menu: MenuState = {
+    id: createMenuId(),
+    kind: 'ws',
+    chatId: binding.chatId,
+    scopeKey: binding.scopeKey,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + MENU_TTL_MS,
+    page: 0,
+    options: infos.map(info => ({
+      label: info.name,
+      disabled: info.path === binding.workspacePath,
+    })),
+    paths: infos.map(info => info.path),
+  }
+  registerMenu(env, state, menu)
+  const paths = infos.map(info => `- ${info.name} — \`${info.path}\``)
+  const sent = await env.port.send(binding.chatId, { card: wsMenuCard(binding.chatId, menu, paths, {
+    note: state.copy.wsMenuNote,
+    title: state.copy.wsMenuTitle,
+  }) }, replyTo === undefined ? undefined : { replyTo, replyInThread: true }).catch(() => undefined)
+  if (sent !== undefined) menu.messageId = sent.messageId
+}
+
+/** `/model` picker over the configured catalog (current entry marked). */
+async function sendModelMenu(env: BridgeEnv, state: BridgeState, binding: ChatBinding, replyTo?: string): Promise<void> {
+  const catalog = env.config.modelCatalog.filter(entry => parseModelTarget(entry) !== undefined)
+  if (catalog.length === 0) return // no catalog configured: /model stays text-only
+  const current = effectiveSessionSelection(env, state, binding)
+  const currentKey = current === undefined ? undefined : `${current.provider}/${current.model}`
+  const menu: MenuState = {
+    id: createMenuId(),
+    kind: 'model',
+    chatId: binding.chatId,
+    scopeKey: binding.scopeKey,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + MENU_TTL_MS,
+    page: 0,
+    options: catalog.map(entry => ({
+      label: entry,
+      disabled: entry === currentKey,
+    })),
+  }
+  registerMenu(env, state, menu)
+  const sent = await env.port.send(binding.chatId, { card: modelMenuCard(binding.chatId, menu, modelMenuLabels(state)) },
+    replyTo === undefined ? undefined : { replyTo, replyInThread: true }).catch(() => undefined)
+  if (sent !== undefined) menu.messageId = sent.messageId
+}
+
+/** `/session` picker under the text list (same numbering, current marked). */
+async function sendSessionMenu(env: BridgeEnv, state: BridgeState, binding: ChatBinding, replyTo?: string): Promise<void> {
+  const agentKey = currentAgentKey(binding)
+  const activeGen = state.ledger.generationOf(agentKey)
+  const archived = archivedSetOf(env)
+  const records = listSessions(state.chatSessions, agentKey)
+  const options: MenuOption[] = []
+  const indexMap: number[] = []
+  records.forEach((record, index) => {
+    const isArchived = archived?.has(record.sessionId) ?? false
+    if (isArchived && record.gen !== activeGen) return
+    options.push({ label: record.title, disabled: record.gen === activeGen })
+    indexMap.push(index)
+  })
+  if (options.length === 0) return
+  const menu: MenuState = {
+    id: createMenuId(),
+    kind: 'session',
+    chatId: binding.chatId,
+    scopeKey: binding.scopeKey,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + MENU_TTL_MS,
+    page: 0,
+    options,
+    indexMap,
+  }
+  registerMenu(env, state, menu)
+  const sent = await env.port.send(binding.chatId, { card: sessionMenuCard(binding.chatId, menu, {
+    note: state.copy.sessionMenuNote,
+    title: state.copy.sessionMenuTitle,
+  }) }, replyTo === undefined ? undefined : { replyTo, replyInThread: true }).catch(() => undefined)
+  if (sent !== undefined) menu.messageId = sent.messageId
+}
+
+/** Browse-card click routing: enter / up / page / confirm. */
+async function handleBrowseAction(env: BridgeEnv, state: BridgeState, menu: MenuState, binding: ChatBinding, payload: MenuActionPayload): Promise<void> {
+  const root = menu.root ?? ''
+  if (payload.act === 'page' && payload.idx !== undefined) {
+    menu.page = payload.idx
+    await refreshMenuCard(env, state, menu)
+    return
+  }
+  if (payload.act === 'up') {
+    const parent = dirname(menu.cwd ?? '.')
+    const withinRoot = parent === root || parent.startsWith(root.endsWith('/') ? root : `${root}/`)
+    if (root === '' || !withinRoot) {
+      await refreshMenuCard(env, state, menu)
+      return
+    }
+    menu.cwd = parent
+    await refreshBrowseEntries(env, menu)
+    await refreshMenuCard(env, state, menu)
+    return
+  }
+  if (payload.act === 'sel' && payload.idx !== undefined) {
+    const name = (menu.entries ?? [])[payload.idx]
+    const candidate = name === undefined ? undefined : resolve(menu.cwd ?? '.', name)
+    const canonical = candidate === undefined ? undefined : await realpath(candidate).catch(() => undefined)
+    if (canonical === undefined) {
+      await refreshMenuCard(env, state, menu)
+      return
+    }
+    menu.cwd = canonical
+    await refreshBrowseEntries(env, menu)
+    await refreshMenuCard(env, state, menu)
+    return
+  }
+  if (payload.act === 'ok') {
+    const cwd = menu.cwd
+    if (cwd === undefined) return
+    await settleMenu(env, state, menu, state.copy.menuBrowseSettledTitle,
+      state.copy.cdSwitched(basename(cwd), cwd))
+    await registerAndSwitchWorkspace(env, state, binding, cwd)
+  }
+}
+
+/** Rebuild the directory snapshot of a browse menu at its cwd. */
+async function refreshBrowseEntries(env: BridgeEnv, menu: MenuState): Promise<void> {
+  try {
+    menu.entries = await listSubdirectories(menu.cwd ?? '.')
+  } catch (error) {
+    env.report(`feishu4dsh: browse listing failed: ${describeError(error)}`)
+    menu.entries = []
+  }
+  menu.page = 0
+}
+
+/** `/ws new` (no argument): open the folder browser inside allowed roots. */
+async function openBrowseMenu(env: BridgeEnv, state: BridgeState, binding: ChatBinding, senderId: string, replyTo?: string): Promise<void> {
+  const chatId = binding.chatId
+  if (!canManageWorkspaces(env, senderId)) {
+    await safeSend(env, chatId, state.copy.wsNoPermission, replyTo)
+    return
+  }
+  invalidateWorkspaceCatalog(state)
+  const catalog = await workspaceCatalogFor(env, state)
+  if (catalog.roots.length === 0) {
+    await safeSend(env, chatId, state.copy.browseNoRoots, replyTo)
+    return
+  }
+  // Prefer the chat's current workspace when it sits inside a root, so the
+  // browser opens where the user already is; otherwise the first root.
+  const inside = catalog.roots.find(root => binding.workspacePath === root
+    || binding.workspacePath.startsWith(root.endsWith('/') ? root : `${root}/`))
+  const menu: MenuState = {
+    id: createMenuId(),
+    kind: 'browse',
+    chatId,
+    scopeKey: binding.scopeKey,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + MENU_TTL_MS,
+    page: 0,
+    options: [],
+    cwd: inside ?? catalog.roots[0],
+    root: inside ?? catalog.roots[0],
+    entries: [],
+  }
+  await refreshBrowseEntries(env, menu)
+  registerMenu(env, state, menu)
+  const sent = await env.port.send(chatId, { card: browseCard(chatId, menu, browseLabelsFor(state)) },
+    replyTo === undefined ? undefined : { replyTo, replyInThread: true }).catch(() => undefined)
+  if (sent !== undefined) menu.messageId = sent.messageId
+}
+
+/**
+ * Register one directory as a user workspace (the `/ws add` accounting)
+ * and then switch the chat onto it — the `/ws new` outcome.
+ */
+async function registerAndSwitchWorkspace(env: BridgeEnv, state: BridgeState, binding: ChatBinding, canonical: string): Promise<void> {
+  state.userWorkspaces.add(canonical)
+  await registerWorkspace(env, canonical)
+  invalidateWorkspaceCatalog(state)
+  try {
+    await env.hooks.onUserWorkspacesChange?.([...state.userWorkspaces])
+  } catch (error) {
+    env.report(`feishu4dsh: persist user workspaces failed: ${describeError(error)}`)
+  }
+  await applyWorkspaceSwitch(env, state, binding, canonical)
+}
+
+/** `/ws new <名称>`: mkdir at the browsed location (or current workspace). */
+async function wsMkdir(env: BridgeEnv, state: BridgeState, binding: ChatBinding, rawName: string, senderId: string, replyTo?: string): Promise<void> {
+  const chatId = binding.chatId
+  if (!canManageWorkspaces(env, senderId)) {
+    await safeSend(env, chatId, state.copy.wsNoPermission, replyTo)
+    return
+  }
+  const name = rawName.trim()
+  if (name === '' || name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
+    await safeSend(env, chatId, name === '' ? state.copy.wsMkdirUsage : state.copy.wsMkdirInvalid(name), replyTo)
+    return
+  }
+  // Parent = the chat's live browse location if one is open, else the
+  // current workspace — "create where I'm looking, or where I am".
+  let parent: string | undefined
+  for (const menu of state.cardMenus.all()) {
+    if (menu.scopeKey === binding.scopeKey && menu.kind === 'browse' && menu.cwd !== undefined) {
+      parent = menu.cwd
+      break
+    }
+  }
+  if (parent === undefined) parent = binding.workspacePath
+  const target = resolve(parent, name)
+  try {
+    await mkdir(target)
+  } catch (error) {
+    env.report(`feishu4dsh: mkdir failed: ${describeError(error)}`)
+    await safeSend(env, chatId, state.copy.wsMkdirInvalid(name), replyTo)
+    return
+  }
+  const canonical = await realpath(target)
+  await safeSend(env, chatId, state.copy.wsMkdirDone(basename(canonical), canonical), replyTo)
+  await registerAndSwitchWorkspace(env, state, binding, canonical)
+}
+
 async function handleCardAction(env: BridgeEnv, state: BridgeState, event: CardActionEvent): Promise<void> {
   const payload = decodeActionValue(event.action.value)
   if (payload === null) return
+  if (payload.kind === 'menu') {
+    await handleMenuAction(env, state, event, payload)
+    return
+  }
   const pending = state.approvals.get(payload.token)
   if (pending === undefined || pending.settled) return
 
@@ -1694,6 +2103,8 @@ async function resetSessionScope(env: BridgeEnv, state: BridgeState, binding: Ch
   state.ledger.reset(agentKey, nextGen)
   state.chatActiveGen[agentKey] = nextGen
   persistSessions(env, state)
+  // R32: session menus are stale the moment the generation moves.
+  dropScopeMenus(state, binding.scopeKey)
   for (const [sessionId] of [...state.sessionScopes]) {
     if (entry !== undefined && sessionId === entry.sessionId) {
       state.sessionScopes.delete(sessionId)
@@ -1793,6 +2204,8 @@ async function cmdSession(
     })
     lines.push(copy.sessionUsage)
     await safeSend(env, chatId, lines.join('\n'), replyTo)
+    // R32: the tappable session list rides along with the text listing.
+    await sendSessionMenu(env, state, binding, replyTo)
     return
   }
 
@@ -1899,6 +2312,19 @@ async function cmdSession(
     await safeSend(env, chatId, copy.sessionUnknown(n), replyTo)
     return
   }
+  await switchSessionToRecord(env, state, binding, target, senderId, replyTo)
+}
+
+/**
+ * The `/session <n>` body after index resolution — also the landing path
+ * for the session picker card (R32), whose click ACL was already checked
+ * in `handleMenuAction`. D1: the running task dies with the switch.
+ */
+async function switchSessionToRecord(env: BridgeEnv, state: BridgeState, binding: ChatBinding, target: SessionRecord, senderId: string, replyTo?: string): Promise<void> {
+  const chatId = binding.chatId
+  const copy = state.copy
+  const agentKey = currentAgentKey(binding)
+  const activeGen = state.ledger.generationOf(agentKey)
   if (target.gen === activeGen) {
     await safeSend(env, chatId, copy.sessionAlreadyCurrent(target.title), replyTo)
     return
@@ -1927,6 +2353,7 @@ async function cmdSession(
     if (anchor.scopeKey === binding.scopeKey) state.replyTargets.delete(id)
   }
   persistSessions(env, state)
+  dropScopeMenus(state, binding.scopeKey)
   env.report(`feishu4dsh: session switched by ${senderId}: gen ${target.gen} (${target.title})`)
   await safeSend(env, chatId, copy.sessionSwitched(target.title), replyTo)
 }
@@ -2029,7 +2456,7 @@ async function cmdStatus(env: BridgeEnv, state: BridgeState, binding: ChatBindin
         stats.usage.reasoningTokens > 0 ? formatNumber(stats.usage.reasoningTokens) : undefined,
       )
       : copy.statusTokensUnavailable,
-    '\n/ws 列出工作区 · /cd <名称或路径> 切换工作区',
+    '\n/ws 点选工作区 · /cd <名称或路径> 切换 · /ws new 新建',
   ]
   await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
 }
@@ -2125,6 +2552,8 @@ async function cmdModel(
       ? `${copy.modelTitle}：${copy.modelUnknown}`
       : `${copy.modelTitle}：${shown.text}${shown.isDefaultNotStarted ? copy.modelDefaultNotStarted : ''}${copy.modelSourceSession}`
     await safeSend(env, chatId, `${modelLine}\n${copy.modelEffortLine(effort.value, effort.source)}`, replyTo)
+    // R32: the tappable model list rides along when a catalog is configured.
+    await sendModelMenu(env, state, binding, replyTo)
     return
   }
 
@@ -2162,6 +2591,17 @@ async function cmdModel(
     await safeSend(env, chatId, copy.modelUsage, replyTo)
     return
   }
+  await applyModelSelection(env, state, binding, target, senderId, replyTo)
+}
+
+/**
+ * The `/model <p/m>` body after parsing — also the landing path for the
+ * model picker card (R32), whose click ACL was already checked in
+ * `handleMenuAction`. Pins the selection for the scope's agent key.
+ */
+async function applyModelSelection(env: BridgeEnv, state: BridgeState, binding: ChatBinding, target: HostModelSelection, senderId: string, replyTo?: string): Promise<void> {
+  const chatId = binding.chatId
+  const copy = state.copy
   const agentKey = currentAgentKey(binding)
   let selection = state.selections.get(agentKey)
   if (selection === undefined) {
@@ -2283,14 +2723,24 @@ async function cmdWs(
 ): Promise<void> {
   const rest = line.trim().slice('/ws'.length).trim()
   if (rest === '') {
-    await cmdListWorkspaces(env, state, binding, replyTo)
+    await sendWsMenu(env, state, binding, replyTo)
     return
   }
   const [sub, ...restParts] = rest.split(/\s+/)
   const arg = restParts.join(' ').trim()
   switch (sub) {
+    case 'list':
+      await cmdListWorkspaces(env, state, binding, replyTo)
+      return
     case 'add':
       await cmdWsAdd(env, state, binding, arg, senderId, replyTo)
+      return
+    case 'new':
+      if (arg === '') {
+        await openBrowseMenu(env, state, binding, senderId, replyTo)
+      } else {
+        await wsMkdir(env, state, binding, arg, senderId, replyTo)
+      }
       return
     case 'remove':
     case 'rm':
@@ -2424,6 +2874,16 @@ async function cmdSwitchWorkspace(env: BridgeEnv, state: BridgeState, binding: C
     await safeSend(env, chatId, state.copy.cdUsage, replyTo)
     return
   }
+  await applyWorkspaceSwitch(env, state, binding, target, replyTo)
+}
+
+/**
+ * The `/cd` body after the ACL gate — also the landing path for the `/ws`
+ * picker card (R32), whose click ACL was already checked in
+ * `handleMenuAction`. Sends the switched/refusal copy itself.
+ */
+async function applyWorkspaceSwitch(env: BridgeEnv, state: BridgeState, binding: ChatBinding, target: string, replyTo?: string): Promise<void> {
+  const chatId = binding.chatId
 
   invalidateWorkspaceCatalog(state)
   const catalog = await workspaceCatalogFor(env, state)
@@ -2514,6 +2974,10 @@ async function dispose(env: BridgeEnv, state: BridgeState): Promise<void> {
   state.streamedTurns.clear()
   state.selections.clear()
   state.sessionPresets.clear()
+  // R32: retire menu cards and their expiry timers with the bridge.
+  for (const timer of state.menuTimers.values()) clearTimeout(timer)
+  state.menuTimers.clear()
+  state.cardMenus.clear()
   // Settle in-flight agent creations so the sweep below disposes their
   // handles too; failures during creation have nothing to dispose.
   for (const pending of [...state.pendingAgents.values()]) {

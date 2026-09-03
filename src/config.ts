@@ -48,6 +48,8 @@ export interface Config {
   chatPresets?: Record<string, string>
   /** Runtime map of `provider/model` → reasoning-effort preference; managed by `/model effort` (R28). */
   modelEfforts?: Record<string, string>
+  /** Deployment-curated model list for the `/model` picker (R32); entries are `provider/model`. */
+  modelCatalog?: string[]
   /** Runtime session registry (agentKey → records); managed by `/session` (R29), not hand-edited. */
   chatSessions?: Record<string, unknown[]>
   /** Runtime map of agentKey → active generation; the `/session <n>` pointer (R29). */
@@ -104,6 +106,7 @@ export const Config = Schema.object({
   agentPreset: Schema.union([...AGENT_PRESETS]).default('standard'),
   chatPresets: Schema.any().default({}).hidden(),
   modelEfforts: Schema.any().default({}).hidden(),
+  modelCatalog: Schema.array(String).default([]),
   chatSessions: Schema.any().default({}).hidden(),
   chatActiveGen: Schema.any().default({}).hidden(),
   requireMention: Schema.boolean().default(true),
@@ -174,6 +177,7 @@ export function resolveConfig(config: Config): Required<Config> {
     chatWorkspaces: cleanStringMap(config.chatWorkspaces),
     chatPresets: cleanStringMap(config.chatPresets),
     modelEfforts: cleanStringMap(config.modelEfforts),
+    modelCatalog: cleanList(config.modelCatalog),
     chatSessions: (config.chatSessions ?? {}) as NonNullable<Config['chatSessions']>,
     chatActiveGen: Object.fromEntries(
       Object.entries(config.chatActiveGen ?? {})

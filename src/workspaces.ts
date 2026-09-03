@@ -18,7 +18,7 @@
 
 import { basename, isAbsolute, resolve } from 'node:path'
 import { dirname } from 'node:path'
-import { realpath } from 'node:fs/promises'
+import { readdir, realpath } from 'node:fs/promises'
 
 /** One workspace the channel can reason about. */
 export interface WorkspaceEntry {
@@ -292,4 +292,17 @@ export function registeredPathsOf(
   } catch {
     return []
   }
+}
+
+/**
+ * Subdirectory names of one directory for the `/ws new` browser (R32):
+ * real directories only, dotfiles skipped, sorted. Throws when the
+ * directory is unreadable — the caller turns that into user copy.
+ */
+export async function listSubdirectories(dir: string): Promise<string[]> {
+  const dirents = await readdir(dir, { withFileTypes: true })
+  return dirents
+    .filter(dirent => dirent.isDirectory() && !dirent.name.startsWith('.'))
+    .map(dirent => dirent.name)
+    .sort((a, b) => a.localeCompare(b))
 }

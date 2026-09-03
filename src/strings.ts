@@ -126,6 +126,32 @@ export interface Strings {
   wsRemoved: (name: string, path: string) => string
   wsNotUserAdded: (target: string) => string
   wsNotDirectory: (target: string) => string
+  /* Interactive menus (R32: /ws picker, /ws new browser, /model picker, /session picker). */
+  wsMenuTitle: string
+  wsMenuEmpty: string
+  wsMenuNote: string
+  modelMenuTitle: string
+  modelMenuPlaceholder: string
+  modelMenuExpiredNote: string
+  menuPrevLabel: string
+  menuNextLabel: string
+  menuPageOf: (page: number, total: number) => string
+  menuExpired: string
+  menuWrongChat: string
+  menuWsSettledTitle: string
+  menuModelSettledTitle: string
+  menuSessionSettledTitle: string
+  menuBrowseSettledTitle: string
+  sessionMenuTitle: string
+  sessionMenuNote: string
+  browseNoRoots: string
+  browseEmpty: string
+  browseConfirm: string
+  browseParent: string
+  browseNote: string
+  wsMkdirDone: (name: string, path: string) => string
+  wsMkdirInvalid: (name: string) => string
+  wsMkdirUsage: string
   newSessionDone: string
   stopped: string
   nothingToStop: string
@@ -251,7 +277,7 @@ const zhCN: Strings = {
   cdNotAllowed: target => `「${target}」不在允许的工作区范围内。可用 /ws add <路径> 添加，或在配置 workspaceRoots 中添加允许的目录。`,
   cdAmbiguous: (target, names) => `「${target}」对应多个工作区，请改用完整路径：${names}`,
   cdNoPermission: '当前发送者无权切换工作区（需为配置的审批人/授权用户）。',
-  wsUsage: '用法：/ws（列出） · /ws add <路径>（添加） · /ws remove <名称或路径>（移除）',
+  wsUsage: '用法：/ws（点选进入） · /ws list（文本列表） · /ws new（新建工作区） · /ws add <路径> · /ws remove <名称或路径>',
   wsAddUsage: '用法：/ws add <工作区目录的绝对路径>',
   wsRemoveUsage: '用法：/ws remove <工作区名称或路径>',
   wsNoPermission: '当前发送者无权管理工作区（需为配置的审批人/授权用户）。',
@@ -270,6 +296,31 @@ const zhCN: Strings = {
   notAFileRefusal: 'That path is not a regular file.',
   tooLargeRefusal: (size, limit) => `The file is ${size}, over the ${limit} limit.`,
   commandUnknown: line => `未知命令：${line}（/help 查看可用命令）`,
+  wsMenuTitle: '🗂 工作区（点选进入）',
+  wsMenuEmpty: '当前没有已注册的工作区（默认工作区除外）。用 /ws new 或 /ws add 添加。',
+  wsMenuNote: '点击即切换 · /ws list 文本列表 · /ws new 新建',
+  modelMenuTitle: '🧠 模型（点选切换）',
+  modelMenuPlaceholder: '请选择模型…',
+  modelMenuExpiredNote: '点击即切换会话模型（下一轮生效）',
+  menuPrevLabel: '‹ 上一页',
+  menuNextLabel: '下一页 ›',
+  menuPageOf: (page, total) => `${page} / ${total} 页`,
+  menuExpired: '该菜单已失效，请重新发送对应命令打开。',
+  menuWrongChat: '此菜单仅可在原会话中操作',
+  menuWsSettledTitle: '✅ 已切换工作区',
+  menuModelSettledTitle: '✅ 已切换模型',
+  menuSessionSettledTitle: '✅ 已切回会话',
+  menuBrowseSettledTitle: '✅ 已选定工作区',
+  sessionMenuTitle: '💬 会话（点选切回）',
+  sessionMenuNote: '点击即切回该会话；进行中的任务会先停止',
+  browseNoRoots: '未配置 workspaceRoots，无法浏览目录建工作区；请改用 /ws add <路径>。',
+  browseEmpty: '（此目录下没有子文件夹）',
+  browseConfirm: '✅ 就用这个目录',
+  browseParent: '⬆️ 上一级',
+  browseNote: '输入 /ws new <名称>：在当前浏览位置新建文件夹并进入',
+  wsMkdirDone: (name, path) => `已创建工作区「${name}」（${path}），并切换过去。`,
+  wsMkdirInvalid: name => `无法创建「${name}」：名称不能包含路径分隔符或为空。`,
+  wsMkdirUsage: '用法：/ws new（浏览并选择目录） · /ws new <名称>（在当前浏览位置新建文件夹）',
 }
 
 const enUS: Strings = {
@@ -401,6 +452,31 @@ const enUS: Strings = {
   notAFileRefusal: 'That path is not a regular file.',
   tooLargeRefusal: (size, limit) => `The file is ${size}, over the ${limit} limit.`,
   commandUnknown: line => `Unknown command: ${line} (try /help)`,
+  wsMenuTitle: '🗂 Workspaces (tap to switch)',
+  wsMenuEmpty: 'No registered workspaces yet (besides the default). Add one via /ws new or /ws add.',
+  wsMenuNote: 'Tap to switch · /ws list for text · /ws new to create',
+  modelMenuTitle: '🧠 Models (tap to switch)',
+  modelMenuPlaceholder: 'Select a model…',
+  modelMenuExpiredNote: 'Tap to switch the session model (applies next turn)',
+  menuPrevLabel: '‹ Prev',
+  menuNextLabel: 'Next ›',
+  menuPageOf: (page, total) => `Page ${page} / ${total}`,
+  menuExpired: 'This menu has expired — send the command again.',
+  menuWrongChat: 'This menu only works in its original chat',
+  menuWsSettledTitle: '✅ Workspace switched',
+  menuModelSettledTitle: '✅ Model switched',
+  menuSessionSettledTitle: '✅ Session restored',
+  menuBrowseSettledTitle: '✅ Workspace picked',
+  sessionMenuTitle: '💬 Sessions (tap to restore)',
+  sessionMenuNote: 'Tap to restore; a running task is stopped first',
+  browseNoRoots: 'workspaceRoots is not configured, so directory browsing is unavailable; use /ws add <path> instead.',
+  browseEmpty: '(no subfolders here)',
+  browseConfirm: '✅ Use this folder',
+  browseParent: '⬆️ Up one level',
+  browseNote: 'Type /ws new <name> to create a folder at the browsed location and switch into it',
+  wsMkdirDone: (name, path) => `Workspace "${name}" created (${path}) and switched to.`,
+  wsMkdirInvalid: name => `Cannot create "${name}": the name must not contain path separators and must not be empty.`,
+  wsMkdirUsage: 'Usage: /ws new (browse and pick) · /ws new <name> (create a folder at the browsed location)',
 }
 
 const table: Record<Locale, Strings> = { 'zh-CN': zhCN, 'en-US': enUS }

@@ -88,9 +88,10 @@ git status          # 确认无 node_modules/ lib/ .env 被误加
    git grep -niE "(appsecret|secret)\s*[:=]\s*['\"][^'\"]{8,}"
    git grep -nE "sk-[A-Za-z0-9]{10,}|password\s*[:=]"
    ```
-4. **悬空引用扫描**：快照内不得引用未发布的内部文档名（如内部需求 / 会话记录 / 各轮次规格文档）。
-5. **快照内测试**：`pnpm typecheck && pnpm test && pnpm build` 全绿；源码/测试与全量仓库对应提交逐字节一致。
-6. **推送留痕**：force-push 快照覆盖 `origin/main`；全量仓库打 `published-snapshot-*` tag；本部署预览仓库 `git fetch && git reset --hard origin/main` 保持与远程一致。
+4. **提交身份核对**（应只有 noreply）：`git log --format='%ae %ce' | sort -u`——作者/提交者邮箱随 push 公开，属发布面；快照仓须显式配置 GitHub noreply 身份再首次提交（历史遗留的链根元数据已核查登记，不改写）。
+5. **悬空引用扫描**：快照内不得引用未发布的内部文档名（如内部需求 / 会话记录 / 各轮次规格文档）。
+6. **快照内测试**：`pnpm typecheck && pnpm test && pnpm build` 全绿；源码/测试与全量仓库对应提交逐字节一致。
+7. **推送留痕**：force-push 快照覆盖 `origin/main`；全量仓库打 `published-snapshot-*` tag；本部署预览仓库 `git fetch && git reset --hard origin/main` 保持与远程一致。
 
 > **CI 经验（2026-08-25）**：若 `pnpm install` 报 `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: <pkg>`，
 > 是 pnpm ≥10 默认忽略依赖构建脚本所致——在 `pnpm-workspace.yaml` 的 `allowBuilds` 里把该包置为 `true` 即可
