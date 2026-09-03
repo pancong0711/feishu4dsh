@@ -55,10 +55,11 @@ journalctl --user -u dsh-feishu4dsh.service -f
 | 多消息 | 文本、图片（可选送视觉）、文件/音视频（落入工作区收件箱） |
 | 回复 | `stream` 流式 / `card` 聚合；`showProcess` 按轮聚合显示工具调用与 Token 用量摘要 |
 | 协作卡片 | 工具/出站文件审批，超时按拒绝（fail-closed） |
-| 会话隔离 | 按聊天/话题/发送人三种粒度，重启可恢复，`/new` 重开 |
-| **多工作区** | 会话 = scope×工作区；`/ws` 列/加/删、`/cd` 手机端切换，均持久化 |
+| 会话隔离 | 按聊天/话题/发送人三种粒度，重启可恢复，`/new` 重开；`/session` 回溯/重命名/归档（与 dsh web 共用归档集合） |
+| **多工作区** | 会话 = scope×工作区；`/ws` 点选进入、`/ws new` 浏览新建、`/cd` 兜底切换，均持久化 |
+| 交互选择卡 | `/ws` `/model` `/session` 均有点选卡片（当前项标 ✅，`/model` 支持分页下拉）；点击以点击者身份过审批 ACL，菜单 15 分钟自动失效 |
 | 授权 | 应用可用范围 + 发送人/群白名单 + 审批人名单（只收窄） |
-| 命令 | `/help` `/new` `/mode` `/session` `/stop` `/status` `/ws` `/cd` `/model`（含 `/model effort`） |
+| 命令 | `/help` `/new` `/mode` `/session` `/stop` `/status` `/ws` `/cd` `/model`（含 effort 与点选卡片） |
 | 文件 | 入站进 `.feishu4dsh/inbox/`；`send_file` 回传，群聊逐次审批 |
 | i18n | `locale: auto` 跟随读者语言，默认中文 |
 

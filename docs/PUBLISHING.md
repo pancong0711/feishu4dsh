@@ -66,7 +66,7 @@ git push -u origin main
 cd feishu4dsh
 pnpm install
 pnpm typecheck      # 严格类型检查应零错误
-pnpm test           # 应 134/134 通过  (以当时版本为准)
+pnpm test           # 应全绿（基线数量以当前版本为准）
 pnpm build          # 产出 lib/
 
 git status          # 确认无 node_modules/ lib/ .env 被误加

@@ -36,6 +36,9 @@
 > **话题/线程说明**：飞书话题 = thread。`sessionScope: chat` 时所有话题共享一个 Agent 会话；`chat-thread` 时每个话题独立会话。`/status` 显示的是配置原文（如 `chat` / `chat-thread`），不是自动判断的“话题”。
 
 > **模式与推理强度**（R27/R28）：`/mode` 查看/设置会话模式（standard/minimal，设置即开启新会话——`resume()` 不能换预设）；`/model effort` 按模型设置推理强度（`default/low/high/max`，`default` = 请求不携带 `reasoning_effort`；调整即全局记住该模型的偏好）。两者 ACL 与 `/model` 一致。
+> **会话管理**（R29）：`/session` 列表（自动标题 = 日期+首条消息首行≤12字）、`/session <n>` 切回旧会话（自动停止进行中任务）、`/session rename`、`/session archive <n>` / `archive old [天数]`（归档与 dsh web 共用同一集合，当前版本归档单向）。切换/重命名/归档的 ACL 与 `/cd` 一致。
+>
+> **交互选择卡**（R32）：`/ws` 默认出**工作区选择卡**（当前项标 ✅，点击即切换，文本列表保留为 `/ws list`）；`/ws new` 打开**目录浏览卡**——在 `workspaceRoots` 配置的目录内逐级进入/翻页/返回上级，「✅ 就用这个目录」= 注册并切换；`/ws new <名称>` 在当前浏览位置新建文件夹并进入；`/model` 在状态文本后追加**模型选择卡**（`select_static` 下拉 + 分页，每页 15 条，当前模型标 ✅），候选清单来自 `modelCatalog` 配置；`/session` 文本列表后附**会话选择卡**（同一套稳定编号）。所有菜单点击都以**点击者身份**重查对应命令的审批 ACL，转发到别的会话的卡一律拒绝；菜单卡 15 分钟自动失效；文本命令全部保留兜底（`/cd` `/ws add` `/ws list` `/model <p/m>`）。
 
 ## 工作区
 
@@ -47,6 +50,9 @@ dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操�
 | `workspaceRoots` | `[]` | `/cd` 可进入的目录前缀列表。**为空时只允许默认工作区与已注册工作区**（安全默认） |
 | `chatWorkspaces` | `{}` | 隐藏字段：`/cd` 持久化的「scopeKey→工作区」映射，运行时写入，勿手改 |
 | `userWorkspaces` | `[]` | 隐藏字段：`/ws add` 添加的工作区路径列表，运行时写入，勿手改 |
+| `chatSessions` | `{}` | 运行时状态（`/session` 写入）：agentKey → 会话注册表（标题/活跃时间），勿手改 |
+| `chatActiveGen` | `{}` | 运行时状态（`/session`/`/new` 写入）：agentKey → 活跃代次指针，勿手改 |
+| `modelCatalog` | `[]` | `/model` 点选卡的候选清单（`provider/model` 列表，部署管理员维护）；未配置时 `/model` 保持纯文本行为 |
 
 切换规则（`/cd`）：
 - **权限**（R11）：与 `/ws add`、`/model` 一致，沿用审批 ACL——配置了 `approvers` 时仅名单内可切换，未配置时由会话驱动者操作；无权时回复「无权切换工作区」。

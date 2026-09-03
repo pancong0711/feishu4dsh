@@ -57,6 +57,10 @@
 | `src/files.ts` | 收件箱落地、出站路径校验、`send_file` 工具 | Hermes 文件收发与安全边界 |
 | `src/config.ts` | schemastery 配置 schema + 解析（默认值/下限） | Hermes 平台配置段 |
 | `src/strings.ts` | zh-CN/en-US 渠道文案 | Hermes 本地化 |
+| `src/model-selection.ts` | 模型选择/展示纯逻辑：pin→会话→默认三级解析、effort 组合、`/model` 目标解析（R7/R8/R28） | — |
+| `src/session-registry.ts` | `/session` 注册表：登记/自动标题/切回/归档候选；水合时重建宿主冻结配置（R29/R30） | — |
+| `src/session-stats.ts` | 会话统计纯逻辑：轮/步/Token 累计（R26，与每轮摘要同口径） | — |
+| `src/card-menu.ts` | 交互菜单纯逻辑：菜单注册表（每 scope×kind 一张活卡/TTL）、分页、四类选择卡构建（R32） | Hermes 交互卡片 |
 | `src/host.ts` | dsh 宿主服务的窄契约（唯一适配面） | —（dsh 特有） |
 | `src/runtime.ts` | Cordis `apply`：bootstrap、settings、端口装配、拆卸 | —（dsh 特有） |
 
