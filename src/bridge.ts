@@ -143,6 +143,8 @@ export interface BridgeHooks {
   onPresetChange?: (scopeKey: string, preset: string) => void | Promise<void>
   /** Persist the per-model reasoning-effort preference table (R28). */
   onModelEffortsChange?: (efforts: Record<string, string>) => void | Promise<void>
+  /** Persist the `/model` picker catalog (R33: add/del/auto-learn). */
+  onModelCatalogChange?: (entries: string[]) => void | Promise<void>
   /** Persist the session registry + active-generation pointers (R29). */
   onSessionsChange?: (payload: {
     sessions: SessionRegistry
@@ -197,6 +199,9 @@ export interface BridgeTiming {
  */
 export const REPLY_TARGETS_MAX = 100
 
+/** Upper bound of the `/model` picker catalog (R33 auto-learn + manual add). */
+export const MODEL_CATALOG_CAP = 20
+
 /** Dependencies every bridge call threads through. */
 export interface BridgeEnv {
   readonly host: BridgeHost
@@ -243,6 +248,10 @@ export function installBridge(
   }
   const state = createBridgeState()
   for (const workspace of config.userWorkspaces) state.userWorkspaces.add(workspace)
+  // R33: seed the picker catalog from config (order preserved, deduped).
+  for (const entry of config.modelCatalog) {
+    if (!state.modelCatalog.includes(entry)) state.modelCatalog.push(entry)
+  }
   Object.assign(state.chatPresets, config.chatPresets)
   Object.assign(state.modelEfforts, config.modelEfforts)
   // R29: seed the session registry and re-point every agent key's ACTIVE
@@ -291,6 +300,8 @@ export interface BridgeState {
   readonly streamedTurns: Set<ChatBinding>
   /** userMessage.id -> Feishu anchor of the scope that produced it (R22). */
   readonly replyTargets: Map<string, ReplyTarget>
+  /** `/model` picker catalog, runtime-mutable (R33): seeded from config, learned on switch. */
+  readonly modelCatalog: string[]
   /** Live interactive menus (R32): menuId -> state; timers live separately. */
   readonly cardMenus: MenuRegistry
   /** menuId -> expiry timer that retires the card (R32). */
@@ -330,6 +341,7 @@ function createBridgeState(): BridgeState {
     pendingAgents: new Map(),
     streamedTurns: new Set(),
     replyTargets: new Map(),
+    modelCatalog: [],
     cardMenus: new MenuRegistry(),
     menuTimers: new Map(),
     renderQueues: new Map(),
@@ -1086,6 +1098,12 @@ async function registerWorkspace(env: BridgeEnv, workspacePath: string): Promise
   }
 }
 
+/** The chat that owns one session, resolved live (R33): unknown → undefined. */
+function resolveBindingOf(state: BridgeState, sessionId: string): ChatBinding | undefined {
+  const scopeKey = state.sessionScopes.get(sessionId)
+  return scopeKey === undefined ? undefined : state.chats.get(scopeKey)
+}
+
 /** The per-agent composition: register the channel's tools on the agent plane. */
 function composeAgentSetup(env: BridgeEnv, state: BridgeState, binding: ChatBinding): (agentCtx: Context) => Promise<void> {
   return async (agentCtx: Context) => {
@@ -1093,8 +1111,15 @@ function composeAgentSetup(env: BridgeEnv, state: BridgeState, binding: ChatBind
     const tools = agentCtx.get('tools') as HostTools | undefined
     if (env.config.sendFiles && tools !== undefined && typeof tools.register === 'function') {
       const ports: SendFilePorts = {
-        deliver: (sessionId, file, signal) => deliverFile(env, state, binding, sessionId, file, signal),
-        workspaceOf: () => binding.workspacePath,
+        // R33: resolve the calling session's chat AT EXECUTION TIME — the
+        // registered closure must never deliver via a stale/other chat's
+        // binding (the "file lands in the private chat" bug).
+        deliver: (sessionId, file, signal) => {
+          const owner = resolveBindingOf(state, sessionId)
+          if (owner === undefined) return Promise.resolve('send_file found no chat for this session')
+          return deliverFile(env, state, owner, sessionId, file, signal)
+        },
+        workspaceOf: sessionId => resolveBindingOf(state, sessionId)?.workspacePath,
         maxBytes: env.config.maxSendFileBytes,
         copy: state.copy,
       }
@@ -1317,6 +1342,14 @@ function dropScopeMenus(state: BridgeState, scopeKey: string): void {
 /** Re-render one paged/browse card in place after a navigation click. */
 async function refreshMenuCard(env: BridgeEnv, state: BridgeState, menu: MenuState): Promise<void> {
   if (menu.messageId === undefined) return
+  // Model menus re-sync their options from the LIVE catalog so addcur/learn
+  // reflect immediately (the send-time snapshot would go stale).
+  if (menu.kind === 'model') {
+    menu.options = state.modelCatalog.map(entry => ({
+      label: entry,
+      disabled: entry === menu.currentModel,
+    }))
+  }
   const cardObject = menu.kind === 'browse'
     ? browseCard(menu.chatId, menu, browseLabelsFor(state))
     : menu.kind === 'model'
@@ -1336,6 +1369,7 @@ function modelMenuLabels(state: BridgeState): MenuLabels & { title: string } {
     pageOf: state.copy.menuPageOf,
     placeholder: state.copy.modelMenuPlaceholder,
     expiredNote: state.copy.modelMenuExpiredNote,
+    addCurrent: state.copy.modelAddCurButton,
   }
 }
 
@@ -1383,6 +1417,16 @@ async function handleMenuAction(env: BridgeEnv, state: BridgeState, event: CardA
     return
   }
 
+  if (payload.act === 'addcur') {
+    if (menu.currentModel === undefined
+      || addModelCatalogEntry(env, state, menu.currentModel) === 'full') {
+      await safeSend(env, event.chatId, state.copy.modelCatalogFull(MODEL_CATALOG_CAP))
+      return
+    }
+    // Re-render: the entry is now in the list (marked ✅) and the ➕ disappears.
+    await refreshMenuCard(env, state, menu)
+    return
+  }
   if (payload.act === 'page' && payload.idx !== undefined) {
     menu.page = payload.idx
     await refreshMenuCard(env, state, menu)
@@ -1461,7 +1505,7 @@ async function sendWsMenu(env: BridgeEnv, state: BridgeState, binding: ChatBindi
 
 /** `/model` picker over the configured catalog (current entry marked). */
 async function sendModelMenu(env: BridgeEnv, state: BridgeState, binding: ChatBinding, replyTo?: string): Promise<void> {
-  const catalog = env.config.modelCatalog.filter(entry => parseModelTarget(entry) !== undefined)
+  const catalog = state.modelCatalog.filter(entry => parseModelTarget(entry) !== undefined)
   if (catalog.length === 0) return // no catalog configured: /model stays text-only
   const current = effectiveSessionSelection(env, state, binding)
   const currentKey = current === undefined ? undefined : `${current.provider}/${current.model}`
@@ -1473,6 +1517,7 @@ async function sendModelMenu(env: BridgeEnv, state: BridgeState, binding: ChatBi
     createdAt: Date.now(),
     expiresAt: Date.now() + MENU_TTL_MS,
     page: 0,
+    currentModel: currentKey,
     options: catalog.map(entry => ({
       label: entry,
       disabled: entry === currentKey,
@@ -2134,6 +2179,35 @@ function persistSessions(env: BridgeEnv, state: BridgeState): void {
   })()
 }
 
+/** Fire-and-forget persistence of the `/model` picker catalog (R33). */
+function persistModelCatalog(env: BridgeEnv, state: BridgeState): void {
+  void (async () => {
+    try {
+      await env.hooks.onModelCatalogChange?.([...state.modelCatalog])
+    } catch (error) {
+      env.report(`feishu4dsh: persist model catalog failed: ${describeError(error)}`)
+    }
+  })()
+}
+
+/** Add one entry to the picker catalog (dedup, cap). */
+function addModelCatalogEntry(env: BridgeEnv, state: BridgeState, entry: string): 'added' | 'exists' | 'full' {
+  if (state.modelCatalog.includes(entry)) return 'exists'
+  if (state.modelCatalog.length >= MODEL_CATALOG_CAP) return 'full'
+  state.modelCatalog.push(entry)
+  persistModelCatalog(env, state)
+  return 'added'
+}
+
+/** Remove one entry; refuses to empty the list. */
+function removeModelCatalogEntry(state: BridgeState, entry: string): 'ok' | 'missing' | 'last' {
+  const idx = state.modelCatalog.indexOf(entry)
+  if (idx === -1) return 'missing'
+  if (state.modelCatalog.length <= 1) return 'last'
+  state.modelCatalog.splice(idx, 1)
+  return 'ok'
+}
+
 /**
  * The host's global archive set (shared with dsh web), or undefined when the
  * deployment does not support archiving — the single fact source for which
@@ -2551,9 +2625,38 @@ async function cmdModel(
     const modelLine = shown === undefined
       ? `${copy.modelTitle}：${copy.modelUnknown}`
       : `${copy.modelTitle}：${shown.text}${shown.isDefaultNotStarted ? copy.modelDefaultNotStarted : ''}${copy.modelSourceSession}`
-    await safeSend(env, chatId, `${modelLine}\n${copy.modelEffortLine(effort.value, effort.source)}`, replyTo)
+    const hint = state.modelCatalog.length === 0 ? `\n${copy.modelCatalogHint}` : ''
+    await safeSend(env, chatId, `${modelLine}\n${copy.modelEffortLine(effort.value, effort.source)}${hint}`, replyTo)
     // R32: the tappable model list rides along when a catalog is configured.
     await sendModelMenu(env, state, binding, replyTo)
+    return
+  }
+
+  // R33: manage the picker catalog — add / del entries (approver-gated).
+  if (rest.startsWith('add ') || rest.startsWith('del ')) {
+    if (!canManageWorkspaces(env, senderId)) {
+      await safeSend(env, chatId, copy.modelNoPermission, replyTo)
+      return
+    }
+    const entry = rest.slice(4).trim()
+    const target = parseModelTarget(entry)
+    if (target === undefined) {
+      await safeSend(env, chatId, copy.modelAddDelUsage, replyTo)
+      return
+    }
+    if (rest.startsWith('add ')) {
+      const outcome = addModelCatalogEntry(env, state, entry)
+      await safeSend(env, chatId, outcome === 'full'
+        ? copy.modelCatalogFull(MODEL_CATALOG_CAP)
+        : outcome === 'exists'
+          ? copy.modelAddExists(entry)
+          : copy.modelAdded(entry), replyTo)
+      return
+    }
+    const outcome = removeModelCatalogEntry(state, entry)
+    if (outcome === 'missing') await safeSend(env, chatId, copy.modelDelMissing(entry), replyTo)
+    else if (outcome === 'last') await safeSend(env, chatId, copy.modelRemoveLast, replyTo)
+    else await safeSend(env, chatId, copy.modelDeleted(entry), replyTo)
     return
   }
 
@@ -2614,6 +2717,11 @@ async function applyModelSelection(env: BridgeEnv, state: BridgeState, binding: 
     selection = ensureSelection(env, state, binding)
   }
   selection.current = target
+  // R33 auto-learn: the picker list grows with real usage (dedup, capped).
+  const learned = `${target.provider}/${target.model}`
+  if (addModelCatalogEntry(env, state, learned) === 'full') {
+    env.report(`feishu4dsh: model catalog full (${MODEL_CATALOG_CAP}); ${learned} not learned`)
+  }
   env.report(`feishu4dsh: model switched by ${senderId}: ${target.provider}/${target.model}`)
   await safeSend(env, chatId, copy.modelSwitched(target.provider, target.model), replyTo)
 }

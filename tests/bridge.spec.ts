@@ -3382,4 +3382,104 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     expect(state.cardMenus.size).toBe(0)
     expect(state.menuTimers.size).toBe(0)
   })
+
+  /* ---------------------------------------------------------------- */
+  /* R33: catalog management, guidance copy, send_file session resolve  */
+  /* ---------------------------------------------------------------- */
+
+  it('R33-a: /model add|del manages the picker catalog and persists', async () => {
+    const persisted: string[][] = []
+    const { port } = makeEnv({ modelCatalog: ['p1/m1'] }, {
+      onModelCatalogChange: async entries => { persisted.push([...entries]) },
+    })
+
+    // With a catalog present, the status text has NO hint line.
+    await textMessage(port, '/model')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('未配置 modelCatalog'))).toBe(false)
+
+    // add: persisted + visible in the next picker card.
+    await textMessage(port, '/model add p9/m9')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已将 p9/m9 加入点选清单'))).toBe(true)
+    expect(persisted.at(-1)).toEqual(['p1/m1', 'p9/m9'])
+    await textMessage(port, '/model')
+    const card = [...port.sent].reverse().find(m => 'card' in m.input)?.input.card as { elements: { actions?: { options?: { text: { content: string } }[] }[] }[] }
+    const labels = card.elements.flatMap(e => e.actions ?? []).flatMap(a => a.options ?? []).map(o => o.text.content)
+    expect(labels).toContain('p9/m9')
+
+    // add duplicates and malformed entries answer politely.
+    await textMessage(port, '/model add p9/m9')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已在点选清单中'))).toBe(true)
+    await textMessage(port, '/model add nonsense')
+    console.log('R33-a DEBUG:', JSON.stringify(port.sent.map(m => String(m.input.markdown ?? '')).slice(-3)))
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('用法：/model add'))).toBe(true)
+
+    // del: persisted; missing answers politely; the last entry is protected.
+    await textMessage(port, '/model del p9/m9')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已将 p9/m9 移出点选清单'))).toBe(true)
+    await textMessage(port, '/model del p9/m9')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('不在点选清单中'))).toBe(true)
+    await textMessage(port, '/model del p1/m1')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('至少保留 1 条'))).toBe(true)
+  })
+
+  it('R33-b: an empty catalog shows a guidance hint on /model', async () => {
+    const { port } = makeEnv()
+    await textMessage(port, '/model')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('未配置 modelCatalog'))).toBe(true)
+    // No picker card is sent when the catalog is empty.
+    expect(port.sent.some(m => 'card' in m.input)).toBe(false)
+  })
+
+  it('R33-c: manual switches auto-learn into the picker catalog', async () => {
+    const persisted: string[][] = []
+    const { host, port } = makeEnv({ modelCatalog: ['p1/m1'] }, {
+      onModelCatalogChange: async entries => { persisted.push([...entries]) },
+    })
+    captureSelections(host)
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model p2/m2')
+    expect(persisted.at(-1)).toEqual(['p1/m1', 'p2/m2'])
+    await textMessage(port, '/model')
+    const card = [...port.sent].reverse().find(m => 'card' in m.input)?.input.card as { elements: { actions?: { options?: { text: { content: string } }[] }[] }[] }
+    const labels = card.elements.flatMap(e => e.actions ?? []).flatMap(a => a.options ?? []).map(o => o.text.content)
+    // The learned entry is the session's CURRENT model, so it renders marked.
+    expect(labels).toContain('✅ p2/m2')
+  })
+
+  it('R33-d: the picker card offers one-tap add for the current model', async () => {
+    const { host, port, dispose } = makeEnv({ modelCatalog: ['other/one'] })
+    host.services.set('agentDefaultModel', { currentSelection: () => ({ provider: 'p_default', model: 'm_default' }) })
+    captureSelections(host)
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model')
+    let card = [...port.sent].reverse().find(m => 'card' in m.input)?.input.card as { elements: { actions?: { value?: Record<string, unknown>; tag?: string }[] }[] }
+    const addCur = card.elements.flatMap(e => e.actions ?? []).find(a => (a.value as { act?: string } | undefined)?.act === 'addcur')
+    expect(addCur).toBeDefined()
+
+    clickMenu(port, addCur?.value)
+    await sleep(10)
+    expect(dispose.state.modelCatalog).toContain('p_default/m_default')
+    // Re-rendered card: the current model is now listed (✅) and ➕ is gone.
+    card = port.cardUpdates.at(-1)?.card as typeof card
+    const options = card.elements.flatMap(e => e.actions ?? []).flatMap(a => a.options ?? []).map(o => o.text.content)
+    expect(options.some(t => t.startsWith('✅') && t.includes('p_default/m_default'))).toBe(true)
+  })
+
+  it('R33-e: send_file resolves the calling session — unknown sessions are refused', async () => {
+    const { host, port } = makeEnv()
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+    const tool = host.registeredTools.find(t => t.name === 'send_file')
+    expect(tool).toBeDefined()
+    // A session the channel does not drive (e.g. a background subagent):
+    await expect(tool!.execute({ path: 'a.txt' }, { agent: { session: { id: 'feishu-not-ours' } }, signal: undefined }))
+      .rejects.toThrow(/no chat/)
+    // Nothing was delivered anywhere.
+    expect(port.sent.some(m => 'file' in m.input)).toBe(false)
+    expect(port.sent.some(m => 'card' in m.input)).toBe(false)
+  })
 })

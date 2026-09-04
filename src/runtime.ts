@@ -100,6 +100,12 @@ export function apply(ctx: Context, config: Config): void {
         : async (workspaces) => {
             await settingsScope.update({ userWorkspaces: workspaces })
           },
+      // Persist the /model picker catalog so add/del/learning survive restarts (R33).
+      onModelCatalogChange: settingsScope === undefined
+        ? undefined
+        : async (entries) => {
+            await settingsScope.update({ modelCatalog: entries })
+          },
       // Persist one scope's /mode preset override so it survives restarts (R27).
       onPresetChange: settingsScope === undefined
         ? undefined

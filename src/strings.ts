@@ -152,6 +152,16 @@ export interface Strings {
   wsMkdirDone: (name: string, path: string) => string
   wsMkdirInvalid: (name: string) => string
   wsMkdirUsage: string
+  /* R33: model catalog management. */
+  modelCatalogHint: string
+  modelAddDelUsage: string
+  modelAdded: (entry: string) => string
+  modelAddExists: (entry: string) => string
+  modelCatalogFull: (cap: number) => string
+  modelDelMissing: (entry: string) => string
+  modelDeleted: (entry: string) => string
+  modelRemoveLast: string
+  modelAddCurButton: string
   newSessionDone: string
   stopped: string
   nothingToStop: string
@@ -313,7 +323,7 @@ const zhCN: Strings = {
   menuBrowseSettledTitle: '✅ 已选定工作区',
   sessionMenuTitle: '💬 会话（点选切回）',
   sessionMenuNote: '点击即切回该会话；进行中的任务会先停止',
-  browseNoRoots: '未配置 workspaceRoots，无法浏览目录建工作区；请改用 /ws add <路径>。',
+  browseNoRoots: '未配置 workspaceRoots，无法浏览目录建工作区；请在部署配置中添加（示例：workspaceRoots: [你的项目根目录]），或改用 /ws add <路径>。',
   browseEmpty: '（此目录下没有子文件夹）',
   browseConfirm: '✅ 就用这个目录',
   browseParent: '⬆️ 上一级',
@@ -321,6 +331,15 @@ const zhCN: Strings = {
   wsMkdirDone: (name, path) => `已创建工作区「${name}」（${path}），并切换过去。`,
   wsMkdirInvalid: name => `无法创建「${name}」：名称不能包含路径分隔符或为空。`,
   wsMkdirUsage: '用法：/ws new（浏览并选择目录） · /ws new <名称>（在当前浏览位置新建文件夹）',
+  modelCatalogHint: '💡 未配置 modelCatalog：在部署配置中添加后即可点选切换（每项 provider/model）。',
+  modelAddDelUsage: '用法：/model add <provider>/<model> · /model del <provider>/<model>',
+  modelAdded: entry => `已将 ${entry} 加入点选清单。`,
+  modelAddExists: entry => `${entry} 已在点选清单中。`,
+  modelCatalogFull: cap => `点选清单已满（${cap} 条）；请先 /model del 腾出位置。`,
+  modelDelMissing: entry => `${entry} 不在点选清单中。`,
+  modelDeleted: entry => `已将 ${entry} 移出点选清单。`,
+  modelRemoveLast: '至少保留 1 条点选清单项。',
+  modelAddCurButton: '➕ 把当前模型加入清单',
 }
 
 const enUS: Strings = {
@@ -469,7 +488,7 @@ const enUS: Strings = {
   menuBrowseSettledTitle: '✅ Workspace picked',
   sessionMenuTitle: '💬 Sessions (tap to restore)',
   sessionMenuNote: 'Tap to restore; a running task is stopped first',
-  browseNoRoots: 'workspaceRoots is not configured, so directory browsing is unavailable; use /ws add <path> instead.',
+  browseNoRoots: 'workspaceRoots is not configured, so directory browsing is unavailable; add it in the deployment settings (e.g. workspaceRoots: [your projects root]) or use /ws add <path> instead.',
   browseEmpty: '(no subfolders here)',
   browseConfirm: '✅ Use this folder',
   browseParent: '⬆️ Up one level',
@@ -477,6 +496,15 @@ const enUS: Strings = {
   wsMkdirDone: (name, path) => `Workspace "${name}" created (${path}) and switched to.`,
   wsMkdirInvalid: name => `Cannot create "${name}": the name must not contain path separators and must not be empty.`,
   wsMkdirUsage: 'Usage: /ws new (browse and pick) · /ws new <name> (create a folder at the browsed location)',
+  modelCatalogHint: '💡 modelCatalog is not configured — add it in the deployment settings to get the tappable list (entries are provider/model).',
+  modelAddDelUsage: 'Usage: /model add <provider>/<model> · /model del <provider>/<model>',
+  modelAdded: entry => `Added ${entry} to the picker list.`,
+  modelAddExists: entry => `${entry} is already in the picker list.`,
+  modelCatalogFull: cap => `The picker list is full (${cap} entries); run /model del to free a slot.`,
+  modelDelMissing: entry => `${entry} is not in the picker list.`,
+  modelDeleted: entry => `Removed ${entry} from the picker list.`,
+  modelRemoveLast: 'Keep at least one entry in the picker list.',
+  modelAddCurButton: '➕ Add the current model to the list',
 }
 
 const table: Record<Locale, Strings> = { 'zh-CN': zhCN, 'en-US': enUS }

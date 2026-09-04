@@ -48,8 +48,8 @@ export interface MenuState {
   readonly scopeKey: string
   readonly createdAt: number
   readonly expiresAt: number
-  /** List menus (ws / model / session): the option snapshot. */
-  readonly options: readonly MenuOption[]
+  /** List menus (ws / model / session): the option snapshot (model re-syncs live). */
+  options: MenuOption[]
   /** Browse menus only: the directory being viewed (moves on enter/up). */
   cwd?: string
   /** Browse menus only: subdirectory names at {@link cwd}. */
@@ -60,6 +60,8 @@ export interface MenuState {
   readonly paths?: readonly string[]
   /** session menus only: full-list index behind each option (== /session <n>). */
   readonly indexMap?: readonly number[]
+  /** model menus only: the session's effective `provider/model` (drives ➕). */
+  readonly currentModel?: string
   page: number
   /** Filled by the bridge once the card message has been sent. */
   messageId?: string
@@ -140,6 +142,8 @@ export interface MenuLabels {
   readonly pageOf: (page: number, total: number) => string
   readonly placeholder: string
   readonly expiredNote: string
+  /** ➕ button label for adding the CURRENT model to the catalog (R33). */
+  readonly addCurrent?: string
 }
 
 /** Buttons for one menu row chunk, values carrying the click payload. */
@@ -199,6 +203,12 @@ export function modelMenuCard(
     })),
   }
   const elements: object[] = [{ tag: 'action', actions: [select] }]
+  // R33: the session's effective model is NOT in the catalog — offer a
+  // one-tap add so the list learns from real usage.
+  if (menu.currentModel !== undefined && !menu.options.some(o => o.label === menu.currentModel)
+    && labels.addCurrent !== undefined) {
+    elements.push(actionRow([{ label: labels.addCurrent, value: menuButtonValue(chatId, menu.id, 'addcur'), style: 'primary' }]))
+  }
   if (total > 1) {
     const buttons: CardButton[] = []
     if (page > 0) buttons.push({ label: labels.prev, value: menuButtonValue(chatId, menu.id, 'page', page - 1) })
