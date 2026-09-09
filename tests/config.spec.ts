@@ -25,9 +25,24 @@ describe('resolveConfig', () => {
     expect(resolved.chatPresets).toEqual({})
     expect(resolved.chatSessions).toEqual({})
     expect(resolved.chatActiveGen).toEqual({})
+
     expect(resolved.senderAllowlist).toEqual([])
     expect(resolved.groupAllowlist).toEqual([])
     expect(resolved.approvers).toEqual([])
+  })
+
+  it('tolerates scalar strings where lists belong (hand-edited settings, R33)', () => {
+    // A hand-edited `workspaceRoots: <path>` / `modelCatalog: a/b c/d` used to
+    // throw during bootstrap and take the whole bot down; scalars now degrade
+    // to one-entry lists.
+    const resolved = resolveConfig({
+      appId: 'cli_abc',
+      appSecret: 'secret',
+      workspaceRoots: '/home/user/projects' as unknown as string[],
+      modelCatalog: 'deepseek-official/deepseek-v4' as unknown as string[],
+    })
+    expect(resolved.workspaceRoots).toEqual(['/home/user/projects'])
+    expect(resolved.modelCatalog).toEqual(['deepseek-official/deepseek-v4'])
   })
 
   it('keeps configured values', () => {

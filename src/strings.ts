@@ -137,6 +137,8 @@ export interface Strings {
   menuNextLabel: string
   menuPageOf: (page: number, total: number) => string
   menuExpired: string
+  /** R34: the card's menu is gone entirely (replaced, dropped, or a restart). */
+  menuGone: string
   menuWrongChat: string
   menuWsSettledTitle: string
   menuModelSettledTitle: string
@@ -316,6 +318,7 @@ const zhCN: Strings = {
   menuNextLabel: '下一页 ›',
   menuPageOf: (page, total) => `${page} / ${total} 页`,
   menuExpired: '该菜单已失效，请重新发送对应命令打开。',
+  menuGone: '这张卡片已失效，请重新执行对应命令获取新卡片。',
   menuWrongChat: '此菜单仅可在原会话中操作',
   menuWsSettledTitle: '✅ 已切换工作区',
   menuModelSettledTitle: '✅ 已切换模型',
@@ -481,6 +484,7 @@ const enUS: Strings = {
   menuNextLabel: 'Next ›',
   menuPageOf: (page, total) => `Page ${page} / ${total}`,
   menuExpired: 'This menu has expired — send the command again.',
+  menuGone: 'This card is no longer active — run the command again to get a fresh one.',
   menuWrongChat: 'This menu only works in its original chat',
   menuWsSettledTitle: '✅ Workspace switched',
   menuModelSettledTitle: '✅ Model switched',

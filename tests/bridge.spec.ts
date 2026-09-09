@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { BridgeHost, BridgeHooks, BridgeTimingOptions } from '../src/bridge.js'
 import { installBridge, REPLY_TARGETS_MAX } from '../src/bridge.js'
+import { encodeMenuValue } from '../src/cards.js'
 import { resolveConfig } from '../src/config.js'
 import type { ResolvedConfig } from '../src/config.js'
 import { resolveAuthorization } from '../src/acl.js'
@@ -3191,6 +3192,21 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     })
   }
 
+  /**
+   * R34: a select_static click the way Feishu actually delivers it — the
+   * picked option's value string rides `action.option`, while the
+   * component-level `action.value` stays the empty string modelMenuCard
+   * sends. The button-form clickMenu cannot express this shape.
+   */
+  function clickSelectMenu(port: FakePort, option: string | undefined, openId = 'ou_user', chatId = 'oc_chat1') {
+    port.emit('cardAction', {
+      messageId: 'om_menu',
+      chatId,
+      operator: { openId, name: openId },
+      action: { tag: 'select_static', option, value: '' },
+    })
+  }
+
   it('R32-a: /ws opens a picker card; a click switches the workspace', async () => {
     const target = mkdtempSync(join(tmpdir(), 'feishu4dsh-r32ws-'))
     const { host, port } = makeEnv()
@@ -3481,5 +3497,75 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     // Nothing was delivered anywhere.
     expect(port.sent.some(m => 'file' in m.input)).toBe(false)
     expect(port.sent.some(m => 'card' in m.input)).toBe(false)
+  })
+
+  /* ---------------------------------------------------------------- */
+  /* R34: select_static clicks (action.option) + gone-menu hint        */
+  /* ---------------------------------------------------------------- */
+
+  it('R34-a: a select_static click switches the model via action.option while value stays empty', async () => {
+    const { host, port } = makeEnv({ modelCatalog: ['p1/m1', 'p2/m2'] })
+    const installed = captureSelections(host)
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model')
+    const { selects } = menuButtons(port)
+    const p2 = (selects[0]?.options ?? []).find(o => o.text.content === 'p2/m2')
+    expect(p2).toBeDefined()
+
+    // Regression for the silent miss: before R34 the bridge only decoded
+    // `action.value` (the empty component value), so every real Feishu
+    // select click decoded to null and was dropped without any feedback.
+    clickSelectMenu(port, p2?.value)
+    await sleep(10)
+    expect(installed.at(-1)?.selection.current).toEqual({ provider: 'p2', model: 'm2' })
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已切换当前会话模型为 p2/m2'))).toBe(true)
+  })
+
+  it('R34-b: a select click resolves against the live catalog, not the frozen config copy', async () => {
+    const { host, port } = makeEnv({ modelCatalog: ['p1/m1'] })
+    const installed = captureSelections(host)
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    // The live catalog grows past the startup-frozen env.config copy (/model
+    // add or auto-learn); the picker options render from state.modelCatalog,
+    // so the click must resolve there too. The old env.config lookup missed
+    // the new index and answered "menu expired" instead of switching.
+    await textMessage(port, '/model add p9/m9')
+    await textMessage(port, '/model')
+    const { selects } = menuButtons(port)
+    const added = (selects[0]?.options ?? []).find(o => o.text.content === 'p9/m9')
+    expect(added).toBeDefined()
+
+    clickSelectMenu(port, added?.value)
+    await sleep(10)
+    expect(installed.at(-1)?.selection.current).toEqual({ provider: 'p9', model: 'm9' })
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已切换当前会话模型为 p9/m9'))).toBe(true)
+    // No stale-menu noise on the fixed path.
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('该菜单已失效'))).toBe(false)
+  })
+
+  it('R34-c: clicking a gone menu answers with a stale-card hint; foreign payloads stay silent', async () => {
+    const { port } = makeEnv()
+
+    // A well-formed menu payload whose menuId was never registered (settled
+    // away, dropped, or lost to a restart): answered with a hint, not silence.
+    clickMenu(port, encodeMenuValue('m_gone', 'sel', 'oc_chat1', 0))
+    await sleep(10)
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('这张卡片已失效'))).toBe(true)
+
+    // A payload this channel cannot decode ("somebody else's card") keeps
+    // the cards.ts silent contract — no reply at all.
+    const before = port.sent.length
+    port.emit('cardAction', {
+      messageId: 'om_foreign',
+      chatId: 'oc_chat1',
+      operator: { openId: 'ou_user', name: 'User' },
+      action: { tag: 'button', value: { kind: 'not-ours' } },
+    })
+    await sleep(10)
+    expect(port.sent.length).toBe(before)
   })
 })

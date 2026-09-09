@@ -147,8 +147,14 @@ export function resolveConfig(config: Config): Required<Config> {
   // A non-positive size is not a tuning choice; fall back to the default.
   const sizeOrDefault = (value: number | undefined, fallback: number): number =>
     typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
-  const cleanList = (value: string[] | undefined): string[] =>
-    (value ?? []).map(item => String(item).trim()).filter(item => item !== '')
+  // R33 hardening: hand-edited settings sometimes write a scalar where a
+  // list belongs (`modelCatalog: a/b c/d`) — accept it as a one-entry list
+  // instead of throwing during bootstrap (which would take the whole bot
+  // down). Empty entries still drop out.
+  const cleanList = (value: string[] | string | undefined): string[] => {
+    const raw = value === undefined ? [] : Array.isArray(value) ? value : [value]
+    return raw.map(item => String(item).trim()).filter(item => item !== '')
+  }
   // NOTE (R10): this only trims leading/trailing whitespace and drops empty
   // entries. It intentionally does NOT check that a path names a real
   // directory or normalize stray internal spaces (e.g. `20260730 - 示例目录`):

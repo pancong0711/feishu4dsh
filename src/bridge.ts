@@ -1394,7 +1394,13 @@ function browseLabelsFor(state: BridgeState): BrowseLabels {
  */
 async function handleMenuAction(env: BridgeEnv, state: BridgeState, event: CardActionEvent, payload: MenuActionPayload): Promise<void> {
   const resolved = state.cardMenus.get(payload.menuId, Date.now())
-  if (resolved === undefined) return
+  if (resolved === undefined) {
+    // R34: the menu no longer exists (settled away, dropped, or lost to a
+    // restart) — answer with a hint instead of failing silently. A click in
+    // a foreign chat stays quiet, mirroring the expired branch below.
+    if (payload.chatId === event.chatId) await safeSend(env, event.chatId, state.copy.menuGone)
+    return
+  }
   if (resolved === 'expired') {
     if (payload.chatId === event.chatId) await safeSend(env, event.chatId, state.copy.menuExpired)
     return
@@ -1452,7 +1458,11 @@ async function handleMenuAction(env: BridgeEnv, state: BridgeState, event: CardA
     return
   }
   if (menu.kind === 'model') {
-    const raw = env.config.modelCatalog[payload.idx]
+    // R34: resolve against the LIVE catalog the options were rendered from
+    // (`state.modelCatalog`, mutated by /model add|del and auto-learn), not
+    // the startup-frozen `env.config` copy — otherwise a diverged list maps
+    // the clicked index to the wrong model.
+    const raw = state.modelCatalog[payload.idx]
     const target = raw === undefined ? undefined : parseModelTarget(raw)
     if (target === undefined) {
       await safeSend(env, event.chatId, state.copy.menuExpired)
@@ -1705,7 +1715,13 @@ async function wsMkdir(env: BridgeEnv, state: BridgeState, binding: ChatBinding,
 }
 
 async function handleCardAction(env: BridgeEnv, state: BridgeState, event: CardActionEvent): Promise<void> {
-  const payload = decodeActionValue(event.action.value)
+  // R34: select_static callbacks carry the picked option in `action.option`
+  // while `action.value` stays the component-level value (empty for our
+  // model card). Prefer a non-empty option, fall back to the button value —
+  // an empty string is not nullish, so `??` alone would skip the fallback.
+  const action = event.action
+  const raw = typeof action.option === 'string' && action.option !== '' ? action.option : action.value
+  const payload = decodeActionValue(raw)
   if (payload === null) return
   if (payload.kind === 'menu') {
     await handleMenuAction(env, state, event, payload)
