@@ -15,6 +15,45 @@ export interface Strings {
   toolCallLine: (toolName: string) => string
   toolCallCountLine: (toolName: string, count: number) => string
   toolCallSummary: (parts: readonly string[]) => string
+  /**
+   * R36: the placeholder a streaming reply carries before its first chunk.
+   * Fed to the SDK as `outbound.streamInitialText`, replacing its built-in
+   * English `Thinking...`, and kept here so the adapter holds no copy.
+   */
+  streamInitial: string
+  /**
+   * R36: one live process line while a turn runs — step / elapsed seconds /
+   * tool tallies, never reasoning text. `step <= 0` omits the step segment;
+   * an empty `tools` omits the tool segment.
+   */
+  processLine: (step: number, elapsedSeconds: number, tools: string) => string
+  /** R36: compact per-tool tally inside process/summary lines (`bash × 2`). */
+  toolCountCompact: (toolName: string, count: number) => string
+  /**
+   * R36: turn/end closing line for a turn that reasoned but produced no body
+   * text, so the card never ends on a live status line (or an empty reply).
+   */
+  reasoningOnlyLine: (chars: string, elapsedSeconds: number, tools: string) => string
+  /**
+   * R36-2: live header of the collapsible reasoning panel while a turn runs
+   * (card reply surfaces only).
+   */
+  reasoningPanelTitleLive: (chars: string, elapsedSeconds: number) => string
+  /**
+   * R36-2: closing header of the reasoning panel — `turn/end` folds the panel
+   * and keeps it, with the turn's reasoning size and duration.
+   */
+  reasoningPanelTitleDone: (chars: string, elapsedSeconds: number) => string
+  /**
+   * R36-2: middle-omission marker when reasoning exceeds the card element
+   * budget (head + tail are kept, this states how much was dropped).
+   */
+  reasoningOmitted: (chars: string) => string
+  /**
+   * R36-2: closing note when the BODY alone outgrows the card budget; the card
+   * keeps the head and the full text follows as one plain message.
+   */
+  reasoningBodyOverflowNote: string
   usageSummary: (input: string, output: string, cacheRead: string | undefined, cacheWrite: string | undefined, reasoning: string | undefined) => string
   approvalTitle: string
   approvalReasonLabel: string
@@ -85,6 +124,23 @@ export interface Strings {
   modeAlready: (preset: string) => string
   modeUsage: string
   modeNoPermission: string
+  /* Reasoning display (/reasoning, R36 stage two): view / set the scope switch. */
+  reasoningTitle: string
+  /** `state` is {@link reasoningShown} / {@link reasoningHidden}. */
+  reasoningCurrent: (state: string, source: string) => string
+  reasoningDefaultLine: (state: string) => string
+  reasoningSwitched: (state: string) => string
+  reasoningAlready: (state: string) => string
+  reasoningUsage: string
+  reasoningNoPermission: string
+  /** Label for the enabled state (`显示` / `shown`). */
+  reasoningShown: string
+  /** Label for the disabled state (`隐藏` / `hidden`). */
+  reasoningHidden: string
+  /** Where the shown state comes from: this scope's `/reasoning` override. */
+  reasoningSourceScope: string
+  /** Where the shown state comes from: the deployment's `showReasoning`. */
+  reasoningSourceConfig: string
   /* Session registry (/session, R29): list / switch / rename / archive. */
   sessionTitle: string
   sessionListEmpty: string
@@ -183,6 +239,16 @@ const zhCN: Strings = {
   toolCallLine: toolName => `调用工具 ${toolName}`,
   toolCallCountLine: (toolName, count) => `调用工具 ${toolName} × ${count} 次`,
   toolCallSummary: parts => parts.join('、'),
+  streamInitial: '💭 正在思考…',
+  processLine: (step, elapsedSeconds, tools) =>
+    `💭 思考中${step > 0 ? ` · 第 ${step} 步` : ''} · 已 ${elapsedSeconds}s${tools === '' ? '' : ` · 工具 ${tools}`}`,
+  toolCountCompact: (toolName, count) => `${toolName} × ${count}`,
+  reasoningOnlyLine: (chars, elapsedSeconds, tools) =>
+    `💭 本轮只有思考：${chars} 字 · ${elapsedSeconds}s${tools === '' ? '' : ` · 工具 ${tools}`}`,
+  reasoningPanelTitleLive: (chars, elapsedSeconds) => `💭 思考中 · ${chars} 字 · ${elapsedSeconds}s`,
+  reasoningPanelTitleDone: (chars, elapsedSeconds) => `💭 思考过程（${chars} 字 · ${elapsedSeconds}s）`,
+  reasoningOmitted: chars => `……（已省略 ${chars} 字）……`,
+  reasoningBodyOverflowNote: '（回答较长，完整内容见下一条消息）',
   usageSummary: (input, output, cacheRead, cacheWrite, reasoning) =>
     `Token：输入 ${input} · 输出 ${output}${cacheRead === undefined ? '' : ` · 缓存读 ${cacheRead}`}${cacheWrite === undefined ? '' : ` · 缓存写 ${cacheWrite}`}${reasoning === undefined ? '' : ` · 推理 ${reasoning}`}`,
   approvalTitle: '⚠️ 需要确认操作',
@@ -206,6 +272,7 @@ const zhCN: Strings = {
     '/help — 查看命令列表',
     '/new — 开启新会话（清空上下文）',
     '/mode — 查看/设置会话模式（standard/minimal，设置后开启新会话）',
+    '/reasoning — 查看/设置思考内容显示（on/off，本会话生效）',
     '/session — 会话列表 / 切换 / 重命名 / 归档（/session 查看用法）',
     '/stop — 停止当前任务',
     '/status — 会话 / 工作区 / 模式 / 模型 / 推理强度 / 轮次与 Token 累计',
@@ -260,6 +327,17 @@ const zhCN: Strings = {
   modeAlready: preset => `已是 ${preset} 模式；如需重开会话请用 /new`,
   modeUsage: '用法：/mode 查看 · /mode <standard|minimal> 设置（设置后开启新会话）',
   modeNoPermission: '无权切换会话模式',
+  reasoningTitle: '思考内容显示',
+  reasoningCurrent: (state, source) => `当前会话：${state}（来源：${source}）`,
+  reasoningDefaultLine: state => `部署默认：${state}`,
+  reasoningSwitched: state => `已设置为：${state}（下一轮生效）`,
+  reasoningAlready: state => `已经是：${state}`,
+  reasoningUsage: '用法：/reasoning 查看 · /reasoning <on|off> 设置思考内容显示（私聊展开/群聊折叠）。',
+  reasoningNoPermission: '无权设置思考内容显示',
+  reasoningShown: '显示',
+  reasoningHidden: '隐藏',
+  reasoningSourceScope: '本会话设置',
+  reasoningSourceConfig: '部署配置',
   sessionTitle: '会话列表',
   sessionListEmpty: '当前话题 × 工作区还没有已登记的会话——发送任意一条普通消息，当前会话即自动登记。',
   sessionArchivedTag: ' [已归档]',
@@ -351,6 +429,16 @@ const enUS: Strings = {
   toolCallLine: toolName => `calling ${toolName}`,
   toolCallCountLine: (toolName, count) => `calling ${toolName} × ${count}`,
   toolCallSummary: parts => parts.join(', '),
+  streamInitial: '💭 Thinking…',
+  processLine: (step, elapsedSeconds, tools) =>
+    `💭 Thinking${step > 0 ? ` · step ${step}` : ''} · ${elapsedSeconds}s${tools === '' ? '' : ` · tools ${tools}`}`,
+  toolCountCompact: (toolName, count) => `${toolName} × ${count}`,
+  reasoningOnlyLine: (chars, elapsedSeconds, tools) =>
+    `💭 Reasoning only this turn: ${chars} chars · ${elapsedSeconds}s${tools === '' ? '' : ` · tools ${tools}`}`,
+  reasoningPanelTitleLive: (chars, elapsedSeconds) => `💭 Thinking · ${chars} chars · ${elapsedSeconds}s`,
+  reasoningPanelTitleDone: (chars, elapsedSeconds) => `💭 Reasoning (${chars} chars · ${elapsedSeconds}s)`,
+  reasoningOmitted: chars => `…… (${chars} chars omitted) ……`,
+  reasoningBodyOverflowNote: '(long reply; the full text follows in the next message)',
   usageSummary: (input, output, cacheRead, cacheWrite, reasoning) =>
     `Tokens: ${input} in · ${output} out${cacheRead === undefined ? '' : ` · cache read ${cacheRead}`}${cacheWrite === undefined ? '' : ` · cache write ${cacheWrite}`}${reasoning === undefined ? '' : ` · reasoning ${reasoning}`}`,
   approvalTitle: '⚠️ Approval required',
@@ -379,6 +467,8 @@ const enUS: Strings = {
     '/ws add <path> — add a workspace (from your phone)',
     '/ws remove <name or path> — remove an added workspace',
     '/cd <name or path> — switch the current workspace',
+    '/mode — view/set the session mode (standard/minimal; opens a new session)',
+    '/reasoning — view/set reasoning display (on/off, this chat)',
     '/model <provider>/<model> — switch the session model',
   ],
   statusTitle: 'Session status',
@@ -410,6 +500,17 @@ const enUS: Strings = {
   modeAlready: preset => `Already in ${preset} mode; use /new to re-open the session`,
   modeUsage: 'Usage: /mode to view · /mode <standard|minimal> to set (opens a new session)',
   modeNoPermission: 'Not allowed to switch the session mode',
+  reasoningTitle: 'Reasoning display',
+  reasoningCurrent: (state, source) => `This chat: ${state} (source: ${source})`,
+  reasoningDefaultLine: state => `Deployment default: ${state}`,
+  reasoningSwitched: state => `Set to: ${state} (takes effect next turn)`,
+  reasoningAlready: state => `Already: ${state}`,
+  reasoningUsage: 'Usage: /reasoning to view · /reasoning <on|off> to set reasoning display (expanded in DMs, collapsed in groups).',
+  reasoningNoPermission: 'Not allowed to change the reasoning display',
+  reasoningShown: 'shown',
+  reasoningHidden: 'hidden',
+  reasoningSourceScope: 'this chat',
+  reasoningSourceConfig: 'deployment config',
   sessionTitle: 'Sessions',
   sessionListEmpty: 'No registered sessions for this topic × workspace yet -- send any regular message and the current session registers itself.',
   sessionArchivedTag: ' [archived]',

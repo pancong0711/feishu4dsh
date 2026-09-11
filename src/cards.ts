@@ -39,6 +39,81 @@ export function markdownElement(content: string): object {
   return { tag: 'div', text: { tag: 'lark_md', content } }
 }
 
+/**
+ * R36-2: budget for the reasoning text rendered inside one collapsible panel.
+ * The panel element is one of the card's elements; the SDK's
+ * `DEFAULT_MAX_ELEMENT_CHARS` (30000) is the reference limit, and this stays
+ * well under it so the whole-card JSON (panel + body + wrappers) also fits the
+ * per-message content limit Feishu enforces on `im.v1.message.patch`.
+ */
+export const REASONING_PANEL_MAX_CHARS = 12_000
+
+/**
+ * R36-2: total rendered text (reasoning panel + body) one reply card may
+ * carry. Past this the body region stops growing and the full text is
+ * delivered as one plain message instead (see the bridge's overflow valve).
+ */
+export const CARD_STREAM_MAX_CHARS = 24_000
+
+/**
+ * R36-2: one collapsible panel (`collapsible_panel`, card JSON 1.0 — the same
+ * shape the other cards in this module use). On Feishu clients older than V7.9
+ * the panel body renders as an "upgrade your client" placeholder; the rest of
+ * the card is unaffected, which is why the reasoning block is safe to fold.
+ * @param options - header title, panel body and initial fold state.
+ * @returns the panel element.
+ */
+export function collapsiblePanel(options: { title: string; content: string; expanded: boolean }): object {
+  return {
+    tag: 'collapsible_panel',
+    expanded: options.expanded,
+    header: {
+      title: { tag: 'markdown', content: options.title },
+      vertical_align: 'center',
+      icon: {
+        tag: 'standard_icon',
+        token: 'down-small-ccm_outlined',
+        size: '16px 16px',
+      },
+      icon_position: 'right',
+      icon_expanded_angle: -180,
+    },
+    border: { color: 'grey', corner_radius: '5px' },
+    vertical_spacing: '8px',
+    padding: '8px 8px 8px 8px',
+    elements: [markdownElement(options.content)],
+  }
+}
+
+/**
+ * R36-2: shorten a long text to `budget` characters, keeping its head and its
+ * tail and stating how much was dropped in between. Head and tail carry the
+ * parts a reader needs most (the opening framing and the conclusion), and the
+ * dropped middle is announced rather than silently lost.
+ *
+ * The rendered result is `budget` characters plus the `join(omitted)` marker —
+ * callers size their budget net of that marker.
+ * @param text - full text.
+ * @param budget - characters to keep (split evenly between head and tail).
+ * @param join - renders the omission marker for the dropped character count.
+ * @returns the shortened text and the number of dropped characters (0 = kept).
+ */
+export function truncateMiddle(
+  text: string,
+  budget: number,
+  join: (omitted: number) => string,
+): { text: string; omitted: number } {
+  if (budget < 0) budget = 0
+  if (text.length <= budget) return { text, omitted: 0 }
+  const head = Math.floor(budget / 2)
+  const tail = budget - head
+  const omitted = text.length - head - tail
+  return {
+    text: `${text.slice(0, head)}\n${join(omitted)}\n${text.slice(text.length - tail)}`,
+    omitted,
+  }
+}
+
 /** A small footer note row. */
 export function noteElement(text: string): object {
   return { tag: 'note', elements: [{ tag: 'plain_text', content: text }] }

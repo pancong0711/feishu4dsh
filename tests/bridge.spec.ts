@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { BridgeHost, BridgeHooks, BridgeTimingOptions } from '../src/bridge.js'
 import { installBridge, REPLY_TARGETS_MAX } from '../src/bridge.js'
-import { encodeMenuValue } from '../src/cards.js'
+import { encodeMenuValue, CARD_STREAM_MAX_CHARS } from '../src/cards.js'
 import { resolveConfig } from '../src/config.js'
 import type { ResolvedConfig } from '../src/config.js'
 import { resolveAuthorization } from '../src/acl.js'
+import { channelOptions } from '../src/adapter.js'
 import type { ChannelPort, ResourceType } from '../src/adapter.js'
+import { resolveLocale, strings } from '../src/strings.js'
 import type { HostAgent, HostAgentOptions, HostRequestHeaderConfig, HostSession, HostSessionEvent, HostUserMessage } from '../src/host.js'
 import type { MutableSelection } from '../src/model-selection.js'
 import type { SessionRecord } from '../src/session-registry.js'
@@ -3567,5 +3569,899 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     })
     await sleep(10)
     expect(port.sent.length).toBe(before)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R36: reasoning progress line (stage one — 止血)                      */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R36 reasoning process line', () => {
+  /**
+   * A port whose markdown stream opens SYNCHRONOUSLY and records everything
+   * the controller was asked to render, so the tests can assert on the card's
+   * final content without a transport. `supportsSetContent: false` models a
+   * controller WITHOUT the R36 capability — the silent-degradation path.
+   */
+  class StatusStreamPort extends FakePort {
+    /** Every `controller.append` chunk, in order. */
+    readonly appends: string[] = []
+    /** Every full-content `controller.setContent` push, in order. */
+    readonly sets: string[] = []
+
+    constructor(private readonly supportsSetContent = true) { super() }
+
+    override async stream(
+      _to: string,
+      input: Record<string, unknown>,
+      _options?: { replyTo?: string; replyInThread?: boolean },
+    ): Promise<{ messageId: string }> {
+      const producer = input.markdown as (controller: {
+        append(chunk: string): Promise<void>
+        setContent?(full: string): Promise<void>
+        messageId: string
+      }) => Promise<void>
+      const controller: {
+        append(chunk: string): Promise<void>
+        setContent?(full: string): Promise<void>
+        messageId: string
+      } = {
+        messageId: 'om_r36_stream',
+        append: async (chunk: string): Promise<void> => { this.appends.push(chunk) },
+      }
+      if (this.supportsSetContent) {
+        controller.setContent = async (full: string): Promise<void> => { this.sets.push(full) }
+      }
+      await producer(controller)
+      return { messageId: controller.messageId }
+    }
+  }
+
+  /** The card's current content: the last full push plus everything appended after it. */
+  function cardContent(port: StatusStreamPort): string {
+    return (port.sets.at(-1) ?? '') + port.appends.join('')
+  }
+
+  function makeR36Env(
+    port: FakePort,
+    timing: BridgeTimingOptions = {},
+    overrides?: Partial<ResolvedConfig>,
+  ) {
+    const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-r36-'))
+    const config = resolveConfig({ appId: 'cli_test', appSecret: 'secret', workspace, ...overrides })
+    const host = fakeHost()
+    const reportLines: string[] = []
+    const dispose = installBridge(
+      host,
+      config,
+      port,
+      resolveAuthorization(config),
+      line => reportLines.push(line),
+      {},
+      timing,
+    )
+    return { workspace, config, port, host, reportLines, dispose }
+  }
+
+  /** The first agent the inbound helper created, or a loud failure. */
+  function firstAgent(host: ReturnType<typeof fakeHost>): FakeAgent {
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+    return agent
+  }
+
+  const TURN_START = { type: 'turn/start', data: { turn: 1 } }
+  const TURN_END = { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } }
+
+  it('R36-1: arms the SDK streaming placeholder from the shared strings table', () => {
+    const zh = resolveConfig({ appId: 'cli_a', appSecret: 's', locale: 'zh-CN' })
+    const en = resolveConfig({ appId: 'cli_a', appSecret: 's', locale: 'en-US' })
+    const zhOptions = channelOptions(zh, resolveAuthorization(zh), strings(resolveLocale(zh.locale)).streamInitial)
+    const enOptions = channelOptions(en, resolveAuthorization(en), strings(resolveLocale(en.locale)).streamInitial)
+
+    // The placeholder is user-facing copy: it comes from `strings`, never from
+    // a literal in the adapter, and it follows the configured locale.
+    expect(zhOptions.outbound?.streamInitialText).toBe('💭 正在思考…')
+    expect(enOptions.outbound?.streamInitialText).toBe('💭 Thinking…')
+    expect(zhOptions.outbound?.streamInitialText).toBe(strings('zh-CN').streamInitial)
+    expect(zhOptions.outbound?.streamInitialText)
+      .not.toBe(enOptions.outbound?.streamInitialText)
+    // `auto` resolves to the primary audience — the SDK's English default must
+    // never leak on the default deployment.
+    const auto = resolveConfig({ appId: 'cli_a', appSecret: 's', locale: 'auto' })
+    expect(strings(resolveLocale(auto.locale)).streamInitial).toBe('💭 正在思考…')
+    // A caller that passes nothing leaves the SDK default alone (no arm).
+    expect(channelOptions(zh, resolveAuthorization(zh)).outbound).toBeUndefined()
+  })
+
+  it('R36-2: throttles the live process line inside the window and never renders reasoning text', async () => {
+    const port = new StatusStreamPort()
+    const env = makeR36Env(port, { processStatusMinIntervalMs: 60_000, processStatusMinChars: 1_000_000 })
+    await textMessage(port, 'hello')
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, { type: 'step/start', data: { turn: 1, step: 3 } })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c1', name: 'bash', arguments: '{}' },
+    })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c2', name: 'bash', arguments: '{}' },
+    })
+    for (let i = 0; i < 5; i += 1) {
+      env.host.emit('session/event', { id: agent.id }, {
+        type: 'assistant/chunk',
+        data: { turn: 1, chunk: { type: 'reasoning-delta', text: 'SECRET-REASONING-TEXT' } },
+      })
+    }
+    await sleep(30)
+
+    // The first process event pushes immediately; the five reasoning deltas and
+    // both tool calls inside the window fold into that one update instead of
+    // hammering the card API.
+    expect(port.sets).toHaveLength(1)
+    expect(port.sets[0]).toContain('第 3 步')
+    expect(port.sets[0]).toMatch(/已 \d+s/)
+    // Reasoning text never reaches the wire — counters only.
+    expect(port.sets[0]).not.toContain('SECRET-REASONING-TEXT')
+    expect(port.appends).toHaveLength(0)
+    // …and never marks the binding as streamed (that flag means BODY output).
+    expect(env.dispose.state.streamedTurns.size).toBe(0)
+  })
+
+  it('R36-2b: the status line carries step, elapsed time and tool tallies', async () => {
+    const port = new StatusStreamPort()
+    const env = makeR36Env(port, { processStatusMinIntervalMs: 0, processStatusMinChars: 0 })
+    await textMessage(port, 'hello')
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    // Let real wall-clock pass: the elapsed segment must be measured, not faked.
+    await sleep(1_100)
+    env.host.emit('session/event', { id: agent.id }, { type: 'step/start', data: { turn: 1, step: 3 } })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c1', name: 'bash', arguments: '{}' },
+    })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c2', name: 'bash', arguments: '{}' },
+    })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c3', name: 'edit', arguments: '{}' },
+    })
+    await sleep(30)
+
+    const line = port.sets.at(-1) ?? ''
+    expect(line).toContain('思考中')
+    expect(line).toContain('第 3 步')
+    expect(line).toMatch(/已 [1-9]\d*s/)
+    expect(line).toContain('工具 bash × 2、edit × 1')
+  })
+
+  it('R36-3: a reasoning-only turn closes on one summary line (card keeps no live status)', async () => {
+    const port = new StatusStreamPort()
+    const env = makeR36Env(port)
+    await textMessage(port, 'hello')
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, { type: 'step/start', data: { turn: 1, step: 1 } })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c1', name: 'bash', arguments: '{}' },
+    })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c2', name: 'bash', arguments: '{}' },
+    })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/chunk',
+      data: { turn: 1, chunk: { type: 'reasoning-delta', text: 'r'.repeat(1204) } },
+    })
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(30)
+
+    const finalCard = cardContent(port)
+    expect(finalCard).toContain('本轮只有思考')
+    expect(finalCard).toContain('1,204 字')
+    expect(finalCard).toContain('工具 bash × 2')
+    expect(finalCard).toMatch(/\d+s/)
+    // The live status line is gone — the card ends on the closing summary.
+    expect(finalCard).not.toContain('思考中')
+    // Reasoning text is nowhere on the wire.
+    expect([...port.sets, ...port.appends].join('')).not.toContain('r'.repeat(64))
+    // No body was produced, so no separate reply message exists at all.
+    expect(port.sent.filter(m => typeof m.input.markdown === 'string')).toHaveLength(0)
+  })
+
+  it('R36-3b: the reasoning-only summary reaches a non-streaming transport as one non-empty message', async () => {
+    // `FakePort.stream()` throws: the degraded transport path buffers and sends
+    // once at settle. The closing summary must ride that path, not vanish.
+    const port = new FakePort()
+    const env = makeR36Env(port)
+    await textMessage(port, 'hello')
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/chunk',
+      data: { turn: 1, chunk: { type: 'reasoning-delta', text: 'r'.repeat(1204) } },
+    })
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(30)
+
+    const markdowns = port.sent
+      .filter(m => typeof m.input.markdown === 'string')
+      .map(m => String(m.input.markdown))
+    expect(markdowns).toHaveLength(1)
+    expect(markdowns[0]).toContain('本轮只有思考')
+    expect(markdowns[0]).toContain('1,204 字')
+    expect(markdowns.every(markdown => markdown.trim() !== '')).toBe(true)
+  })
+
+  it('R36-4: after reasoning, the first body chunk replaces the status line (no residue)', async () => {
+    const port = new StatusStreamPort()
+    const env = makeR36Env(port, { processStatusMinIntervalMs: 0, processStatusMinChars: 0 })
+    await textMessage(port, 'hello')
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, { type: 'step/start', data: { turn: 1, step: 1 } })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/chunk',
+      data: { turn: 1, chunk: { type: 'reasoning-delta', text: 'COT-MUST-NOT-APPEAR' } },
+    })
+    await sleep(10)
+    // A shown status line is NOT "streamed body": the turn still awaits text.
+    expect(env.dispose.state.streamedTurns.size).toBe(0)
+
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/chunk', data: { turn: 1, chunk: { type: 'text-delta', text: 'Hello ' } },
+    })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/chunk', data: { turn: 1, chunk: { type: 'text-delta', text: 'world' } },
+    })
+    // The committed message repeats the deltas and must stay deduplicated.
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: 'Hello world' }] } },
+    })
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(30)
+
+    // The body REPLACED the status line; the repeated committed message was not
+    // appended a second time.
+    expect(port.sets.at(-1)).toBe('Hello ')
+    expect(port.appends).toEqual(['world'])
+    expect(cardContent(port)).toBe('Hello world')
+    expect([...port.sets, ...port.appends].join('')).not.toContain('COT-MUST-NOT-APPEAR')
+  })
+
+  it('R36-4b: reasoning does not suppress a committed assistant message (streamedTurns stays body-only)', async () => {
+    const port = new StatusStreamPort()
+    const env = makeR36Env(port, { processStatusMinIntervalMs: 0, processStatusMinChars: 0 })
+    await textMessage(port, 'hello')
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, { type: 'step/start', data: { turn: 1, step: 1 } })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/chunk',
+      data: { turn: 1, chunk: { type: 'reasoning-delta', text: 'thinking hard' } },
+    })
+    // No text-delta ever arrives: the whole answer is the committed message. Had
+    // reasoning polluted `streamedTurns`, this body would be dropped as a repeat.
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: 'committed answer' }] } },
+    })
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(30)
+
+    expect(cardContent(port)).toBe('committed answer')
+    // Reasoning-only closing summary must NOT fire: this turn DID produce body.
+    expect([...port.sets, ...port.appends].join('')).not.toContain('本轮只有思考')
+  })
+
+  it('R36-5: a controller without setContent degrades silently to the pre-R36 path', async () => {
+    const port = new StatusStreamPort(false)
+    const env = makeR36Env(port, { processStatusMinIntervalMs: 0, processStatusMinChars: 0 })
+    await textMessage(port, 'hello')
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, { type: 'step/start', data: { turn: 1, step: 2 } })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c1', name: 'bash', arguments: '{}' },
+    })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/chunk',
+      data: { turn: 1, chunk: { type: 'reasoning-delta', text: 'quietly thinking' } },
+    })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/chunk', data: { turn: 1, chunk: { type: 'text-delta', text: 'answer' } },
+    })
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(30)
+
+    // No status line was attempted at all…
+    expect(port.sets).toHaveLength(0)
+    // …the body and the pre-R36 tool aggregate render exactly as before.
+    expect(port.appends[0]).toBe('answer')
+    expect(port.appends.join('')).toContain('调用工具 bash × 1 次')
+    expect(port.appends.join('')).not.toContain('思考中')
+    // Missing capability must never surface as a render failure.
+    expect(env.reportLines.filter(line => line.includes('render failed'))).toEqual([])
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R36 stage two: card reasoning region (panel + body, live)            */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R36-2 reasoning card', () => {
+  /**
+   * A port with BOTH reply surfaces: the markdown stream (with `setContent`,
+   * exactly what the R36 stage-one tests assume) and the card surface
+   * (`cardStream` + `updateCard`). Which one a turn uses is the behaviour
+   * under test, so the fake records both and never throws.
+   */
+  class R36Stage2Port extends FakePort {
+    constructor(private readonly cardCapable = true) { super() }
+
+    /** `undefined` models an older transport without the card reply surface. */
+    override get cardStream(): boolean | undefined {
+      return this.cardCapable ? true : undefined
+    }
+
+    /** Every `controller.append` chunk of the markdown stream, in order. */
+    readonly appends: string[] = []
+    /** Every full-content `controller.setContent` push, in order. */
+    readonly sets: string[] = []
+    /** The `StreamInput` keys of every `stream()` call (`markdown` / `card`). */
+    readonly streamInputs: string[][] = []
+
+    override async stream(
+      _to: string,
+      input: Record<string, unknown>,
+      _options?: { replyTo?: string; replyInThread?: boolean },
+    ): Promise<{ messageId: string }> {
+      this.streamInputs.push(Object.keys(input))
+      const producer = input.markdown as (controller: {
+        append(chunk: string): Promise<void>
+        setContent(full: string): Promise<void>
+        messageId: string
+      }) => Promise<void>
+      const controller = {
+        messageId: 'om_r36_stream',
+        append: async (chunk: string): Promise<void> => { this.appends.push(chunk) },
+        setContent: async (full: string): Promise<void> => { this.sets.push(full) },
+      }
+      await producer(controller)
+      return { messageId: controller.messageId }
+    }
+  }
+
+  type CardElement = Record<string, unknown>
+
+  function cardElements(card: object | undefined): CardElement[] {
+    const elements = (card as { elements?: unknown } | undefined)?.elements
+    return Array.isArray(elements) ? elements as CardElement[] : []
+  }
+
+  /** The reasoning region of one card, or undefined when it has none. */
+  function cardPanel(card: object | undefined): { title: string; content: string; expanded: boolean } | undefined {
+    for (const element of cardElements(card)) {
+      if (element.tag !== 'collapsible_panel') continue
+      const header = element.header as { title?: { content?: unknown } } | undefined
+      const inner = Array.isArray(element.elements) ? element.elements as CardElement[] : []
+      const body = inner[0] as { text?: { content?: unknown } } | undefined
+      return {
+        title: String(header?.title?.content ?? ''),
+        content: String(body?.text?.content ?? ''),
+        expanded: element.expanded === true,
+      }
+    }
+    return undefined
+  }
+
+  /** The reply body region of one card (top-level markdown divs only). */
+  function cardBody(card: object | undefined): string {
+    const divs = cardElements(card).filter(element => element.tag === 'div')
+    const last = divs.at(-1) as { text?: { content?: unknown } } | undefined
+    return String(last?.text?.content ?? '')
+  }
+
+  /** The live process-line note, or undefined (R36 stage one on the card). */
+  function cardNote(card: object | undefined): string | undefined {
+    for (const element of cardElements(card)) {
+      if (element.tag !== 'note') continue
+      const inner = Array.isArray(element.elements) ? element.elements as CardElement[] : []
+      const first = inner[0] as { content?: unknown } | undefined
+      return String(first?.content ?? '')
+    }
+    return undefined
+  }
+
+  /** The card as it stands right now: last patch, else the placeholder send. */
+  function lastCard(port: R36Stage2Port): object | undefined {
+    const patched = port.cardUpdates.at(-1)
+    if (patched !== undefined) return patched.card
+    const placeholder = port.sent
+      .map(message => message.input.card)
+      .filter((card): card is object => typeof card === 'object' && card !== null)
+      .at(-1)
+    return placeholder
+  }
+
+  function markdownSends(port: FakePort): string[] {
+    return port.sent
+      .filter(message => typeof message.input.markdown === 'string')
+      .map(message => String(message.input.markdown))
+  }
+
+  function lastMarkdown(port: FakePort): string {
+    return markdownSends(port).at(-1) ?? ''
+  }
+
+  function makeR36Stage2Env(
+    port: FakePort,
+    timing: BridgeTimingOptions = {},
+    overrides?: Partial<ResolvedConfig>,
+    hooks?: BridgeHooks,
+  ) {
+    const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-r36b-'))
+    const config = resolveConfig({ appId: 'cli_test', appSecret: 'secret', workspace, ...overrides })
+    const host = fakeHost()
+    const reportLines: string[] = []
+    const dispose = installBridge(
+      host,
+      config,
+      port,
+      resolveAuthorization(config),
+      line => reportLines.push(line),
+      hooks ?? {},
+      timing,
+    )
+    return { workspace, config, port, host, reportLines, dispose }
+  }
+
+  function firstAgent(host: ReturnType<typeof fakeHost>): FakeAgent {
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+    return agent
+  }
+
+  const TURN_START = { type: 'turn/start', data: { turn: 1 } }
+  const TURN_END = { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } }
+  const LIVE = {
+    cardPatchMinIntervalMs: 0,
+    cardPatchMinChars: 0,
+    processStatusMinIntervalMs: 0,
+    processStatusMinChars: 0,
+  }
+
+  function reasoningOf(agent: FakeAgent, text: string): unknown {
+    return { type: 'assistant/chunk', data: { turn: 1, chunk: { type: 'reasoning-delta', text } } }
+  }
+
+  function textOf(agent: FakeAgent, text: string): unknown {
+    return { type: 'assistant/chunk', data: { turn: 1, chunk: { type: 'text-delta', text } } }
+  }
+
+  it('R36-6: the reasoning region and the body region update independently', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+
+    // The card opens on the SAME localized streaming placeholder stage one
+    // feeds the markdown stream (no English SDK default, no second vocabulary).
+    expect(cardBody(port.sent[0]?.input.card as object)).toBe(strings('zh-CN').streamInitial)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'COT-ONE'))
+    await sleep(20)
+
+    // Reasoning alone: the panel holds it (expanded — private chat), and the
+    // body region holds neither the reasoning nor a stale status line.
+    const reasoningOnly = lastCard(port)
+    expect(cardPanel(reasoningOnly)?.content).toBe('COT-ONE')
+    expect(cardPanel(reasoningOnly)?.expanded).toBe(true)
+    // Live header: still "thinking", carrying the running size.
+    expect(cardPanel(reasoningOnly)?.title).toContain('思考中')
+    expect(cardPanel(reasoningOnly)?.title).toContain('7 字')
+    expect(cardBody(reasoningOnly)).not.toContain('COT-ONE')
+    expect(cardPanel(reasoningOnly)?.content).not.toContain('Answer')
+
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'COT-TWO'))
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'Answer-A'))
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'Answer-B'))
+    await sleep(20)
+
+    // Both regions live on ONE card: the reasoning grew in place, the body
+    // arrived without overwriting it (and vice versa).
+    const both = lastCard(port)
+    expect(cardPanel(both)?.content).toBe('COT-ONECOT-TWO')
+    expect(cardBody(both)).toBe('Answer-AAnswer-B')
+
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(20)
+
+    const finalCard = lastCard(port)
+    expect(cardPanel(finalCard)?.content).toBe('COT-ONECOT-TWO')
+    expect(cardBody(finalCard)).toBe('Answer-AAnswer-B')
+    // The markdown stream was never opened for this turn: the card IS the reply.
+    expect(port.streamInputs).toEqual([])
+    expect(port.appends).toEqual([])
+  })
+
+  it('R36-6b: reasoning never marks the turn as body-streamed (committed message still lands)', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'thinking hard'))
+    // Had reasoning polluted `streamedTurns`, this committed body would be
+    // dropped as a repeat of already-streamed content.
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: 'committed answer' }] } },
+    })
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(20)
+
+    expect(cardBody(lastCard(port))).toBe('committed answer')
+    expect(cardPanel(lastCard(port))?.content).toBe('thinking hard')
+    expect([...port.sets, ...port.appends].join('')).not.toContain('thinking hard')
+  })
+
+  it('R36-7: turn/end folds the panel onto the closing header (chars + seconds)', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    // Group chat: the panel stays folded even while the reasoning streams.
+    await textMessage(port, 'hello')
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, { type: 'step/start', data: { turn: 1, step: 1 } })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c1', name: 'bash', arguments: '{}' },
+    })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c2', name: 'bash', arguments: '{}' },
+    })
+    const cot = `SECRET-COT-${'r'.repeat(1204)}`
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, cot))
+    await sleep(20)
+
+    expect(cardPanel(lastCard(port))?.expanded).toBe(false)
+    // The reasoning is nowhere near the body region — not even transiently.
+    expect(cardBody(lastCard(port))).not.toContain('SECRET-COT')
+
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(20)
+
+    const panel = cardPanel(lastCard(port))
+    expect(panel).toBeDefined()
+    expect(panel?.expanded).toBe(false)
+    expect(panel?.title).toContain('思考过程')
+    expect(panel?.title).toContain(`${cot.length.toLocaleString('zh-CN')} 字`)
+    expect(panel?.title).toMatch(/· \d+s[)）]/)
+    expect(panel?.content).toContain('SECRET-COT')
+    // The panel reports size/duration itself, so the stage-one "reasoning only"
+    // line would only duplicate it; the tool aggregate still rides the body.
+    const body = cardBody(lastCard(port))
+    expect(body).not.toContain('本轮只有思考')
+    expect(body).not.toContain('SECRET-COT')
+    expect(body).toContain('调用工具 bash × 2 次')
+    // Red line: a panel is not body output.
+    expect(env.dispose.state.streamedTurns.size).toBe(0)
+  })
+
+  it('R36-8: showReasoning:false renders byte-for-byte the stage-one reply', async () => {
+    /** Run one identical turn and report every markdown call it produced. */
+    async function run(port: FakePort, overrides: Partial<ResolvedConfig> | undefined) {
+      const env = makeR36Stage2Env(port, { processStatusMinIntervalMs: 0, processStatusMinChars: 0 }, overrides)
+      await textMessage(port, 'hello')
+      const agent = firstAgent(env.host)
+      env.host.emit('session/event', { id: agent.id }, TURN_START)
+      env.host.emit('session/event', { id: agent.id }, { type: 'step/start', data: { turn: 1, step: 2 } })
+      env.host.emit('session/event', { id: agent.id }, {
+        type: 'tool/call', data: { turn: 1, callId: 'c1', name: 'bash', arguments: '{}' },
+      })
+      env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'r'.repeat(1204)))
+      env.host.emit('session/event', { id: agent.id }, textOf(agent, 'answer'))
+      env.host.emit('session/event', { id: agent.id }, TURN_END)
+      await sleep(30)
+      return env
+    }
+
+    // Baseline: a transport that cannot do cards at all (stage-one path).
+    const baselinePort = new R36Stage2Port(false)
+    await run(baselinePort, undefined)
+    // Same turn, but the deployment switched reasoning display off on a fully
+    // card-capable transport: the markdown path must be taken verbatim.
+    const offPort = new R36Stage2Port()
+    await run(offPort, { showReasoning: false })
+
+    const normalize = (lines: string[]): string[] => lines.map(line => line.replace(/\d+s/g, 'Ns'))
+    expect(offPort.cardUpdates).toEqual([])
+    expect(offPort.streamInputs).toEqual([['markdown']])
+    expect(normalize(offPort.sets)).toEqual(normalize(baselinePort.sets))
+    expect(offPort.appends).toEqual(baselinePort.appends)
+    expect([...offPort.sets, ...offPort.appends].join('')).toContain('answer')
+    expect(offPort.appends.join('')).toContain('调用工具 bash × 1 次')
+    expect([...offPort.sets, ...offPort.appends].join('')).not.toContain('r'.repeat(64))
+  })
+
+  it('R36-9a: /reasoning off persists the scope override and the next turn degrades', async () => {
+    const port = new R36Stage2Port()
+    const persisted: { scopeKey: string; choice: string }[] = []
+    const env = makeR36Stage2Env(port, LIVE, undefined, {
+      onReasoningChange: async (scopeKey, choice) => { persisted.push({ scopeKey, choice }) },
+    })
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'COT'))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(20)
+    expect(port.cardUpdates.length).toBeGreaterThan(0)
+
+    await textMessage(port, '/reasoning off')
+    expect(lastMarkdown(port)).toContain('已设置为：隐藏')
+    expect(persisted).toEqual([{ scopeKey: 'oc_chat1', choice: 'off' }])
+    expect(env.dispose.state.chatReasoning).toEqual({ oc_chat1: 'off' })
+
+    port.cardUpdates.length = 0
+    port.streamInputs.length = 0
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'COT-2'))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(30)
+    // Stage one again: no card patching, the markdown stream carries the turn.
+    expect(port.cardUpdates).toEqual([])
+    expect(port.streamInputs).toEqual([['markdown']])
+    expect(port.sets.join('')).not.toContain('COT-2')
+  })
+
+  it('R36-9b: /reasoning view reports the state and its source, and usage guards bad input', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port)
+    await textMessage(port, 'hello')
+
+    await textMessage(port, '/reasoning')
+    expect(lastMarkdown(port)).toContain('思考内容显示')
+    expect(lastMarkdown(port)).toContain('当前会话：显示（来源：部署配置）')
+    expect(lastMarkdown(port)).toContain('部署默认：显示')
+
+    await textMessage(port, '/reasoning off')
+    await textMessage(port, '/reasoning')
+    expect(lastMarkdown(port)).toContain('当前会话：隐藏（来源：本会话设置）')
+
+    await textMessage(port, '/reasoning maybe')
+    expect(lastMarkdown(port)).toContain('用法：/reasoning')
+
+    // Repeating the same choice is reported as such, and persists nothing new.
+    const persisted: string[] = []
+    const repeatPort = new R36Stage2Port()
+    makeR36Stage2Env(repeatPort, {}, undefined, {
+      onReasoningChange: async (_scope, choice) => { persisted.push(choice) },
+    })
+    await textMessage(repeatPort, 'hello')
+    await textMessage(repeatPort, '/reasoning off')
+    await textMessage(repeatPort, '/reasoning off')
+    expect(lastMarkdown(repeatPort)).toContain('已经是：隐藏')
+    expect(persisted).toEqual(['off'])
+  })
+
+  it('R36-9c: the approver list gates /reasoning like /mode, viewing stays open', async () => {
+    const port = new R36Stage2Port()
+    makeR36Stage2Env(port, LIVE, { approvers: ['ou_admin'] })
+    await textMessage(port, 'hello')
+
+    await textMessage(port, '/reasoning off', { senderId: 'ou_user' })
+    expect(lastMarkdown(port)).toContain('无权设置思考内容显示')
+
+    // Viewing is not gated (mirrors `/mode`).
+    await textMessage(port, '/reasoning', { senderId: 'ou_user' })
+    expect(lastMarkdown(port)).toContain('当前会话：显示')
+
+    await textMessage(port, '/reasoning off', { senderId: 'ou_admin' })
+    expect(lastMarkdown(port)).toContain('已设置为：隐藏')
+  })
+
+  it('R36-9d: a scope override wins over the deployment default in both directions', async () => {
+    // Deployment OFF, chat explicitly ON.
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE, { showReasoning: false })
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'COT'))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(20)
+    expect(port.cardUpdates).toEqual([])
+
+    port.cardUpdates.length = 0
+    await textMessage(port, '/reasoning on')
+    expect(lastMarkdown(port)).toContain('已设置为：显示')
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'COT-2'))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(20)
+    expect(cardPanel(lastCard(port))?.content).toBe('COT-2')
+  })
+
+  it('R36-10: the live panel is expanded in private chats and folded in groups', async () => {
+    for (const [chatType, liveExpanded] of [['p2p', true], ['group', false]] as const) {
+      const port = new R36Stage2Port()
+      const env = makeR36Stage2Env(port, LIVE)
+      await textMessage(port, 'hello', { chatType })
+      const agent = firstAgent(env.host)
+
+      env.host.emit('session/event', { id: agent.id }, TURN_START)
+      env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'COT'))
+      await sleep(20)
+      expect(cardPanel(lastCard(port))?.expanded).toBe(liveExpanded)
+
+      env.host.emit('session/event', { id: agent.id }, TURN_END)
+      await sleep(20)
+      // Q4: the closing panel is folded in BOTH chat types, and kept.
+      expect(cardPanel(lastCard(port))?.expanded).toBe(false)
+      expect(cardPanel(lastCard(port))?.content).toBe('COT')
+    }
+  })
+
+  it('R36-11: an over-long reasoning keeps head and tail and states the omission', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+
+    const head = 'HEAD-'.repeat(3_000)
+    const tail = '-TAIL'.repeat(3_000)
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, head + tail))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(30)
+
+    const panel = cardPanel(lastCard(port))
+    expect(panel).toBeDefined()
+    expect(panel?.content.startsWith('HEAD-')).toBe(true)
+    expect(panel?.content.endsWith('-TAIL')).toBe(true)
+    expect(panel?.content).toContain('已省略')
+    // The kept text respects the element budget (only the marker is extra), so
+    // the card element stays far below the SDK's 30000-char element limit.
+    expect((panel?.content.length ?? 0)).toBeLessThan(12_200)
+    // The header still reports the TRUE size, not the truncated one.
+    expect(panel?.title).toContain('30,000 字')
+    expect(cardBody(lastCard(port))).not.toContain('HEAD-')
+  })
+
+  it('R36-12: a transport without the card surface degrades silently to stage one', async () => {
+    // A markdown-capable port that does NOT advertise `cardStream` models an
+    // older transport: reasoning display is configured on, but the two-region
+    // card is not available.
+    const port = new R36Stage2Port(false)
+    const env = makeR36Stage2Env(port, { processStatusMinIntervalMs: 0, processStatusMinChars: 0 })
+    await textMessage(port, 'hello')
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, { type: 'step/start', data: { turn: 1, step: 1 } })
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'quietly thinking'))
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'answer'))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(30)
+
+    expect(port.cardUpdates).toEqual([])
+    expect(port.streamInputs).toEqual([['markdown']])
+    expect(port.sets.join('')).toContain('思考中')
+    expect([...port.sets, ...port.appends].join('')).toContain('answer')
+    expect([...port.sets, ...port.appends].join('')).not.toContain('quietly thinking')
+    expect(env.reportLines.filter(line => line.includes('render failed') || line.includes('card'))).toEqual([])
+  })
+
+  it('R36-12b: card output keeps its settle-time render and folds the panel into it', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, {}, { output: 'card' })
+    await textMessage(port, 'hello')
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'COT'))
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'answer'))
+    await sleep(20)
+    // `card` output stays a settle-time render: no live patching at all.
+    expect(port.cardUpdates).toEqual([])
+
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(20)
+    expect(port.cardUpdates).toHaveLength(1)
+    const card = port.cardUpdates[0]?.card
+    expect(cardPanel(card)?.content).toBe('COT')
+    expect(cardPanel(card)?.expanded).toBe(false)
+    expect(cardBody(card)).toBe('answer')
+  })
+
+  it('R36-13: an over-long BODY keeps the card head and still delivers the full text', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+
+    const body = 'x'.repeat(CARD_STREAM_MAX_CHARS + 5_000)
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, body))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(30)
+
+    const cardText = cardBody(lastCard(port))
+    expect(cardText).toContain('完整内容见下一条消息')
+    expect(cardText.length).toBeLessThan(CARD_STREAM_MAX_CHARS + 200)
+    // Nothing is lost: the full answer follows as one plain message.
+    const markdowns = markdownSends(port)
+    expect(markdowns).toHaveLength(1)
+    expect(markdowns[0]).toHaveLength(body.length)
+    expect(env.reportLines.some(line => line.includes('exceeds the card budget'))).toBe(true)
+  })
+
+  it('R36-15: a hung live patch never parks turn/end (R22 discipline holds on the card surface)', async () => {
+    /** Live patches hang forever: no settle, no rejection. */
+    class HangingPatchPort extends R36Stage2Port {
+      override async updateCard(): Promise<void> {
+        return new Promise<void>(() => undefined)
+      }
+    }
+    const port = new HangingPatchPort()
+    const env = makeR36Stage2Env(port, { ...LIVE, replyFinishTimeoutMs: 50 })
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'COT'))
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'answer'))
+    const startedAt = Date.now()
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(150)
+
+    // The card was condemned by the R22 cap and the body still arrived, once,
+    // as a plain message.
+    const markdowns = markdownSends(port)
+    expect(markdowns).toHaveLength(1)
+    expect(markdowns[0]).toContain('answer')
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+  })
+
+  it('R36-14: a tool-only phase still moves the card (live process line as a note)', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, { type: 'step/start', data: { turn: 1, step: 2 } })
+    env.host.emit('session/event', { id: agent.id }, {
+      type: 'tool/call', data: { turn: 1, callId: 'c1', name: 'bash', arguments: '{}' },
+    })
+    await sleep(20)
+    expect(cardNote(lastCard(port))).toContain('思考中')
+    expect(cardNote(lastCard(port))).toContain('第 2 步')
+    expect(cardNote(lastCard(port))).toContain('工具 bash × 1')
+
+    // A reasoning delta takes the header over; the note is not residue.
+    env.host.emit('session/event', { id: agent.id }, reasoningOf(agent, 'COT'))
+    await sleep(20)
+    expect(cardNote(lastCard(port))).toBeUndefined()
+    expect(cardPanel(lastCard(port))?.content).toBe('COT')
+
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(20)
+    // Closed card: no live note, the panel folded, the tool aggregate in the body.
+    expect(cardNote(lastCard(port))).toBeUndefined()
+    expect(cardBody(lastCard(port))).toContain('调用工具 bash × 1 次')
   })
 })

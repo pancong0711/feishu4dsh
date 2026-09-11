@@ -73,7 +73,11 @@ export interface AssistantMessageData {
 /** The `assistant/chunk` payload: one raw assistant stream chunk. */
 export interface AssistantChunkData {
   readonly turn: number
-  /** Only `text-delta` blocks are rendered; reasoning stays off the wire. */
+  /**
+   * `text-delta` is rendered as reply text; `reasoning-delta` is consumed for
+   * COUNTERS only (R36) — its text never reaches the wire; every other chunk
+   * type is ignored.
+   */
   readonly chunk: {
     readonly type: string
     readonly text?: string
@@ -84,6 +88,12 @@ export interface AssistantChunkData {
 /** The `turn/start` payload. */
 export interface TurnStartData {
   readonly turn: number
+}
+
+/** The `step/start` payload: one agent step boundary inside a turn (R36). */
+export interface StepStartData {
+  readonly turn: number
+  readonly step: number
 }
 
 /** The `turn/end` payload. */
@@ -125,6 +135,12 @@ export function isTurnStartEvent(
   event: HostSessionEvent,
 ): event is HostSessionEvent & { readonly data: TurnStartData } {
   return event.type === 'turn/start'
+}
+
+export function isStepStartEvent(
+  event: HostSessionEvent,
+): event is HostSessionEvent & { readonly data: StepStartData } {
+  return event.type === 'step/start'
 }
 
 export function isTurnEndEvent(

@@ -76,6 +76,20 @@ describe('resolveConfig', () => {
     expect(resolved.chatPresets).toEqual({ 'oc_a@om_t': 'minimal' })
   })
 
+  it('defaults showReasoning to true and cleans the chatReasoning map (R36-2)', () => {
+    expect(resolveConfig({ appId: 'cli_a', appSecret: 's' }).showReasoning).toBe(true)
+    expect(resolveConfig({ appId: 'cli_a', appSecret: 's', showReasoning: false }).showReasoning).toBe(false)
+    expect(resolveConfig({ appId: 'cli_a', appSecret: 's' }).chatReasoning).toEqual({})
+    // The `/reasoning` vocabulary is closed: a hand-edited third state is
+    // dropped rather than reaching the bridge as an unrenderable value.
+    const resolved = resolveConfig({
+      appId: 'cli_a',
+      appSecret: 's',
+      chatReasoning: { oc_a: 'off', 'oc_b': ' maybe ', oc_c: '' },
+    })
+    expect(resolved.chatReasoning).toEqual({ oc_a: 'off' })
+  })
+
   it('clamps numbers to sane lower bounds', () => {
     const resolved = resolveConfig({ approvalTimeoutMs: 5, maxReceiveFileBytes: -1, webhookPort: 0 })
     expect(resolved.approvalTimeoutMs).toBe(10_000)

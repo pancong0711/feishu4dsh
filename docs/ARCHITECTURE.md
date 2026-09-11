@@ -133,7 +133,7 @@ NormalizedMessage ──► scopeKey(sessionScope) ──┐
 | 传输层不复制 Python 代码，而用官方 Node SDK 的 `LarkChannel` | dsh 是 Node/TS 运行时；官方 SDK 已提供同级安全管线，复制反而引入维护债 |
 | 不做「扫码一键建应用」onboarding | 保持依赖面最小；手动建应用流程已文档化（FEISHU-SETUP.md） |
 | 未实现文档评论回复、会议邀请自动加入 | 属于 Hermes 高级功能，列入后续版本目标 |
-| `output: 'stream'` 用 Markdown 流式而非原生思考过程消息 | 兼容旧客户端；`message_cot` 方案在路线图 |
+| `output: 'stream'` 默认走 Markdown 流式，思考内容另用 `collapsible_panel` 折叠面板（R36，卡片承载） | 兼容旧客户端：`message_cot` 原生思考消息在路线图；卡片方案不依赖宿主新能力（reasoning 已随会话日志落账） |
 | 单机器人实例 | 多实例与 @ 交接（bot peers/hops）在路线图 |
 
 ## 8. 多工作区设计（v0.2.0 / v0.3.0）

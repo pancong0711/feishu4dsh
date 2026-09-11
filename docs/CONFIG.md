@@ -31,10 +31,14 @@
 | `requireMention` | `true` | 群聊是否需要 @ 机器人 |
 | `output` | `stream` | `stream` 流式逐块输出 / `card` 单卡片聚合 |
 | `showProcess` | `true` | 是否展示每轮聚合的工具调用与 Token 用量摘要；例如“调用工具 bash × 3 次 · Token：输入 1,234 · 输出 56 · 缓存读 890”，并跟随入站消息的 `replyTo` 显示在话题内 |
+| `showReasoning` | `true` | 是否把模型思考过程（reasoning）放进回复卡片的**可折叠面板**里流式展示（R36 阶段二）；轮末折叠保留为一行「💭 思考过程（N 字 · Xs）」。`output: stream` 时需传输支持整卡流（旧传输退回 Markdown 流式，无面板），`output: card` 则在收口卡片中折叠展示；会话内用 `/reasoning` 按 scope 覆盖 |
+| `chatReasoning` | `{}` | 运行时状态（`/reasoning` 写入）：scopeKey → `on` / `off` 覆盖，勿手改 |
 | `locale` | `auto` | 渠道文案语言；`auto` 无提示时默认 zh-CN |
 
 > **话题/线程说明**：飞书话题 = thread。`sessionScope: chat` 时所有话题共享一个 Agent 会话；`chat-thread` 时每个话题独立会话。`/status` 显示的是配置原文（如 `chat` / `chat-thread`），不是自动判断的“话题”。
 
+> **思考过程显示**（R36 阶段二）：默认 `showReasoning: true` —— 一轮里模型产出的 reasoning 会以 `collapsible_panel` 折叠面板出现在回复卡片上方，**流式增量更新**，正文仍渲染在同一张卡片的 markdown 区；`turn/end` 把面板收成一行「💭 思考过程（1,204 字 · 18s）」并**默认折叠保留**（拍板 Q4）。**私聊默认展开、群聊默认折叠**（拍板 Q2），读者点标题即可自行展开。会话内用 `/reasoning`（无参查看当前值与来源）· `/reasoning on|off` 按 scope 覆盖并持久化，ACL 与 `/mode` 一致。超长思考保留头尾并标注「已省略 N 字」；思考区与正文区互不覆盖，思考内容绝不混入正文（正文落账语义不变）。**降级**：`showReasoning: false`、`/reasoning off` 或（`output: stream` 且）传输不支持整卡流时，一律回到阶段一/既有渲染路径（Markdown 流式 + 过程行）；`output: card` 不做 live 过程行，但收口卡片仍带折叠面板。`collapsible_panel` 需要飞书客户端 ≥ V7.9，更低版本会把面板体显示为「升级客户端」占位图（正文不受影响）。
+>
 > **模式与推理强度**（R27/R28）：`/mode` 查看/设置会话模式（standard/minimal，设置即开启新会话——`resume()` 不能换预设）；`/model effort` 按模型设置推理强度（`default/low/high/max`，`default` = 请求不携带 `reasoning_effort`；调整即全局记住该模型的偏好）。两者 ACL 与 `/model` 一致。
 > **会话管理**（R29）：`/session` 列表（自动标题 = 日期+首条消息首行≤12字）、`/session <n>` 切回旧会话（自动停止进行中任务）、`/session rename`、`/session archive <n>` / `archive old [天数]`（归档与 dsh web 共用同一集合，当前版本归档单向）。切换/重命名/归档的 ACL 与 `/cd` 一致。
 >
@@ -107,6 +111,7 @@ dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操�
         requireMention: true
         output: stream
         showProcess: true
+        # showReasoning: true   # 思考过程折叠面板（会话内 /reasoning on|off 覆盖）
         # workspace: /path/to/default-workspace
         # workspaceRoots: ['/path/to/projects']   # 允许 /cd 进入的目录前缀
         # senderAllowlist: ['ou_xxx']

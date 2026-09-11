@@ -10,6 +10,7 @@ import type { ResolvedConfig } from './config.js'
 import { resolveAuthorization, describeAuthorization } from './acl.js'
 import { createFeishuPort } from './adapter.js'
 import { installBridge, type BridgeHost, type BridgeHooks } from './bridge.js'
+import { resolveLocale, strings } from './strings.js'
 
 /** Resolved configuration whose credentials are present. */
 export type ChannelConfig = ResolvedConfig
@@ -80,7 +81,11 @@ export function apply(ctx: Context, config: Config): void {
     const authorization = resolveAuthorization(resolved)
     internals.notify(describeAuthorization(authorization))
 
-    const port = createFeishuPort(resolved, authorization, internals.notify)
+    // R36: the streaming placeholder is user-facing copy — resolve it from the
+    // shared strings table here and hand it to the transport, so the adapter
+    // never hard-codes text (and never falls back to the SDK's English default).
+    const streamInitialText = strings(resolveLocale(resolved.locale)).streamInitial
+    const port = createFeishuPort(resolved, authorization, internals.notify, streamInitialText)
     const host: BridgeHost = {
       agents: ctx.agents,
       on: (name, listener) => (ctx.on as (name: string, listener: (...args: never[]) => unknown) => unknown)(name, listener),
@@ -111,6 +116,12 @@ export function apply(ctx: Context, config: Config): void {
         ? undefined
         : async (scopeKey, preset) => {
             await settingsScope.update({ chatPresets: { [scopeKey]: preset } })
+          },
+      // Persist one scope's /reasoning display override (R36 stage two).
+      onReasoningChange: settingsScope === undefined
+        ? undefined
+        : async (scopeKey, choice) => {
+            await settingsScope.update({ chatReasoning: { [scopeKey]: choice } })
           },
       // Persist the per-model reasoning-effort preference table (R28).
       onModelEffortsChange: settingsScope === undefined

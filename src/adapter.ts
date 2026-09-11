@@ -48,6 +48,14 @@ export interface ChannelPort {
   on<K extends EventName>(name: K, handler: EventMap[K]): () => void
   send(to: string, input: SendInput, options?: SendOptions): Promise<SendResult>
   stream(to: string, input: StreamInput, options?: SendOptions): Promise<SendResult>
+  /**
+   * R36-2 capability probe: the transport can carry a whole-card LIVE reply —
+   * one interactive card re-rendered with {@link updateCard} while the turn
+   * runs (reasoning panel + body). Ports that do not advertise it (older
+   * deployments, test fakes) keep the markdown reply path, so the bridge
+   * degrades silently instead of failing a turn.
+   */
+  readonly cardStream?: boolean
   updateCard(messageId: string, cardObject: object): Promise<void>
   editMessage(messageId: string, text: string): Promise<void>
   /**
@@ -66,10 +74,19 @@ export interface ChannelPort {
   removeReactionByEmoji(messageId: string, emojiType: string): Promise<boolean>
 }
 
-/** Build the SDK channel options from resolved config and authorization. */
+/**
+ * Build the SDK channel options from resolved config and authorization.
+ * @param config - credentials present, resolved plugin configuration.
+ * @param authorization - who this deployment answers.
+ * @param streamInitialText - R36 placeholder for a streaming reply before its
+ *   first chunk, resolved from the shared `strings` table by the caller
+ *   (`runtime.ts`) — the adapter deliberately owns no user-facing copy, so it
+ *   never hard-codes the SDK's English default either.
+ */
 export function channelOptions(
   config: ResolvedConfig,
   authorization: Authorization,
+  streamInitialText?: string,
 ): LarkChannelOptions {
   // Authorization narrows; it does not gate. Who may reach the bot at all is
   // the app's visibility scope; this duplicates the deployment's wish on the
@@ -108,6 +125,13 @@ export function channelOptions(
       ...config.verificationToken === '' ? {} : { verificationToken: config.verificationToken },
       ...config.encryptKey === '' ? {} : { encryptKey: config.encryptKey },
     }
+  }
+  // R36: without this the SDK's markdown stream shows its built-in English
+  // `Thinking...` for the whole reasoning phase (most turns emit no body text
+  // at all). The copy travels in from the caller so `strings` stays the one
+  // source of user-facing text.
+  if (streamInitialText !== undefined && streamInitialText !== '') {
+    options.outbound = { ...options.outbound, streamInitialText }
   }
   return options
 }
@@ -199,20 +223,28 @@ export interface FeishuPort extends ChannelPort {
  * @param config - credentials present, resolved plugin configuration.
  * @param authorization - who this deployment answers.
  * @param report - operator console line.
+ * @param streamInitialText - R36 localized streaming placeholder; omitted (or
+ *   empty) leaves the SDK default in place.
  * @returns the port wiring the bridge consumes.
  */
 export function createFeishuPort(
   config: ResolvedConfig,
   authorization: Authorization,
   report: (line: string) => void,
+  streamInitialText?: string,
 ): FeishuPort {
-  const channel = createLarkChannel(channelOptions(config, authorization))
+  const channel = createLarkChannel(channelOptions(config, authorization, streamInitialText))
   const webhook = config.connectionMode === 'webhook'
     ? createWebhookEndpoint(channel, config, report)
     : undefined
   return {
     channel,
     webhook,
+    // R36-2: the SDK transport renders one card and patches it through
+    // `im.v1.message.patch`, which is exactly what the two-region reasoning
+    // reply needs. Declared here (not inferred by the bridge) so the
+    // capability boundary stays a property of the transport.
+    cardStream: true,
     async connect(): Promise<void> {
       await channel.connect()
       if (webhook !== undefined) await webhook.listen()

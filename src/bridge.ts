@@ -10,15 +10,19 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { AGENT_PRESETS, type ResolvedConfig } from './config.js'
+import { AGENT_PRESETS, REASONING_CHOICES, type ReasoningChoice, type ResolvedConfig } from './config.js'
 import type { Authorization } from './acl.js'
 import { mayApprove } from './acl.js'
 import type { ChannelPort, CardActionEvent, NormalizedMessage, RejectEvent } from './adapter.js'
 import { resolveScopeKey, agentKeyOf, isAgentKey, sessionIdOf, AgentLedger, type SessionScopeInput } from './sessions.js'
 import { buildCatalog, listSubdirectories, listWorkspaces, resolveCdTarget, registeredPathsOf, resolveWorkspaceDirectory, normalizeWorkspacePath, type WorkspaceCatalog } from './workspaces.js'
-import { approvalCard, decodeActionValue, settledApprovalCard, type CardActionPayload, type MenuActionPayload } from './cards.js'
+import {
+  approvalCard, collapsiblePanel, decodeActionValue, markdownElement, noteElement, settledApprovalCard, truncateMiddle,
+  CARD_STREAM_MAX_CHARS, REASONING_PANEL_MAX_CHARS,
+  type CardActionPayload, type MenuActionPayload,
+} from './cards.js'
 import type { HostAgentHandle, HostAgentOptions, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostModelSelection, HostSession, HostSessionEvent, HostTools, HostWorkspace, HostWorkspaceRegistry, TokenUsageData } from './host.js'
-import { assistantText, isAssistantChunkEvent, isAssistantMessageEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
+import { assistantText, isAssistantChunkEvent, isAssistantMessageEvent, isStepStartEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
 import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedSelection, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
 import { readOutboundFile, sendFileTool, storeInboundFile, type OutboundFile, type SendFilePorts } from './files.js'
 import { accumulateSessionUsage, emptySessionUsage, hasSessionUsage, statsOfEvents, type SessionUsage } from './session-stats.js'
@@ -76,6 +80,12 @@ export interface ChatBinding {
   stream?: ReplyStream
   /** Tool call counts for the current turn; reset at `turn/start`. */
   toolCallCounts?: Map<string, number>
+  /**
+   * R36: live process-line counters for the current turn (`step/start`,
+   * reasoning character count, elapsed time). Counters only — reasoning TEXT
+   * is never stored here, rendered, or buffered.
+   */
+  processStatus?: TurnProcessStatus
   /** Whether the current turn has already appended visible text. */
   turnHasOutput?: boolean
   /** Accumulated token accounting for the current turn. */
@@ -98,6 +108,70 @@ interface ReplyStream {
    * guarantees anything with payload predates the new turn/start.
    */
   hasPayload(): boolean
+  /**
+   * R36: replace the reply surface with ONE live process line (step / elapsed
+   * / tool tallies — never reasoning text). Optional capability: surfaces
+   * without a card-level `setContent` (card mode, degraded transports) omit
+   * it, and the caller silently degrades to the pre-R36 path. The next
+   * {@link append} replaces the status line with the reply body, so the two
+   * can never interleave.
+   */
+  setStatus?(line: string): Promise<void>
+  /**
+   * R36 stage two: render the turn's reasoning on a card surface as a
+   * collapsible panel. Card surfaces only — the markdown stream cannot carry a
+   * second region, and omitting the member is how a surface says so (the
+   * caller then keeps the stage-one process line instead).
+   *
+   * `title` is the CLOSING header (char count + elapsed seconds); while the
+   * turn runs the surface shows its own live header (the pushed process line
+   * when there is one). `content` is the full reasoning text — the surface
+   * truncates it to its element budget. `expanded` is the live fold state
+   * (private chats open, groups folded); `finish` always folds the panel.
+   */
+  setReasoning?(panel: ReasoningPanelSpec): Promise<void>
+}
+
+/**
+ * R36 stage two: what one reply card's reasoning region should show. Plain
+ * data — the surface owns the card JSON, the bridge owns the copy and the
+ * counters.
+ */
+interface ReasoningPanelSpec {
+  /** Closing panel header. */
+  readonly title: string
+  /** Full reasoning text of this turn. */
+  readonly content: string
+  /** Whether the panel starts expanded while the turn runs. */
+  readonly expanded: boolean
+}
+
+/**
+ * R36: one turn's live process-line counters. Counters only — the reasoning
+ * text they summarize travels separately in {@link TurnProcessStatus.reasoningText}
+ * (stage two), and neither ever reaches the reply buffer.
+ */
+interface TurnProcessStatus {
+  /** Wall-clock turn start (ms), for the elapsed segment. */
+  readonly startedAt: number
+  /** Latest `step/start` step number; 0 before the first step boundary. */
+  step: number
+  /** Reasoning characters seen this turn (count only, never the text). */
+  reasoningChars: number
+  /**
+   * R36 stage two: the turn's reasoning TEXT, held only while a card surface
+   * renders it (config/`/reasoning` enabled and the transport card-capable).
+   * It is the reasoning region's content and NEVER the body: it is not
+   * buffered into `binding.stream`, not `streamedTurns`, and not
+   * `turnHasOutput`. Dropped with the rest of the status at `turn/end`.
+   */
+  reasoningText: string
+  /** Whether a live status line ever reached the reply surface. */
+  shown: boolean
+  /** Wall-clock of the last status push (ms); 0 = never pushed. */
+  lastPushAt: number
+  /** `reasoningChars` at the last push — the character-threshold gate. */
+  lastPushChars: number
 }
 
 /**
@@ -141,6 +215,8 @@ export interface BridgeHooks {
   onUserWorkspacesChange?: (workspaces: string[]) => void | Promise<void>
   /** Persist one scope's `/mode` preset override (R27). */
   onPresetChange?: (scopeKey: string, preset: string) => void | Promise<void>
+  /** Persist one scope's `/reasoning` display override (R36-2). */
+  onReasoningChange?: (scopeKey: string, choice: ReasoningChoice) => void | Promise<void>
   /** Persist the per-model reasoning-effort preference table (R28). */
   onModelEffortsChange?: (efforts: Record<string, string>) => void | Promise<void>
   /** Persist the `/model` picker catalog (R33: add/del/auto-learn). */
@@ -176,18 +252,61 @@ export const REPLY_STREAM_READY_TIMEOUT_MS = 10_000
  */
 export const REPLY_STREAM_FINISH_TIMEOUT_MS = 30_000
 
+/**
+ * R36 process-line throttle: the minimum wall-clock gap between two live
+ * status-line updates of one turn. 1.5 s keeps the card visibly moving during
+ * a long reasoning phase without turning every delta into a card update.
+ */
+export const PROCESS_STATUS_MIN_INTERVAL_MS = 1_500
+
+/**
+ * R36 process-line throttle: a burst of reasoning inside the interval window
+ * still forces one update once this many reasoning characters accumulated
+ * (counted, never rendered).
+ */
+export const PROCESS_STATUS_MIN_CHARS = 200
+
+/**
+ * R36 stage two whole-card patch throttle: the minimum wall-clock gap between
+ * two live updates of one reply card. The body region is what sets the pace —
+ * an answer should appear to flow, not to jump every reasoning-sized window —
+ * so this is much tighter than {@link PROCESS_STATUS_MIN_INTERVAL_MS}: 250 ms
+ * is ~4 card patches per second per active turn, the same order as the SDK's
+ * own markdown-stream default (100 ms / 50 chars).
+ */
+export const CARD_PATCH_MIN_INTERVAL_MS = 250
+
+/**
+ * R36 stage two whole-card patch throttle: characters (rendered reasoning +
+ * body) accumulated since the last patch force one through before the interval
+ * elapses, so a fast answer never lags a whole window behind.
+ */
+export const CARD_PATCH_MIN_CHARS = 80
+
 /** Injectable timings (primarily for tests; production uses the defaults). */
 export interface BridgeTimingOptions {
   /** Overrides {@link REPLY_STREAM_READY_TIMEOUT_MS} (stream ready / card placeholder). */
   replyReadyTimeoutMs?: number
   /** Overrides {@link REPLY_STREAM_FINISH_TIMEOUT_MS} (stream settle / card update). */
   replyFinishTimeoutMs?: number
+  /** Overrides {@link PROCESS_STATUS_MIN_INTERVAL_MS} (R36 live process line). */
+  processStatusMinIntervalMs?: number
+  /** Overrides {@link PROCESS_STATUS_MIN_CHARS} (R36 live process line). */
+  processStatusMinChars?: number
+  /** Overrides {@link CARD_PATCH_MIN_INTERVAL_MS} (R36-2 whole-card patch). */
+  cardPatchMinIntervalMs?: number
+  /** Overrides {@link CARD_PATCH_MIN_CHARS} (R36-2 whole-card patch). */
+  cardPatchMinChars?: number
 }
 
 /** The resolved timing knobs carried on {@link BridgeEnv}. */
 export interface BridgeTiming {
   readonly replyReadyTimeoutMs: number
   readonly replyFinishTimeoutMs: number
+  readonly processStatusMinIntervalMs: number
+  readonly processStatusMinChars: number
+  readonly cardPatchMinIntervalMs: number
+  readonly cardPatchMinChars: number
 }
 
 /**
@@ -244,6 +363,10 @@ export function installBridge(
     timing: {
       replyReadyTimeoutMs: timing.replyReadyTimeoutMs ?? REPLY_STREAM_READY_TIMEOUT_MS,
       replyFinishTimeoutMs: timing.replyFinishTimeoutMs ?? REPLY_STREAM_FINISH_TIMEOUT_MS,
+      processStatusMinIntervalMs: timing.processStatusMinIntervalMs ?? PROCESS_STATUS_MIN_INTERVAL_MS,
+      processStatusMinChars: timing.processStatusMinChars ?? PROCESS_STATUS_MIN_CHARS,
+      cardPatchMinIntervalMs: timing.cardPatchMinIntervalMs ?? CARD_PATCH_MIN_INTERVAL_MS,
+      cardPatchMinChars: timing.cardPatchMinChars ?? CARD_PATCH_MIN_CHARS,
     },
   }
   const state = createBridgeState()
@@ -253,6 +376,7 @@ export function installBridge(
     if (!state.modelCatalog.includes(entry)) state.modelCatalog.push(entry)
   }
   Object.assign(state.chatPresets, config.chatPresets)
+  Object.assign(state.chatReasoning, config.chatReasoning)
   Object.assign(state.modelEfforts, config.modelEfforts)
   // R29: seed the session registry and re-point every agent key's ACTIVE
   // generation -- this is what makes a restart resume the session the chat
@@ -318,6 +442,8 @@ export interface BridgeState {
   readonly sessionPresets: Map<string, string>
   /** scope key -> `/mode` preset override (seeded from config, mutated live) (R27). */
   readonly chatPresets: Record<string, string>
+  /** scope key -> `/reasoning` display override (seeded from config, mutated live) (R36-2). */
+  readonly chatReasoning: Record<string, string>
   /** `provider/model` -> reasoning-effort preference (seeded from config) (R28). */
   readonly modelEfforts: Record<string, string>
   /** agentKey -> known sessions with titles/stamps (R29). */
@@ -348,6 +474,7 @@ function createBridgeState(): BridgeState {
     userWorkspaces: new Set(),
     sessionPresets: new Map(),
     chatPresets: {},
+    chatReasoning: {},
     modelEfforts: {},
     chatSessions: {},
     chatActiveGen: {},
@@ -387,82 +514,56 @@ function invalidateWorkspaceCatalog(state: BridgeState): void {
 /* Reply streams                                                       */
 /* ------------------------------------------------------------------ */
 
+/** R36 stage two: how {@link openReplyStream} should shape the reply surface. */
+export interface ReplyStreamOptions {
+  /**
+   * Render the turn as ONE live card with two regions: a collapsible reasoning
+   * panel on top and the markdown body below, patched while the turn runs.
+   * Set only when the deployment/scope asked for reasoning display AND the
+   * transport advertises {@link ChannelPort.cardStream}; everything else keeps
+   * the markdown stream (stage one) or the buffered fallback.
+   */
+  readonly cardReasoning?: boolean
+  /** Start the reasoning panel expanded (private chats) instead of folded (groups). */
+  readonly reasoningExpanded?: boolean
+}
+
 /**
  * Open a progressive reply into one chat. `stream` mode drives the SDK's
  * markdown stream via a push->pull adapter; `card` mode sends one placeholder
  * card and re-renders it on settle. Both accumulate the full text so a settle
  * always has the complete answer, and both degrade to a single final `send`.
+ *
+ * R36 stage two adds a third shape: `stream` output whose scope shows reasoning
+ * goes through the card surface too ({@link ReplyStreamOptions.cardReasoning}),
+ * so one card can carry the reasoning panel AND the body.
  * @param env - bridge dependencies.
  * @param chatId - the chat to reply into.
  * @param replyTo - inbound message id to thread the reply under.
+ * @param copy - the resolved copy table for this deployment's locale.
+ * @param options - R36-2 card-reasoning shaping; omitted = stage-one behaviour.
  * @returns the open reply stream.
  */
-export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string | undefined, copy: Strings): ReplyStream {
+export function openReplyStream(
+  env: BridgeEnv,
+  chatId: string,
+  replyTo: string | undefined,
+  copy: Strings,
+  options: ReplyStreamOptions = {},
+): ReplyStream {
   const { port } = env
-  const options = replyTo === undefined ? undefined : { replyTo, replyInThread: true }
+  const sendOptions = replyTo === undefined ? undefined : { replyTo, replyInThread: true }
   let buffer = ''
 
-  if (env.config.output === 'card') {
-    // Card mode: one interactive card, re-rendered as content grows.
-    let cardMessageId: string | undefined
-    // R22 §2.1: the placeholder round-trip is raced against the same
-    // time-to-ready window as stream mode. A placeholder that neither settles
-    // nor fails within the window (hung request, throttling, reconnect) used
-    // to park `finish()` — and with it turn/end — indefinitely; now the card
-    // is condemned ("no card") and finish takes the markdown fallback below.
-    let placeholderSettled = false
-    let openPlaceholderGate: (() => void) | undefined
-    const placeholderGate = new Promise<void>(resolve => { openPlaceholderGate = resolve })
-    let placeholderTimer: ReturnType<typeof setTimeout> | undefined
-    // The watchdog is armed before the request so even a synchronously
-    // throwing port cannot escape the settle path's bookkeeping.
-    placeholderTimer = setTimeout(() => {
-      if (placeholderSettled) return
-      env.report(
-        `feishu4dsh: placeholder card not ready within ${env.timing.replyReadyTimeoutMs}ms;`
-        + ` delivering the reply as one plain message`,
-      )
-      openPlaceholderGate?.()
-    }, env.timing.replyReadyTimeoutMs)
-    void (async () => {
-      try {
-        const initial = simpleCard(copy.thinking)
-        const result = await port.send(chatId, { card: initial }, options)
-        cardMessageId = result.messageId
-      } catch (error) {
-        env.report(`feishu4dsh: placeholder card failed: ${describeError(error)}`)
-      } finally {
-        placeholderSettled = true
-        if (placeholderTimer !== undefined) {
-          clearTimeout(placeholderTimer)
-          placeholderTimer = undefined
-        }
-        openPlaceholderGate?.()
-      }
-    })()
-    return {
-      async append(text: string): Promise<void> {
-        buffer += text
-      },
-      async finish(): Promise<void> {
-        // Bounded verdict wait: the placeholder settled (with or without a
-        // card id) or the watchdog condemned it. `condemned` keeps a LATE
-        // placeholder from being used after degradation, so the content is
-        // still delivered through exactly one path.
-        await placeholderGate
-        const condemned = !placeholderSettled
-        const content = buffer.trim() === '' ? copy.thinking : buffer
-        if (!condemned && cardMessageId !== undefined) {
-          if (await tryUpdateCard(env, cardMessageId, simpleCard(content))) return
-        }
-        await port.send(chatId, { markdown: content }, options).catch(
-          error => env.report(`feishu4dsh: reply send failed: ${describeError(error)}`),
-        )
-      },
-      hasPayload(): boolean {
-        return buffer.trim() !== ''
-      },
-    }
+  if (env.config.output === 'card' || options.cardReasoning === true) {
+    return openCardReplyStream(env, chatId, sendOptions, copy, {
+      live: options.cardReasoning === true,
+      expanded: options.reasoningExpanded === true,
+      // The live reasoning card IS a `stream`-output surface, so it keeps the
+      // streaming placeholder (already localized via `streamInitialText`'s
+      // string); plain `card` output keeps its historical copy.
+      placeholder: options.cardReasoning === true ? copy.streamInitial : copy.thinking,
+    })
   }
 
   // Stream mode: progressive markdown when the port supports it.
@@ -471,6 +572,12 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
     let failed = false
     let streamed = false
     let fallbackSent = false
+    /**
+     * R36: whether the card currently renders a live process line rather than
+     * reply text. Set by {@link ReplyStream.setStatus}, cleared by the first
+     * content-bearing `append`.
+     */
+    let statusShown = false
     let onReady: (() => void) | undefined
     const ready = new Promise<void>(resolve => { onReady = resolve })
     let resolveDone: (() => void) | undefined
@@ -509,7 +616,7 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
           await done
         },
       },
-      options,
+      sendOptions,
     )
     sendPromise.catch(error => {
       env.report(`feishu4dsh: stream open failed: ${describeError(error)}`)
@@ -541,9 +648,29 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
         if (failed || controller === undefined) return
         try {
           streamed = true
-          await controller.append(text)
+          if (statusShown && typeof controller.setContent === 'function') {
+            // R36 hard constraint: the card currently shows a live status line,
+            // so the first real content REPLACES it with the whole buffered
+            // body. Appending instead would weld the status line to the answer
+            // (the SDK's merge keeps the accumulated prefix).
+            statusShown = false
+            await controller.setContent(buffer)
+          } else {
+            await controller.append(text)
+          }
         } catch {
           // The stream could not carry this chunk; the settle still sends it.
+        }
+      },
+      async setStatus(line: string): Promise<void> {
+        if (failed) return
+        await ready
+        if (failed || controller === undefined || typeof controller.setContent !== 'function') return
+        statusShown = true
+        try {
+          await controller.setContent(line)
+        } catch {
+          // Best effort: the process line is decoration, the reply is not.
         }
       },
       hasPayload(): boolean {
@@ -578,7 +705,7 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
         // contract the old open-failure catch path implemented.
         if ((failed || openFailed || capped) && !streamed && !fallbackSent && buffer.trim() !== '') {
           fallbackSent = true
-          await port.send(chatId, { markdown: buffer }, options).catch(
+          await port.send(chatId, { markdown: buffer }, sendOptions).catch(
             sendError => env.report(`feishu4dsh: reply send failed: ${describeError(sendError)}`),
           )
         }
@@ -593,7 +720,7 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
     },
     async finish(): Promise<void> {
       if (buffer.trim() === '') return
-      await port.send(chatId, { markdown: buffer }, options).catch(
+      await port.send(chatId, { markdown: buffer }, sendOptions).catch(
         error => env.report(`feishu4dsh: reply send failed: ${describeError(error)}`),
       )
     },
@@ -603,9 +730,293 @@ export function openReplyStream(env: BridgeEnv, chatId: string, replyTo: string 
   }
 }
 
+/**
+ * R36 stage two: the card reply surface, optionally LIVE.
+ *
+ * One interactive card carries both regions — a collapsible reasoning panel and
+ * the markdown body — and the whole card is re-rendered with `updateCard` on a
+ * throttle while the turn runs. It reuses the R22 card skeleton unchanged for
+ * everything that guards content delivery: the placeholder send is bounded by
+ * the same time-to-ready watchdog, `finish` re-renders under the same
+ * convergence cap, and a card that never became usable degrades to exactly one
+ * plain markdown send. The live patches are a *decoration* on top: they are
+ * chained, never awaited by the render path, and a failed patch is reported
+ * (the closing `finish` patch remains the authoritative render).
+ *
+ * Deliberately NOT the SDK's `{ card: { initial, producer } }` stream form:
+ * that controller patches from inside its own throttle timer and lets a
+ * rejected patch escape as an unhandled rejection (`CardStreamControllerImpl`
+ * has no `streamingFailed` guard — only the markdown controller catches), which
+ * on Node ≥15 terminates the whole host process, not just the turn. Patching
+ * through `port.updateCard` keeps every failure inside this module's try/catch.
+ * @param env - bridge dependencies.
+ * @param chatId - the chat to reply into.
+ * @param options - reply threading options.
+ * @param copy - the resolved copy table.
+ * @param shape - live patching, the panel's initial fold state and the empty
+ *   card's placeholder copy.
+ * @returns the open card reply stream.
+ */
+function openCardReplyStream(
+  env: BridgeEnv,
+  chatId: string,
+  options: { replyTo?: string; replyInThread?: boolean } | undefined,
+  copy: Strings,
+  shape: { live: boolean; expanded: boolean; placeholder: string },
+): ReplyStream {
+  const { port } = env
+  // The body buffer == the reply body. The reasoning text lives in the caller's
+  // per-turn status, reaches this surface only through `setReasoning`, and is
+  // never appended here (R36 red line).
+  let buffer = ''
+  let cardMessageId: string | undefined
+  // R22 §2.1: the placeholder round-trip is raced against the same
+  // time-to-ready window as stream mode. A placeholder that neither settles
+  // nor fails within the window (hung request, throttling, reconnect) used
+  // to park `finish()` — and with it turn/end — indefinitely; now the card
+  // is condemned ("no card") and finish takes the markdown fallback below.
+  let placeholderSettled = false
+  let openPlaceholderGate: (() => void) | undefined
+  const placeholderGate = new Promise<void>(resolve => { openPlaceholderGate = resolve })
+  let placeholderTimer: ReturnType<typeof setTimeout> | undefined
+  // The watchdog is armed before the request so even a synchronously
+  // throwing port cannot escape the settle path's bookkeeping.
+  placeholderTimer = setTimeout(() => {
+    if (placeholderSettled) return
+    env.report(
+      `feishu4dsh: placeholder card not ready within ${env.timing.replyReadyTimeoutMs}ms;`
+      + ` delivering the reply as one plain message`,
+    )
+    openPlaceholderGate?.()
+  }, env.timing.replyReadyTimeoutMs)
+
+  /** R36-2: the reasoning region, set by the bridge; undefined = no panel. */
+  let reasoning: ReasoningPanelSpec | undefined
+  /** R36-2: the last live process line pushed through {@link ReplyStream.setStatus}. */
+  let statusLine: string | undefined
+  /** R36-2: live whole-card patch gate (see {@link CARD_PATCH_MIN_INTERVAL_MS}). */
+  let dirty = false
+  let pushed = false
+  let lastPushAt = 0
+  let lastPushChars = 0
+  let pushTimer: ReturnType<typeof setTimeout> | undefined
+  /** Serializes live patches so an older snapshot can never land last. */
+  let patchChain: Promise<void> = Promise.resolve()
+  /** R36-2: `turn/end` closed the live phase; nothing may patch afterwards. */
+  let closed = false
+  /**
+   * R36-2 overflow valve: the body alone outgrew the card's budget. The card
+   * keeps the head (plus a note) and `finish` delivers the full text as one
+   * plain message, so a long answer is never truncated on the wire.
+   */
+  let overflowed = false
+  let overflowHead = ''
+  let fallbackSent = false
+
+  /** Reasoning text as it will be rendered (budget applied, head+tail kept). */
+  const panelContent = (): string => {
+    if (reasoning === undefined) return ''
+    return truncateMiddle(reasoning.content, REASONING_PANEL_MAX_CHARS, omitted => copy.reasoningOmitted(formatNumber(omitted))).text
+  }
+  const panelVisible = (): boolean => reasoning !== undefined && reasoning.content !== ''
+  /** Rendered characters of the reasoning region — half of the card's budget. */
+  const panelChars = (): number => panelContent().length
+
+  const buildCard = (): object => {
+    const panel = reasoning
+    const elements: unknown[] = []
+    if (panel !== undefined && panel.content !== '') {
+      elements.push(collapsiblePanel({
+        // While the turn runs the header carries the live progress line (the
+        // panel's own live title until one was pushed); `finish` folds the
+        // panel onto the closing header the bridge handed over.
+        title: closed ? panel.title : statusLine ?? panel.title,
+        content: panelContent(),
+        expanded: closed ? false : shape.expanded,
+      }))
+    } else if (!closed && statusLine !== undefined && buffer.trim() === '') {
+      // R36 stage one's live process line, carried as a note on the card
+      // surface. Only until the panel or the body takes over — never residue.
+      elements.push(noteElement(statusLine))
+    }
+    if (buffer.trim() !== '') {
+      elements.push(markdownElement(overflowed ? `${overflowHead}\n\n${copy.reasoningBodyOverflowNote}` : buffer))
+    } else if (elements.length === 0) {
+      // Nothing to show yet (or nothing at all): the localized placeholder this
+      // surface opened with.
+      elements.push(markdownElement(shape.placeholder))
+    }
+    return { elements }
+  }
+
+  /** Rendered characters of the whole card — the throttle's character gate. */
+  const renderedChars = (): number => panelChars() + buffer.length + (statusLine?.length ?? 0)
+
+  const patch = (card: object): void => {
+    const messageId = cardMessageId
+    if (messageId === undefined) return
+    patchChain = patchChain
+      .then(() => {
+        // A link still queued when `turn/end` closed the card is dropped: the
+        // closing render below is authoritative, and replaying an older
+        // snapshot after it would leave the card on a stale live frame.
+        if (closed) return
+        return env.port.updateCard(messageId, card)
+      })
+      .catch(error => env.report(`feishu4dsh: live card update failed: ${describeError(error)}`))
+  }
+
+  const maybePush = (): void => {
+    if (!shape.live || closed || !dirty || cardMessageId === undefined) return
+    const now = Date.now()
+    const chars = renderedChars()
+    if (pushed
+      && now - lastPushAt < env.timing.cardPatchMinIntervalMs
+      && chars - lastPushChars < env.timing.cardPatchMinChars) {
+      // Inside the window: fold this change into ONE trailing patch instead of
+      // dropping it, so the card's last live frame is never stale for the whole
+      // remainder of the turn.
+      if (pushTimer === undefined) {
+        pushTimer = setTimeout(() => {
+          pushTimer = undefined
+          if (closed) return
+          pushed = true
+          dirty = false
+          lastPushAt = Date.now()
+          lastPushChars = renderedChars()
+          patch(buildCard())
+        }, Math.max(0, env.timing.cardPatchMinIntervalMs - (now - lastPushAt)))
+      }
+      return
+    }
+    pushed = true
+    dirty = false
+    lastPushAt = now
+    lastPushChars = chars
+    patch(buildCard())
+  }
+
+  void (async () => {
+    try {
+      const result = await port.send(chatId, { card: buildCard() }, options)
+      cardMessageId = result.messageId
+    } catch (error) {
+      env.report(`feishu4dsh: placeholder card failed: ${describeError(error)}`)
+    } finally {
+      placeholderSettled = true
+      if (placeholderTimer !== undefined) {
+        clearTimeout(placeholderTimer)
+        placeholderTimer = undefined
+      }
+      openPlaceholderGate?.()
+      // A delta that arrived before the placeholder settled still has to land.
+      maybePush()
+    }
+  })()
+
+  /** What a degraded (non-card) delivery must carry to not lose content. */
+  const fallbackText = (): string => {
+    if (buffer.trim() !== '') return buffer
+    if (panelVisible()) return `${reasoning?.title ?? ''}\n\n${panelContent()}`.trim()
+    return shape.placeholder
+  }
+
+  const sendFallback = async (text: string): Promise<void> => {
+    if (fallbackSent) return
+    fallbackSent = true
+    await port.send(chatId, { markdown: text }, options).catch(
+      error => env.report(`feishu4dsh: reply send failed: ${describeError(error)}`),
+    )
+  }
+
+  return {
+    async append(text: string): Promise<void> {
+      buffer += text
+      // R36-2 overflow valve: once the body no longer fits beside the panel,
+      // freeze the card's body at the head and leave the rest to `finish`.
+      if (!overflowed) {
+        const budget = CARD_STREAM_MAX_CHARS - panelChars()
+        if (buffer.length > budget) {
+          overflowed = true
+          overflowHead = buffer.slice(0, Math.max(0, budget))
+          env.report(
+            `feishu4dsh: reply body exceeds the card budget (${CARD_STREAM_MAX_CHARS} chars);`
+            + ` the card keeps the head and the full text follows as one message`,
+          )
+        }
+      }
+      dirty = true
+      maybePush()
+    },
+    async setStatus(line: string): Promise<void> {
+      statusLine = line
+      dirty = true
+      maybePush()
+    },
+    async setReasoning(panel: ReasoningPanelSpec): Promise<void> {
+      reasoning = panel
+      dirty = true
+      maybePush()
+    },
+    hasPayload(): boolean {
+      // The red line: only BODY text counts as payload. A card carrying a
+      // reasoning panel (or a process line) is still an empty reply as far as
+      // `turn/start` reclamation and `assistant/message` dedup are concerned.
+      return buffer.trim() !== ''
+    },
+    async finish(): Promise<void> {
+      // Bounded verdict wait: the placeholder settled (with or without a
+      // card id) or the watchdog condemned it. `condemned` keeps a LATE
+      // placeholder from being used after degradation, so the content is
+      // still delivered through exactly one path.
+      await placeholderGate
+      const condemned = !placeholderSettled
+      closed = true
+      if (pushTimer !== undefined) {
+        clearTimeout(pushTimer)
+        pushTimer = undefined
+      }
+      if (!condemned && cardMessageId !== undefined) {
+        // Live patches are fire-and-forget; let the ones already in flight land
+        // before the closing render so the card does not end on an older
+        // snapshot — but BOUNDED, like every other transport wait in this
+        // module (R21 §3.2): a hung patch must never park turn/end. Links still
+        // queued past this point see `closed` and drop themselves.
+        await settleWithin(patchChain, env.timing.replyFinishTimeoutMs)
+        if (await tryUpdateCard(env, cardMessageId, buildCard())) {
+          if (overflowed) await sendFallback(buffer)
+          return
+        }
+      }
+      await sendFallback(fallbackText())
+    },
+  }
+}
+
 /** The push-side controller shape `port.stream` hands to the producer. */
 interface StreamControllerLike {
   append(chunk: string): Promise<void>
+  /**
+   * Replace the whole markdown element (R36). The SDK's
+   * `MarkdownStreamController` implements it; older/other implementations may
+   * not, and the bridge then keeps the pre-R36 rendering path untouched.
+   */
+  setContent?(full: string): Promise<void>
+}
+
+/**
+ * Await one piece of fire-and-forget work, but never longer than `timeoutMs`
+ * (R21 §3.2 discipline: every transport wait is bounded so a hung request can
+ * never park turn/end). The work promise is expected to carry its own catch.
+ */
+async function settleWithin(work: Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const capped = new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs) })
+  try {
+    await Promise.race([work, capped])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
 /**
@@ -831,13 +1242,165 @@ function safeOpenStream(env: BridgeEnv, state: BridgeState, binding: ChatBinding
     // still threads under the conversation's most recent topic instead of
     // landing at the chat root. Stale sessions never reach here:
     // renderSessionEvent drops them before any stream can open.
-    binding.stream = openReplyStream(env, binding.chatId, binding.replyTo ?? binding.lastInboundReplyTo, state.copy)
+    binding.stream = openReplyStream(
+      env,
+      binding.chatId,
+      binding.replyTo ?? binding.lastInboundReplyTo,
+      state.copy,
+      {
+        // R36-2: only a card-capable transport can render the two-region reply;
+        // everything else keeps the markdown stream or the buffered fallback.
+        cardReasoning: env.config.output === 'stream'
+          && env.port.cardStream === true
+          && reasoningDisplayOf(env, state, binding).enabled,
+        // R36-2 Q2: private chats open the reasoning panel, groups fold it.
+        reasoningExpanded: binding.chatType === 'p2p',
+      },
+    )
   }
 }
 
 async function safeSend(env: BridgeEnv, chatId: string, text: string, replyTo?: string): Promise<void> {
   await env.port.send(chatId, { markdown: text }, replyTo === undefined ? undefined : { replyTo, replyInThread: true })
     .catch(error => env.report(`feishu4dsh: send failed: ${describeError(error)}`))
+}
+
+/* ------------------------------------------------------------------ */
+/* R36 process line (counters only — never reasoning text)             */
+/* ------------------------------------------------------------------ */
+
+/** Whole seconds since a turn started; never negative. */
+function elapsedSeconds(startedAt: number, now: number = Date.now()): number {
+  return Math.max(0, Math.round((now - startedAt) / 1000))
+}
+
+/**
+ * `bash × 2、edit × 1` for one turn's tool counters, `''` when nothing was
+ * called. Sorted by name so the line is stable; joined with the same
+ * separator the turn-end tool summary uses (one source of copy).
+ */
+function toolTally(copy: Strings, counts: Map<string, number> | undefined): string {
+  if (counts === undefined || counts.size === 0) return ''
+  const parts = [...counts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, count]) => copy.toolCountCompact(name, count))
+  return copy.toolCallSummary(parts)
+}
+
+/**
+ * Push the turn's live process line onto the reply surface (R36).
+ *
+ * Throttled by {@link BridgeTiming.processStatusMinIntervalMs} /
+ * {@link BridgeTiming.processStatusMinChars}: the first process event of a
+ * turn always pushes (so the card starts moving immediately), later ones only
+ * once the window or the character threshold is crossed. The line carries
+ * step / elapsed seconds / tool tallies and NOTHING from the reasoning text —
+ * which is why reasoning deltas never touch the reply buffer.
+ *
+ * Silently degrades when the surface cannot take a status line: card output,
+ * a port without `stream`, or a controller without `setContent` all keep the
+ * pre-R36 rendering path, without an error and without an extra message.
+ * `showProcess: false` disables the whole feature exactly as it disabled the
+ * per-turn tool summary before.
+ */
+async function showProcessStatus(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  status: TurnProcessStatus,
+): Promise<void> {
+  if (!env.config.showProcess) return
+  // Stream mode only: `output: 'card'` re-renders one placeholder at settle
+  // time, and its `copy.thinking` placeholder is already localized. A port with
+  // neither the markdown stream nor the card surface has nowhere to put it.
+  if (env.config.output !== 'stream') return
+  if (typeof env.port.stream !== 'function' && env.port.cardStream !== true) return
+  const now = Date.now()
+  const due = !status.shown
+    || now - status.lastPushAt >= env.timing.processStatusMinIntervalMs
+    || status.reasoningChars - status.lastPushChars >= env.timing.processStatusMinChars
+  if (!due) return
+  // Open the reply surface on the first process event so a turn that never
+  // produces body text still shows progress (host-initiated turns have no
+  // pre-opened placeholder).
+  safeOpenStream(env, state, binding)
+  const stream = binding.stream
+  if (stream?.setStatus === undefined) return
+  status.shown = true
+  status.lastPushAt = now
+  status.lastPushChars = status.reasoningChars
+  await stream.setStatus(state.copy.processLine(
+    status.step,
+    elapsedSeconds(status.startedAt, now),
+    toolTally(state.copy, binding.toolCallCounts),
+  ))
+}
+
+/* ------------------------------------------------------------------ */
+/* R36 stage two: reasoning display switch and panel                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * R36-2: whether this scope shows reasoning, and where that answer comes from.
+ * Chain mirrors `/mode`'s preset chain — an explicit scope override
+ * (`/reasoning on|off`) wins over the deployment's `showReasoning` default.
+ */
+function reasoningDisplayOf(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+): { enabled: boolean; source: 'scope' | 'config' } {
+  const override = state.chatReasoning[binding.scopeKey]
+  if (override === 'on') return { enabled: true, source: 'scope' }
+  if (override === 'off') return { enabled: false, source: 'scope' }
+  return { enabled: env.config.showReasoning, source: 'config' }
+}
+
+/**
+ * R36-2: whether this turn's reasoning belongs in a reply card panel at all.
+ * Stream output needs a card-capable transport (otherwise the markdown stream
+ * cannot carry a second region); `card` output is a card by construction.
+ */
+function reasoningPanelEnabled(env: BridgeEnv, state: BridgeState, binding: ChatBinding): boolean {
+  if (!reasoningDisplayOf(env, state, binding).enabled) return false
+  return env.config.output === 'card' || env.port.cardStream === true
+}
+
+/** R36-2: the panel header for one moment of the turn (live vs closing). */
+function reasoningPanelTitle(copy: Strings, status: TurnProcessStatus, final: boolean): string {
+  const chars = formatNumber(status.reasoningChars)
+  const seconds = elapsedSeconds(status.startedAt)
+  return final
+    ? copy.reasoningPanelTitleDone(chars, seconds)
+    : copy.reasoningPanelTitleLive(chars, seconds)
+}
+
+/**
+ * R36-2: hand the turn's reasoning to a card surface. Silent no-op on surfaces
+ * without a reasoning region (markdown stream, degraded transports) — the
+ * turn's copy then keeps the stage-one process line / "reasoning only" summary.
+ *
+ * The reasoning text travels through this call ONLY: it is never appended to
+ * the reply buffer and never marks the binding as streamed.
+ */
+async function showReasoningPanel(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  status: TurnProcessStatus,
+  final = false,
+): Promise<void> {
+  if (!reasoningPanelEnabled(env, state, binding) || status.reasoningText === '') return
+  safeOpenStream(env, state, binding)
+  const stream = binding.stream
+  if (stream?.setReasoning === undefined) return
+  await stream.setReasoning({
+    // The closing header is handed over at `turn/end`; until then the surface
+    // may prefer its own live process line over this one.
+    title: reasoningPanelTitle(state.copy, status, final),
+    content: status.reasoningText,
+    expanded: binding.chatType === 'p2p',
+  })
 }
 
 /* ------------------------------------------------------------------ */
@@ -1871,6 +2434,20 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
     binding.toolCallCounts = new Map()
     binding.turnUsage = emptySessionUsage()
     binding.turnHasOutput = false
+    // R36: fresh process-line counters. Counters only — no reasoning text ever
+    // lands on the binding, so nothing here can reach the reply buffer, the
+    // card body, or `streamedTurns`. R36-2 adds ONE deliberate exception,
+    // `reasoningText`: the reasoning REGION's content, held per turn and handed
+    // to the card surface alone (never buffered, never `streamedTurns`).
+    binding.processStatus = {
+      startedAt: Date.now(),
+      step: 0,
+      reasoningChars: 0,
+      reasoningText: '',
+      shown: false,
+      lastPushAt: 0,
+      lastPushChars: 0,
+    }
     // R29: the session is alive -- refresh its activity stamp for
     // `/session archive old`.
     touchSession(state.chatSessions, currentAgentKey(binding), state.ledger.generationOf(currentAgentKey(binding)), Date.now())
@@ -1889,11 +2466,39 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
     return
   }
 
+  if (isStepStartEvent(event)) {
+    // R36: a new step is the clearest "still working" signal; fold it into the
+    // live process line (throttled).
+    const status = binding.processStatus
+    if (status !== undefined) {
+      status.step = event.data.step
+      await showProcessStatus(env, state, binding, status)
+    }
+    return
+  }
+
   if (isAssistantChunkEvent(event)) {
     const chunk = event.data.chunk
     if (chunk.type === 'usage' && chunk.usage !== undefined) {
       if (binding.turnUsage === undefined) binding.turnUsage = emptySessionUsage()
       accumulateSessionUsage(binding.turnUsage, chunk.usage)
+      return
+    }
+    if (chunk.type === 'reasoning-delta' && chunk.text !== undefined && chunk.text !== '') {
+      // R36: reasoning never reaches the body — no buffer, no
+      // `streamedTurns`. Stage one counts it and pushes a live process line;
+      // stage two additionally hands the TEXT to the card's reasoning panel
+      // (which is a different region of the same card, not the body).
+      const status = binding.processStatus
+      if (status !== undefined) {
+        status.reasoningChars += chunk.text.length
+        if (reasoningPanelEnabled(env, state, binding)) {
+          status.reasoningText += chunk.text
+          await showReasoningPanel(env, state, binding, status)
+        } else {
+          await showProcessStatus(env, state, binding, status)
+        }
+      }
       return
     }
     if (chunk.type !== 'text-delta' || chunk.text === undefined || chunk.text === '') return
@@ -1925,9 +2530,12 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
 
   if (isToolCallEvent(event) && env.config.showProcess) {
     // Do not spam one message per call. Count by tool name and render a
-    // compact summary when the turn ends.
+    // compact summary when the turn ends — the live process line (R36) shows
+    // the running tally, still without per-call detail.
     const counts = binding.toolCallCounts ??= new Map()
     counts.set(event.data.name, (counts.get(event.data.name) ?? 0) + 1)
+    const status = binding.processStatus
+    if (status !== undefined) await showProcessStatus(env, state, binding, status)
     return
   }
 
@@ -1942,9 +2550,30 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
     binding.toolCallCounts = undefined
     const usage = binding.turnUsage
     binding.turnUsage = undefined
+    const status = binding.processStatus
+    binding.processStatus = undefined
 
     const summaryLines: string[] = []
-    if (env.config.showProcess && toolCallCounts !== undefined && toolCallCounts.size > 0) {
+    // R36-2: a rendered reasoning panel ALREADY reports size and duration, so
+    // the stage-one "reasoning only" line is skipped for that shape (the card
+    // ends folded on the panel instead of duplicating the same numbers).
+    const panelShown = status !== undefined && status.reasoningText !== '' && reasoningPanelEnabled(env, state, binding)
+    // R36: a turn that reasoned but produced no body text ends on ONE closing
+    // line instead of freezing the live status line — the "empty reply" look
+    // the work order calls out. Counters only, as everywhere else.
+    const reasoningOnly = env.config.showProcess && !panelShown
+      && status !== undefined && status.reasoningChars > 0 && !binding.turnHasOutput
+    if (reasoningOnly && status !== undefined) {
+      summaryLines.push(state.copy.reasoningOnlyLine(
+        formatNumber(status.reasoningChars),
+        elapsedSeconds(status.startedAt),
+        toolTally(state.copy, toolCallCounts),
+      ))
+    }
+    // The reasoning-only line already carries the tool tally, so the aggregate
+    // line is skipped for that shape (no double count); every other turn keeps
+    // the pre-R36 tool summary unchanged.
+    if (!reasoningOnly && env.config.showProcess && toolCallCounts !== undefined && toolCallCounts.size > 0) {
       const parts = [...toolCallCounts.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, count]) => state.copy.toolCallCountLine(name, count))
@@ -1968,6 +2597,12 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
       const prefix = binding.turnHasOutput ? '\n\n' : ''
       binding.turnHasOutput = true
       await binding.stream?.append(prefix + summaryLines.join('\n'))
+    }
+    // R36-2: hand over the CLOSING panel (folded, with the turn's reasoning
+    // size and duration) before the stream is finished; `finish` renders that
+    // final state, so the panel never freezes on the live header.
+    if (panelShown && status !== undefined) {
+      await showReasoningPanel(env, state, binding, status, true)
     }
     state.streamedTurns.delete(binding)
     const stream = binding.stream
@@ -2089,6 +2724,10 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
     }
     case '/mode': {
       await cmdMode(env, state, binding, line.slice('/mode'.length).trim(), senderId, replyTo)
+      return
+    }
+    case '/reasoning': {
+      await cmdReasoning(env, state, binding, line.slice('/reasoning'.length).trim(), senderId, replyTo)
       return
     }
     case '/session': {
@@ -2507,6 +3146,70 @@ async function cmdMode(
 
   await resetSessionScope(env, state, binding, 'preset change')
   await safeSend(env, chatId, copy.modeSwitched(target), replyTo)
+}
+
+/**
+ * `/reasoning`: show or set THIS scope's reasoning display (R36 stage two).
+ * - `/reasoning`          — current state + where it comes from, and the
+ *   deployment default;
+ * - `/reasoning on|off`   — persist the scope override (in memory first, then
+ *   settings) and take effect on the next turn.
+ * Mutating is gated like `/mode` / `/ws add` / `/cd`; viewing is not. Unlike
+ * `/mode` no new session is needed: the switch only decides how the NEXT reply
+ * is rendered.
+ */
+async function cmdReasoning(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  rest: string,
+  senderId: string,
+  replyTo?: string,
+): Promise<void> {
+  const chatId = binding.chatId
+  const copy = state.copy
+  const label = (enabled: boolean): string => enabled ? copy.reasoningShown : copy.reasoningHidden
+  const current = reasoningDisplayOf(env, state, binding)
+
+  if (rest === '') {
+    const lines = [
+      `**${copy.reasoningTitle}**`,
+      copy.reasoningCurrent(
+        label(current.enabled),
+        current.source === 'scope' ? copy.reasoningSourceScope : copy.reasoningSourceConfig,
+      ),
+      copy.reasoningDefaultLine(label(env.config.showReasoning)),
+    ]
+    await safeSend(env, chatId, lines.join('\n'), replyTo)
+    return
+  }
+
+  if (!canManageWorkspaces(env, senderId)) {
+    await safeSend(env, chatId, copy.reasoningNoPermission, replyTo)
+    return
+  }
+
+  const target = rest.trim().toLowerCase()
+  if (!(REASONING_CHOICES as readonly string[]).includes(target)) {
+    await safeSend(env, chatId, copy.reasoningUsage, replyTo)
+    return
+  }
+  const choice = target as ReasoningChoice
+  if (state.chatReasoning[binding.scopeKey] === choice) {
+    await safeSend(env, chatId, copy.reasoningAlready(label(choice === 'on')), replyTo)
+    return
+  }
+
+  // Persist the scope override (in-memory first so the very next turn uses it,
+  // then settings so it survives a restart) — the same shape `/mode` uses.
+  state.chatReasoning[binding.scopeKey] = choice
+  try {
+    await env.hooks.onReasoningChange?.(binding.scopeKey, choice)
+  } catch (error) {
+    env.report(`feishu4dsh: persist reasoning display failed: ${describeError(error)}`)
+  }
+  env.report(`feishu4dsh: reasoning display changed by ${senderId}: ${choice} (scope ${binding.scopeKey})`)
+  await safeSend(env, chatId, copy.reasoningSwitched(label(choice === 'on')), replyTo)
 }
 
 /** `/status`: session id, scope, current workspace (name + path), model. */

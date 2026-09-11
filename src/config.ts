@@ -16,6 +16,13 @@ import Schema from '@deepseek-ai/schemastery'
 export const AGENT_PRESETS = ['standard', 'minimal'] as const
 export type AgentPreset = (typeof AGENT_PRESETS)[number]
 
+/**
+ * `/reasoning` scope overrides (R36 stage two). Single source of truth: the
+ * command's validation and the config sanitizer both read this list.
+ */
+export const REASONING_CHOICES = ['on', 'off'] as const
+export type ReasoningChoice = (typeof REASONING_CHOICES)[number]
+
 /** Resolved plugin configuration, one instance per mounted row. */
 export interface Config {
   /** Feishu/Lark app id (`cli_...`). */
@@ -60,6 +67,15 @@ export interface Config {
   output?: 'stream' | 'card'
   /** Show tool-call process lines while a turn runs. */
   showProcess?: boolean
+  /**
+   * Deployment default for showing the model's reasoning (R36 stage two):
+   * `true` renders the turn's reasoning in a collapsible panel of the reply
+   * card, `false` keeps the pre-R36 behaviour (reasoning never rendered).
+   * A scope override set with `/reasoning on|off` wins over this default.
+   */
+  showReasoning?: boolean
+  /** Runtime map of scopeKey → `/reasoning` override (`on` | `off`); managed by the command, not hand-edited. */
+  chatReasoning?: Record<string, string>
   /** Inbound files land in `<workspace>/.feishu4dsh/inbox/`. */
   receiveFiles?: boolean
   /** Largest single inbound file accepted. */
@@ -112,6 +128,8 @@ export const Config = Schema.object({
   requireMention: Schema.boolean().default(true),
   output: Schema.union(['stream', 'card']).default('stream'),
   showProcess: Schema.boolean().default(true),
+  showReasoning: Schema.boolean().default(true),
+  chatReasoning: Schema.any().default({}).hidden(),
   receiveFiles: Schema.boolean().default(true),
   maxReceiveFileBytes: Schema.number().default(20 * 1024 * 1024),
   maxMessageReceiveBytes: Schema.number().default(1024 * 1024 * 1024),
@@ -170,6 +188,16 @@ export function resolveConfig(config: Config): Required<Config> {
     }
     return out
   }
+  // R36-2: `/reasoning` overrides are a closed vocabulary; a hand-edited
+  // settings file must never inject a third state the bridge cannot render.
+  const cleanReasoningMap = (value: Record<string, string> | undefined): Record<string, string> => {
+    const out: Record<string, string> = {}
+    for (const [key, choice] of Object.entries(value ?? {})) {
+      const trimmed = String(choice).trim()
+      if (key.trim() !== '' && (REASONING_CHOICES as readonly string[]).includes(trimmed)) out[key] = trimmed
+    }
+    return out
+  }
   return {
     appId: config.appId ?? '',
     appSecret: config.appSecret ?? '',
@@ -182,6 +210,7 @@ export function resolveConfig(config: Config): Required<Config> {
     workspaceRoots: cleanList(config.workspaceRoots),
     chatWorkspaces: cleanStringMap(config.chatWorkspaces),
     chatPresets: cleanStringMap(config.chatPresets),
+    chatReasoning: cleanReasoningMap(config.chatReasoning),
     modelEfforts: cleanStringMap(config.modelEfforts),
     modelCatalog: cleanList(config.modelCatalog),
     chatSessions: (config.chatSessions ?? {}) as NonNullable<Config['chatSessions']>,
@@ -195,6 +224,7 @@ export function resolveConfig(config: Config): Required<Config> {
     requireMention: config.requireMention ?? true,
     output: config.output ?? 'stream',
     showProcess: config.showProcess ?? true,
+    showReasoning: config.showReasoning ?? true,
     receiveFiles: config.receiveFiles ?? true,
     maxReceiveFileBytes: sizeOrDefault(config.maxReceiveFileBytes, 20 * 1024 * 1024),
     maxMessageReceiveBytes: sizeOrDefault(config.maxMessageReceiveBytes, 1024 * 1024 * 1024),
