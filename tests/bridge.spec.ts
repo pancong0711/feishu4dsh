@@ -11,7 +11,7 @@ import { resolveAuthorization } from '../src/acl.js'
 import { channelOptions } from '../src/adapter.js'
 import type { ChannelPort, ResourceType } from '../src/adapter.js'
 import { resolveLocale, strings } from '../src/strings.js'
-import type { HostAgent, HostAgentOptions, HostRequestHeaderConfig, HostSession, HostSessionEvent, HostUserMessage } from '../src/host.js'
+import type { HostAgent, HostAgentHandle, HostAgentOptions, HostRequestHeaderConfig, HostSession, HostSessionEvent, HostUserMessage } from '../src/host.js'
 import type { MutableSelection } from '../src/model-selection.js'
 import type { SessionRecord } from '../src/session-registry.js'
 import { agentKeyOf, sessionIdOf } from '../src/sessions.js'
@@ -4463,5 +4463,160 @@ describe('bridge: R36-2 reasoning card', () => {
     // Closed card: no live note, the panel folded, the tool aggregate in the body.
     expect(cardNote(lastCard(port))).toBeUndefined()
     expect(cardBody(lastCard(port))).toContain('调用工具 bash × 1 次')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R37: session auto-heal (occupied session id)                        */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R37 session auto-heal (occupied session id)', () => {
+  /** A successful create, mirroring fakeHost's create body. */
+  function okCreate(host: ReturnType<typeof fakeHost>, sessionId: string): Promise<HostAgentHandle> {
+    const agent = new FakeAgent(sessionId)
+    host.created.push(agent)
+    return Promise.resolve({ agent, async dispose(): Promise<void> {} })
+  }
+
+  /**
+   * An env whose host resume/create are scripted. `resumeError` is thrown by
+   * `agents.resume` (undefined = resume succeeds); `create` is called once
+   * per `agents.create` with the 1-based call number and either returns a
+   * handle or the Error to throw.
+   */
+  async function makeR37Env(
+    resumeError: Error | undefined,
+    create: (sessionId: string, call: number, host: ReturnType<typeof fakeHost>) => Promise<HostAgentHandle> | Error,
+  ) {
+    const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-r37-'))
+    const canonical = await canonicalPath(workspace)
+    const agentKey = agentKeyOf('oc_chat1', canonical)
+    const reportLines: string[] = []
+    const persisted: Record<string, number>[] = []
+    const env = makeEnv(
+      { workspace },
+      { onSessionsChange: async payload => { persisted.push({ ...payload.activeGen }) } },
+      undefined,
+      line => reportLines.push(line),
+    )
+    const createCalls: string[] = []
+    let call = 0
+    env.host.agents.create = async options => {
+      call += 1
+      createCalls.push(options.sessionId)
+      const outcome = create(options.sessionId, call, env.host)
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    }
+    env.host.agents.resume = async options => {
+      if (resumeError !== undefined) throw resumeError
+      return okCreate(env.host, options.resumeSessionId)
+    }
+    return {
+      ...env,
+      reportLines,
+      persisted,
+      createCalls,
+      agentKey,
+      firstId: sessionIdOf('oc_chat1', canonical, 0),
+      idOf: (gen: number) => sessionIdOf('oc_chat1', canonical, gen),
+    }
+  }
+
+  function markdowns(port: FakePort): string[] {
+    return port.sent.map(m => String(m.input.markdown ?? ''))
+  }
+
+  it('R37-a: create hitting "already exists" advances one generation, persists the pointer, and sends the bilingual notice', async () => {
+    const env = await makeR37Env(
+      new Error('v2 session log cannot be resumed'),
+      (sessionId, call, host) => call === 1
+        ? new Error(`session "${sessionId}" already exists`)
+        : okCreate(host, sessionId),
+    )
+    await textMessage(env.port, 'hello')
+
+    // First create used the poisoned id, the heal retry used gen 1.
+    expect(env.createCalls).toEqual([env.firstId, env.idOf(1)])
+    expect(env.host.created[0]?.id).toBe(env.idOf(1))
+
+    // The generation pointer was advanced AND persisted (chatActiveGen).
+    expect(env.dispose.state.chatActiveGen[env.agentKey]).toBe(1)
+    await sleep(20)
+    expect(env.persisted.at(-1)?.[env.agentKey]).toBe(1)
+
+    // The user received the bilingual notice carrying BOTH session ids and
+    // the /session pointer to the old records.
+    const notice = markdowns(env.port).find(text => text.includes(env.idOf(1)))
+    expect(notice).toBeDefined()
+    expect(notice).toContain(env.firstId)
+    expect(notice).toContain('/session')
+  })
+
+  it('R37-b: consecutive collisions (stale on-disk generations) advance in a bounded way until a free id', async () => {
+    const env = await makeR37Env(
+      new Error('v2 session log cannot be resumed'),
+      (sessionId, call, host) => call <= 3
+        ? new Error(call === 2
+          ? `refusing to materialize session log for ${sessionId}`
+          : `session "${sessionId}" already exists`)
+        : okCreate(host, sessionId),
+    )
+    await textMessage(env.port, 'hello')
+
+    // First create + heal retries, one generation per attempt, never repeating.
+    expect(env.createCalls).toEqual([env.idOf(0), env.idOf(1), env.idOf(2), env.idOf(3)])
+    expect(env.host.created[0]?.id).toBe(env.idOf(3))
+    expect(env.dispose.state.chatActiveGen[env.agentKey]).toBe(3)
+    expect(markdowns(env.port).some(text => text.includes(env.firstId) && text.includes(env.idOf(3)))).toBe(true)
+  })
+
+  it('R37-c: still occupied after the retry budget → the last error propagates, no infinite retry', async () => {
+    const env = await makeR37Env(
+      new Error('v2 session log cannot be resumed'),
+      sessionId => new Error(`session "${sessionId}" already exists`),
+    )
+    await textMessage(env.port, 'hello')
+
+    // Exactly 1 first create + 3 heal retries — bounded, then give up.
+    expect(env.createCalls).toEqual([env.idOf(0), env.idOf(1), env.idOf(2), env.idOf(3)])
+    await sleep(20)
+    // The turn-failure path reported the LAST error verbatim.
+    const failure = markdowns(env.port).join('\n')
+    expect(failure).toContain('本轮执行失败')
+    expect(failure).toContain(env.idOf(3))
+    // No heal notice was sent: the heal did NOT succeed.
+    expect(markdowns(env.port).some(text => text.includes('自动开启新会话'))).toBe(false)
+    expect(env.reportLines.some(line => line.includes('agent unavailable'))).toBe(true)
+  })
+
+  it('R37-d: the resume first cause is reported before the create fallback runs', async () => {
+    const env = await makeR37Env(
+      new Error('disk log corrupted: zstd frame truncated'),
+      (_sessionId, _call, host) => okCreate(host, _sessionId),
+    )
+    await textMessage(env.port, 'hello')
+
+    // The benign fallback path is untouched: same id, no heal, no notice.
+    expect(env.createCalls).toEqual([env.firstId])
+    expect(markdowns(env.port).some(text => text.includes('自动开启新会话'))).toBe(false)
+    expect(env.reportLines).toContain(`feishu4dsh: resume ${env.firstId} failed: disk log corrupted: zstd frame truncated`)
+  })
+
+  it('R37-e: a non-occupation create error is re-thrown untouched — no self-heal, no notice, no pointer move', async () => {
+    const env = await makeR37Env(
+      new Error('v2 session log cannot be resumed'),
+      () => new Error('provider quota exhausted'),
+    )
+    await textMessage(env.port, 'hello')
+
+    // No retry was attempted for a non-occupation error.
+    expect(env.createCalls).toEqual([env.firstId])
+    await sleep(20)
+    const failure = markdowns(env.port).join('\n')
+    expect(failure).toContain('provider quota exhausted')
+    expect(markdowns(env.port).some(text => text.includes('自动开启新会话'))).toBe(false)
+    // The generation pointer never moved.
+    expect(env.dispose.state.chatActiveGen[env.agentKey]).toBeUndefined()
   })
 })

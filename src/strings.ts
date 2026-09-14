@@ -162,6 +162,14 @@ export interface Strings {
   sessionArchiveFailed: (detail: string) => string
   /** Boundary note: only Feishu-side sessions are archivable from the channel. */
   sessionArchiveForeign: string
+  /**
+   * R37: notice when the session id this chat pointed at was poisoned
+   * (resume failed and create reported it taken) and the bounded self-heal
+   * opened a fresh generation automatically. States: the old session could
+   * not be resumed, the new one is live, and the old records stay browsable
+   * via /session.
+   */
+  sessionAutoHealed: (oldId: string, newId: string) => string
   /* Workspace listing & switching (/ws, /cd). */
   wsTitle: string
   wsEmpty: string
@@ -357,6 +365,8 @@ const zhCN: Strings = {
   sessionArchiveNone: days => `没有超过 ${days} 天未更新的未归档会话。`,
   sessionArchiveFailed: detail => `归档失败：${detail}`,
   sessionArchiveForeign: '仅可归档飞书端创建的会话（dsh web 端会话请在 web 管理）。',
+  sessionAutoHealed: (oldId, newId) =>
+    `⚠️ 旧会话 ${oldId} 无法恢复，已自动开启新会话 ${newId}。\n旧会话记录仍保留，可用 /session 查看；本条及后续消息将在新会话中正常处理。`,
   wsTitle: '可用工作区',
   wsEmpty: '当前没有可用的工作区。',
   wsCurrentTag: '当前',
@@ -530,6 +540,8 @@ const enUS: Strings = {
   sessionArchiveNone: days => `No unarchived sessions older than ${days} day(s).`,
   sessionArchiveFailed: detail => `Archive failed: ${detail}`,
   sessionArchiveForeign: 'Only sessions created on the Feishu side can be archived (manage dsh web sessions there).',
+  sessionAutoHealed: (oldId, newId) =>
+    `⚠️ The old session ${oldId} could not be resumed; a new session ${newId} was opened automatically.\nThe old records are kept and can be listed via /session; this and future messages run in the new session.`,
   modelTitle: 'Model',
   modelSourceSession: '',
   modelDefaultNotStarted: ' (default; no turn yet)',

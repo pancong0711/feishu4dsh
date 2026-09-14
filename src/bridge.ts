@@ -1579,6 +1579,106 @@ function nextPresetOf(env: BridgeEnv, state: BridgeState, binding: ChatBinding):
   return resolvePreset(state.chatPresets[binding.scopeKey], resolvePreset(env.config.agentPreset, CHANNEL_DEFAULT_PRESET))
 }
 
+/**
+ * R37-B: how many EXTRA create attempts the generation self-heal may spend
+ * after the first create hits an occupied session id (so one turn makes at
+ * most 1 resume + 1 first create + 3 heal creates = 4 create calls — bounded,
+ * a fully poisoned scope fails loudly instead of looping forever). More than
+ * one because `nextGenOf` only sees the registry: the disk may hold old
+ * generation logs the registry does not know, so the first advanced id can
+ * itself be taken (the 09-14 incident did exactly that).
+ */
+const SESSION_HEAL_MAX_RETRIES = 3
+
+/**
+ * R37-B: does this create() failure mean the session ID ITSELF is taken?
+ * dsh reports two shapes for that: `session "..." already exists` (the
+ * SessionStore still holds the id a half-failed resume registered) and the
+ * materialize refusal (a session log with that id already exists on disk).
+ * Both mean "this id is unusable for the lifetime of the process / disk" and
+ * qualify for the bounded generation advance; EVERY other error is a real
+ * host bug and must propagate untouched — the self-heal must not be able to
+ * mask a root cause as "a new session was opened".
+ */
+function isSessionIdOccupiedError(error: unknown): boolean {
+  const text = describeError(error)
+  return text.includes('already exists') || text.includes('refusing to materialize')
+}
+
+/**
+ * The plain `agents.create` call with the channel's fixed composition (R18
+ * preset, default model, per-agent setup) — one call site so the resume
+ * fallback and every self-heal retry issue IDENTICAL requests.
+ */
+async function createSessionHandle(
+  env: BridgeEnv,
+  binding: ChatBinding,
+  sessionId: string,
+  preset: string,
+  agentOptions: HostAgentOptions,
+  setup: (agentCtx: Context) => Promise<void>,
+): Promise<HostAgentHandle> {
+  return env.host.agents.create({
+    sessionId,
+    meta: {
+      ...(binding.workspacePath === '' ? {} : { cwd: binding.workspacePath }),
+      // Feishu sessions run the FULL coding-agent preset (fs/search/subagent/
+      // workflow tools). The deployment default is `minimal`, which ships only
+      // a bash terminal and cannot carry the requirement-doc → subagent
+      // collaboration flow. resume() cannot change presets, so existing
+      // sessions keep theirs until /new starts a fresh one. (R18)
+      agentPreset: preset,
+    },
+    agentOptions,
+    setup,
+  })
+}
+
+/**
+ * R37-B: the bounded generation-advance self-heal, entered when the first
+ * create failed because the session id is OCCUPIED. Each round advances the
+ * generation exactly like `/new` does — `nextGenOf` over the registry (which
+ * may not know the stale on-disk generations being stepped over), then
+ * `pointerTo` + `chatActiveGen` + fire-and-forget `persistSessions` — and
+ * retries create on the fresh id, at most {@link SESSION_HEAL_MAX_RETRIES}
+ * times. A non-occupation failure on a fresh id is a real host bug and is
+ * rethrown immediately instead of burning the budget; exhausting the budget
+ * rethrows the LAST occupation error for the existing turn-failure path.
+ */
+async function healCreateByGenerationAdvance(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  agentKey: string,
+  preset: string,
+  agentOptions: HostAgentOptions,
+  setup: (agentCtx: Context) => Promise<void>,
+): Promise<{ handle: HostAgentHandle; sessionId: string; generation: number }> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < SESSION_HEAL_MAX_RETRIES; attempt++) {
+    // Re-derive the next generation EVERY round: the pointer advanced after
+    // the previous failure, so consecutive collisions walk FORWARD instead
+    // of hammering the same poisoned id.
+    const generation = nextGenOf(state.chatSessions, agentKey, state.ledger.generationOf(agentKey))
+    const sessionId = sessionIdOf(binding.scopeKey, binding.workspacePath, generation)
+    // Point the ledger at the new generation BEFORE the create (same
+    // primitives as resetSessionScope) so a failed attempt never leaves the
+    // pointer on a known-poisoned id; persist fire-and-forget.
+    state.ledger.pointerTo(agentKey, generation)
+    state.chatActiveGen[agentKey] = generation
+    persistSessions(env, state)
+    env.report(`feishu4dsh: session id occupied, advancing to generation ${generation} (${sessionId})`)
+    try {
+      const handle = await createSessionHandle(env, binding, sessionId, preset, agentOptions, setup)
+      return { handle, sessionId, generation }
+    } catch (retryError) {
+      lastError = retryError
+      if (!isSessionIdOccupiedError(retryError)) throw retryError
+    }
+  }
+  throw lastError
+}
+
 /** Create (or resume) the one agent for an agent key; see {@link ensureAgent}. */
 async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBinding, agentKey: string, hintText?: string): Promise<HostAgentHandle> {
   // Wait for the loader so a first message never sees a half-grown tree.
@@ -1587,8 +1687,8 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
 
   await registerWorkspace(env, binding.workspacePath)
 
-  const generation = state.ledger.generationOf(agentKey)
-  const sessionId = sessionIdOf(binding.scopeKey, binding.workspacePath, generation)
+  let generation = state.ledger.generationOf(agentKey)
+  let sessionId = sessionIdOf(binding.scopeKey, binding.workspacePath, generation)
   // R29b: resolve (or lazily create) the workspace record so the session can
   // be ACCOUNTED under it below -- without attachSession, dsh web groups
   // every channel session as ungrouped.
@@ -1601,24 +1701,34 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
   // second, channel fallback last.
   const preset = nextPresetOf(env, state, binding)
 
+  // The id this chat deterministically points at. When the self-heal advances
+  // the generation below, the notice reports it as the OLD session id.
+  const firstSessionId = sessionId
   let handle: HostAgentHandle
   try {
     handle = await env.host.agents.resume({ resumeSessionId: sessionId, agentOptions, setup })
-  } catch {
-    handle = await env.host.agents.create({
-      sessionId,
-      meta: {
-        ...(binding.workspacePath === '' ? {} : { cwd: binding.workspacePath }),
-        // Feishu sessions run the FULL coding-agent preset (fs/search/subagent/
-        // workflow tools). The deployment default is `minimal`, which ships only
-        // a bash terminal and cannot carry the requirement-doc → subagent
-        // collaboration flow. resume() cannot change presets, so existing
-        // sessions keep theirs until /new starts a fresh one. (R18)
-        agentPreset: preset,
-      },
-      agentOptions,
-      setup,
-    })
+  } catch (resumeError) {
+    // R37-A: the create fallback is designed for the benign "nothing to
+    // resume" path of a brand-new topic, but it must not swallow the FIRST
+    // cause: a resume that fails for any other reason (an upgrade the
+    // session does not survive, a corrupted log...) used to vanish here and
+    // only its create-side side effects stayed visible. Fallback may absorb
+    // the control flow; it may not absorb the information.
+    env.report(`feishu4dsh: resume ${sessionId} failed: ${describeError(resumeError)}`)
+    try {
+      handle = await createSessionHandle(env, binding, sessionId, preset, agentOptions, setup)
+    } catch (createError) {
+      if (!isSessionIdOccupiedError(createError)) throw createError
+      // R37-B: the id is OCCUPIED (a half-failed resume left it registered in
+      // the host SessionStore, or a log with this id already exists on disk)
+      // and stays poisoned for the process lifetime — retrying the same id
+      // can never succeed. The only escape is a fresh id, so advance the
+      // generation exactly like /new does and retry, in a bounded way.
+      const healed = await healCreateByGenerationAdvance(env, state, binding, agentKey, preset, agentOptions, setup)
+      handle = healed.handle
+      sessionId = healed.sessionId
+      generation = healed.generation
+    }
   }
   // R26: remember what THIS session was created with so /status can show the
   // real mode; resumed sessions stay unrecorded (the host does not report the
@@ -1631,6 +1741,12 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
   upsertSession(state.chatSessions, agentKey, generation, sessionId, { hintText, now: Date.now() })
   state.chatActiveGen[agentKey] = generation
   persistSessions(env, state)
+  if (sessionId !== firstSessionId) {
+    // R37-C: the self-heal opened a fresh session — tell the user what
+    // happened (old session could not be resumed, a new one is live) and
+    // that the old records stay browsable via /session.
+    await safeSend(env, binding.chatId, state.copy.sessionAutoHealed(firstSessionId, sessionId))
+  }
   // R29b: account the session under its workspace (best-effort -- failures
   // are logged and retried on the next resume, which also heals sessions
   // created before this change). Without this, dsh web shows every channel
