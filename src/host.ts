@@ -6,7 +6,8 @@
  * the package build self-contained: a composed DSH profile supplies the real
  * implementations at runtime. Field shapes mirror `@deepseek-ai/dsh-agent`,
  * `@deepseek-ai/dsh-session`, and `@deepseek-ai/dsh-user-approval` as of
- * dsh 0.1.0-rc.6.
+ * dsh 0.1.0-rc.6 (R38 additions mirror `@deepseek-ai/dsh-agent-presets` and
+ * `@deepseek-ai/dsh-session-query` as of dsh 0.1.5-rc.1).
  * @module feishu4dsh/host
  */
 
@@ -268,10 +269,6 @@ export interface HostAgentRegistry {
   get?(sessionId: string): HostAgent | undefined
 }
 
-/* ------------------------------------------------------------------ */
-/* Commands, tools, prompts                                            */
-/* ------------------------------------------------------------------ */
-
 /** One command this deployment offers, from {@link HostCommands.list}. */
 export interface HostCommandDescriptor {
   /** Lowercase name without the leading slash. */
@@ -342,6 +339,59 @@ export interface HostInstallModelSelection {
   }): () => void
 }
 
+/**
+ * The `agentPresets` roster service (R38; subset of
+ * `@deepseek-ai/dsh-agent-presets`): composes a preset's standing plugin
+ * subtree under a per-agent scope context. Optional — a host/entry without
+ * the `agent-presets` roster row provides no such service, and the channel
+ * degrades to plain `setup` registration instead (D1 compat floor note: on
+ * such hosts the preset mechanism cannot take effect at all, because the
+ * bundle patch's disabled host tool rows have no preset layer to replace
+ * them; dsh ≥ 0.1.5-rc.1 provides it).
+ */
+export interface HostAgentPresets {
+  /**
+   * Join every registration/listener of one preset's composition to the
+   * calling agent's scope context. Call from the agent factory's `setup`;
+   * a rejection rolls the agent creation back (mirrors the web entrance's
+   * `composeAgent`).
+   */
+  mount(agentCtx: Context, id?: string): Promise<unknown>
+}
+
+/**
+ * The agentPreset projection values of one observed session, mirrored from
+ * `@deepseek-ai/dsh-session-projection`. `null` models the host's explicit
+ * "no value" marker; an absent key models an older host without the
+ * `agentPreset` projection.
+ */
+export interface HostSessionPresetValues {
+  readonly agentPreset?: string | null
+}
+
+/** One observed cold session, narrowed from the host `sessionQuery` service. */
+export interface HostSessionObservation {
+  /** Immutable session identity metadata (subset). */
+  readonly header: { readonly agentPreset?: string | null }
+  /**
+   * Exact projection baseline of the observation; the durable agent preset
+   * record lives here, not on the header. Optional — absent when the host
+   * mounts no projection registry or observation options exclude projections.
+   */
+  readonly projections?: { readonly values: HostSessionPresetValues }
+}
+
+/**
+ * The host `sessionQuery` service as per-agent composition consumes it
+ * (subset of `@deepseek-ai/dsh-session-query`). Optional: older hosts lack
+ * it (before the projection registry existed), and callers degrade to the
+ * channel's preset chain when it is absent or fails.
+ */
+export interface HostSessionQuery {
+  /** One exact immutable observation of a session without publishing it. */
+  observeSession(sessionId: string): Promise<HostSessionObservation>
+}
+
 /** One workspace record (subset of the host `Workspace` entity). */
 export interface HostWorkspace {
   readonly id: string
@@ -384,6 +434,51 @@ export interface HostWorkspaceRegistry {
   archiveSession?(sessionId: string): Promise<void>
 }
 
+/**
+ * One selectable reasoning-effort level of a model, as the host `llm`
+ * service reports it (R39; subset of `@deepseek-ai/dsh-llm`
+ * `LlmReasoningEffortInfo`). `id` is the wire value (host enum id such as
+ * `low`/`high`/`xhigh` — the plugin's owner enumeration including its
+ * `default` RESET value is a plugin-side concept, not this).
+ */
+export interface HostReasoningEffort {
+  readonly id: string
+  readonly name: string
+}
+
+/**
+ * One model's reasoning-effort capability (R39; subset of
+ * `@deepseek-ai/dsh-llm` `LlmModelReasoningInfo`). Absent on models without
+ * ANY reasoning capability — the host drops the field entirely then.
+ */
+export interface HostReasoningCapability {
+  /** Supported effort wire ids in adapter-preferred display order. */
+  readonly efforts: readonly HostReasoningEffort[]
+  /** Effort the adapter materializes when the request carries none. */
+  readonly defaultEffort?: string | undefined
+}
+
+/**
+ * The `llm` service (R39), narrowed to the exact-route model capability the
+ * channel reads for effort pre-validation. On web/selectModel paths this is
+ * the same object story that `resolveCallConfig` validates against. A
+ * preflight throws (e.g. `UNSUPPORTED_REASONING_EFFORT` / unknown provider)
+ * or the service is absent on older hosts — callers degrade to the historical
+ * write-through behaviour in every such case.
+ */
+export interface HostLlm {
+  /** Resolve and validate one exact provider/model route's metadata. */
+  resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<{
+    readonly provider: string
+    readonly id: string
+    readonly name: string
+    readonly inputModalities?: readonly string[] | undefined
+    readonly context?: { readonly contextWindow: number } | undefined
+    /** Absent ⇒ this model has no reasoning-effort capability at all. */
+    readonly reasoning?: HostReasoningCapability | undefined
+  }>
+}
+
 /** The Cordis loader service; awaited so agents never see a half-grown tree. */
 export interface HostLoader {
   await(): Promise<unknown>
@@ -403,6 +498,18 @@ export interface HostSettings {
 /* ------------------------------------------------------------------ */
 /* Approvals                                                           */
 /* ------------------------------------------------------------------ */
+
+/** The host services this plugin reads through `host.get(...)` by name. */
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** The per-agent preset roster and mount capability (R38). */
+    agentPresets?: HostAgentPresets
+    /** Point observations over cold sessions (R38, dsh ≥ 0.1.5-rc.1). */
+    sessionQuery?: HostSessionQuery
+    /** Exact-route model capability queries (R39, effort pre-validation). */
+    llm?: HostLlm
+  }
+}
 
 /** Closed outcome of a host approval question; `'allowed-once'` is the only grant. */
 export type HostApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'

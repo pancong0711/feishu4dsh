@@ -2,7 +2,17 @@
 # listed in `dsh.profile.bundles`. The row id is deployment-local; the package
 # name must match package.json.
 
+# 宿主模型面行让位给 agent preset 层（对照 dsh-web-app/cordis.patch.yml）：
+# 本文件末尾的 disable 行是各 face 行的整行替换，工具与提示面改由
+# agent-presets 名册按会话挂载的组合提供；宿主保留行（tools 注册表、fs/沙箱/
+# 审批、subagent 注册表与 backends、goals/tasks 宿主面、shell-env、
+# token-meter、session 持久化等）一律不动。
+
 - insert:
+    # Agent preset roster (R38): the per-session composition layer web
+    # entrances get from the dsh-web-app bundle. Without this row the
+    # `agentPresets.mount` service does not exist and bridge sessions run on
+    # the host-plane rows below — i.e. presets never take effect.
     - id: feishu4dsh
       name: 'feishu4dsh'
       config:
@@ -59,3 +69,104 @@
         # senderAllowlist: []      # 私聊发送人 open_id 列表
         # groupAllowlist: []       # 群聊 chat_id 列表
         # approvers: []            # 可点击「允许/拒绝」按钮的 open_id；留空 = 谁驱动会话谁审批
+
+# ── agent plane moves behind agent presets (mirrors dsh-web-app) ────────────
+# Same rows, same mechanism as the web bundle: the base keeps these model-face
+# rows for the single-session TUI-style composition, a channel that composes
+# one agent per session disables them here and joins every agent to a preset
+# instead (`agentPresets.mount` inside the setup). Patch semantics replace a
+# row's whole entry by id, so `id + disabled: true` is enough to retire the
+# host-plane row. Verify the counterpart list against the installed
+# `@deepseek-ai/dsh-web-app/cordis.patch.yml` when dsh upgrades.
+
+- id: tool-bash
+  disabled: true
+
+- id: tool-pwsh
+  disabled: true
+
+# The background-job REGISTRY stays on the host plane (`jobs` row); only the
+# model-facing job_* controls move behind presets.
+
+- id: tool-jobs
+  disabled: true
+
+- id: tool-fs
+  disabled: true
+
+- id: tool-fs-search
+  disabled: true
+
+# The `skill` REGISTRY (`skill` row) stays in the host plane; only the
+# per-agent rows — local skill discovery and the model-facing skill tool — move.
+
+- id: skill-filesystem
+  disabled: true
+
+- id: tool-skill
+  disabled: true
+
+# The goal service and session driver stay on the host plane; the human
+# command and the model-facing tool own the preset layer.
+
+- id: command-goal
+  disabled: true
+
+- id: tool-goal
+  disabled: true
+
+- id: plan-mode
+  disabled: true
+
+- id: compaction-basic
+  disabled: true
+
+- id: command-compact
+  disabled: true
+
+- id: tool-result-pruner
+  disabled: true
+
+# The subagent registry and its backends STAY in the host plane (`subagent`
+# and `subagent-*-in-process` rows); only the delegation TOOLS move.
+
+- id: tool-subagent-control
+  disabled: true
+
+- id: tool-subagent-list-agents
+  disabled: true
+
+- id: tool-subagent
+  disabled: true
+
+- id: tool-subagent-fork
+  disabled: true
+
+- id: workflow-worker-thread
+  disabled: true
+
+- id: tool-workflow
+  disabled: true
+
+- id: tool-ralph
+  disabled: true
+
+- id: agent-instructions
+  disabled: true
+
+- id: tool-todo
+  disabled: true
+
+- id: tool-web
+  disabled: true
+
+# ── the preset roster ────────────────────────────────────────────────────────
+# `default: standard` matches the web bundle and the plugin's channel default.
+# The shipped presets inside `@deepseek-ai/dsh-agent-presets` become a
+# read-only `system` root, and `$DSH_HOME/.agent-presets` is the user root,
+# both supplied by the package itself.
+- insert:
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: standard

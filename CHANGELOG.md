@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.0 (2026-09-27)
+
+**R38+R39：preset 真正生效（minimal 从未生效的修复）+ `/model effort` 预校验与精确键**
+
+- **兼容底线（破坏性）**：要求 **dsh ≥ 0.1.5-rc.1**（0.1.4 及以下不可用）。本版插件 bundle patch 挂载宿主 `agent-presets` 名册并把宿主模型面工具行让位给 preset 层，更早的 dsh 既无名册也无该拆层语义。
+- **R38：agent preset 由宿主真实挂载**（此前所有版本上，`/mode` 只是写会话头标签，standard/minimal 工具面从未变化）：
+  - 插件 bundle patch（`cordis.patch.yml`）挂 `agent-presets` 名册（`default: standard`），并按 dsh-web-app 口径把 23 条宿主模型面工具行逐条 `disabled: true`（shell/fs/skills/jobs/goals/plan-mode/subagent 工具/workflow/ralph/todo/web/compaction 等）——工具与提示面改由 preset 组合提供；
+  - 会话创建 setup **先 `agentPresets.mount(agentCtx, preset)` 再注册 agent 面行**（与 web 入口同构；preset 组合损坏时会话创建失败，不产出半装配会话）；
+  - 恢复旧会话前经宿主 `sessionQuery.observeSession` 读取**会话真实 preset**（投影优先、会话头次之），读不到回退配置链路值；观察失败每进程仅一条运维提示；
+  - `/status` 的"模式"一行从此反映实际挂载的组合。`standard` = 完整工具集；`minimal` = 仅持久 shell（无 fs/subagent/workflow，且无 runtime context 注入）。
+- **R39：`/model effort` 设置前按模型能力预校验**（对照 dsh web `selectModel`）：
+  - 设置前经宿主 `llm.resolveModelInfo` 校验档位：模型无 reasoning 能力、或档位不在支持列表（如 qwen3.8-flash 的 `high`）→ **当场双语报错并列出支持档位**，不再"设置成功、下一轮报 UNSUPPORTED_REASONING_EFFORT"；`default` 恒合法；宿主 llm 不可达时按现状写表（每进程一条降级提示）；
+  - 设置/清除确认文案改显**精确 `provider/model` 键**（偏好按 provider/model 记住，同名模型跨 provider 各自独立）；
+  - 修复 opencode-go 等模型 effort"设了没反应"（偏好键缺失所致，配置层恢复见部署说明）。
+- **测试**：283/283（基线 271 + R38 新增 7 + R39 新增 5）。
+
 ## 0.8.1 (2026-09-14)
 
 **R37：修复会话恢复失败的死循环（`session "..." already exists`）**

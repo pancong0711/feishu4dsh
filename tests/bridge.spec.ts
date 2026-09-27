@@ -1,9 +1,8 @@
-import { describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import type { BridgeHost, BridgeHooks, BridgeTimingOptions } from '../src/bridge.js'
-import { installBridge, REPLY_TARGETS_MAX } from '../src/bridge.js'
+import { installBridge, observedPresetOf, REPLY_TARGETS_MAX, type BridgeHost, type BridgeHooks, type BridgeTimingOptions } from '../src/bridge.js'
 import { encodeMenuValue, CARD_STREAM_MAX_CHARS } from '../src/cards.js'
 import { resolveConfig } from '../src/config.js'
 import type { ResolvedConfig } from '../src/config.js'
@@ -111,19 +110,35 @@ function fakeHost() {
       return () => undefined
     },
   }
+  /**
+   * The per-agent setup context (R38): a service name resolves from the
+   * host's `services` map first — the shape an agent scope context has on a
+   * real host — falling back to the built-in `tools` registry.
+   */
+  const setupContext = {
+    get(name: string): unknown {
+      const provided = services.get(name)
+      if (provided !== undefined) return provided
+      return name === 'tools' ? toolsRegistry : undefined
+    },
+    on: () => () => undefined,
+  }
   const host: BridgeHost & {
     created: FakeAgent[]
     emit(name: string, ...args: unknown[]): unknown[]
     services: Map<string, unknown>
     registeredTools: { name: string; execute: (args: unknown, exec: unknown) => Promise<unknown> }[]
+    /** The agent-setup context `agents.create`/custom resumes hand to setup. */
+    setupContext: { get(name: string): unknown; on(): () => undefined }
   } = {
     created,
     services,
     registeredTools,
+    setupContext,
     agents: {
       async resume(): Promise<never> { throw new Error('nothing to resume in tests') },
       async create(options: { sessionId: string; meta?: { cwd?: string }; agentOptions?: HostAgentOptions; setup?: (ctx: { get(name: string): unknown }) => Promise<void> }) {
-        if (options.setup !== undefined) await options.setup({ get: (name: string) => name === 'tools' ? toolsRegistry : undefined, on: () => () => undefined })
+        if (options.setup !== undefined) await options.setup(setupContext)
         const agent = new FakeAgent(options.sessionId)
         agent.cwd = options.meta?.cwd
         agent.preset = options.meta?.agentPreset
@@ -2731,7 +2746,9 @@ describe('bridge: R28 /model effort per-model reasoning effort', () => {
     await sleep(20)
 
     await textMessage(port, '/model effort high')
-    expect(texts(port).at(-1)).toContain('已将 m_default 的推理强度设为 high')
+    // R39: the confirmation names the EXACT provider/model preference key.
+    expect(texts(port).at(-1)).toContain('已将 p_default/m_default 的推理强度设为 high')
+    expect(texts(port).at(-1)).toContain('按 provider/model 精确记住')
     expect(persisted.some(p => p['p_default/m_default'] === 'high')).toBe(true)
 
     // The composed selection carries the effort for the next request.
@@ -2762,7 +2779,8 @@ describe('bridge: R28 /model effort per-model reasoning effort', () => {
     expect(texts(port).at(-1)).toContain('推理强度：low（模型偏好）')
 
     await textMessage(port, '/model effort default')
-    expect(texts(port).at(-1)).toContain('已恢复 m1 的推理强度为默认')
+    // R39: the cleared confirmation also names the exact key.
+    expect(texts(port).at(-1)).toContain('已恢复 p1/m1 的推理强度为默认')
     expect(persisted.at(-1)).toEqual({})
 
     await textMessage(port, '/model effort')
@@ -2798,7 +2816,7 @@ describe('bridge: R28 /model effort per-model reasoning effort', () => {
     expect(texts(port).at(-1)).toContain('无权切换模型')
 
     await textMessage(port, '/model effort high', { senderId: 'ou_admin' })
-    expect(texts(port).at(-1)).toContain('已将 m1 的推理强度设为 high')
+    expect(texts(port).at(-1)).toContain('已将 p1/m1 的推理强度设为 high')
 
     // Switching to another model: the preference of THAT model applies
     // (empty here), so the effort falls back to default, not to m1's high.
@@ -2806,6 +2824,188 @@ describe('bridge: R28 /model effort per-model reasoning effort', () => {
     await textMessage(port, '/model p2/m2', { senderId: 'ou_admin' })
     await textMessage(port, '/model effort')
     expect(texts(port).at(-1)).toContain('推理强度：default')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R39: /model effort pre-validation + exact-key display (stage two)   */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R39 /model effort capability pre-validation', () => {
+  /** A mountable host `llm` spy whose resolveModelInfo records its calls. */
+  function mountLlm(
+    host: ReturnType<typeof fakeHost>,
+    resolve: (provider: string, model: string) => Promise<unknown> | unknown,
+  ): { resolveModelInfo: ReturnType<typeof vi.fn> } {
+    const resolveModelInfo = vi.fn(async (provider: string, model: string) => resolve(provider, model))
+    host.services.set('llm', { resolveModelInfo })
+    return { resolveModelInfo }
+  }
+
+  /** One unnatural host capability shape, bitwise as configured. */
+  function effortCapability(effortIds: readonly string[]): unknown {
+    return {
+      efforts: effortIds.map(id => ({ id, name: id.toUpperCase() })),
+      defaultEffort: effortIds[0],
+    }
+  }
+
+  function emitInbound(port: FakePort, messageId: string, content: string): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+  }
+
+  function texts(port: FakePort): string[] {
+    return port.sent
+      .filter(m => typeof m.input.markdown === 'string')
+      .map(m => m.input.markdown as string)
+  }
+
+  it('R39-a: a supported level sets normally under the exact provider/model key', async () => {
+    const persisted: Record<string, string>[] = []
+    const { host, port } = makeEnv({}, {
+      onModelEffortsChange: async efforts => { persisted.push(efforts) },
+    })
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-flash' }),
+    })
+    const llm = mountLlm(host, () => ({ provider: 'deepseek-official', id: 'deepseek-flash', name: 'DeepSeek Flash', reasoning: effortCapability(['low', 'high']) }))
+    const installed = captureSelections(host)
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model effort high')
+
+    // The capability lookup ran BEFORE the write, with the effective route.
+    expect(llm.resolveModelInfo).toHaveBeenCalledTimes(1)
+    expect(llm.resolveModelInfo).toHaveBeenCalledWith('deepseek-official', 'deepseek-flash')
+    expect(persisted.some(p => p['deepseek-official/deepseek-flash'] === 'high')).toBe(true)
+    // R39: the composed selection carries the effort (write-through intact).
+    expect(installed[0]?.selection.current).toEqual({
+      provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'high',
+    })
+    // RC3: the reply names the exact preference key, not the bare model id.
+    expect(texts(port).at(-1)).toContain('已将 deepseek-official/deepseek-flash 的推理强度设为 high')
+    expect(texts(port).at(-1)).toContain('按 provider/model 精确记住')
+  })
+
+  it('R39-b: an unsupported level is refused in place and writes NOTHING', async () => {
+    const persisted: Record<string, string>[] = []
+    const { host, port } = makeEnv({}, {
+      onModelEffortsChange: async efforts => { persisted.push(efforts) },
+    })
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'aliyun-official', model: 'qwen3.8-flash' }),
+    })
+    const llm = mountLlm(host, () => ({
+      provider: 'aliyun-official', id: 'qwen3.8-flash', name: 'Qwen', reasoning: effortCapability(['off', 'low', 'medium', 'xhigh']),
+    }))
+    const installed = captureSelections(host)
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model effort high')
+
+    // The rejection lists the capability's supported ids (R39 copy).
+    expect(texts(port).at(-1)).toContain('不支持 high：aliyun-official/qwen3.8-flash 支持的档位是 off / low / medium / xhigh。')
+    expect(installed[0]?.selection.current).toEqual({ provider: 'aliyun-official', model: 'qwen3.8-flash' })
+    expect(persisted).toEqual([])
+  })
+
+  it('R39-c: a model without a reasoning capability refuses the whole command', async () => {
+    const persisted: Record<string, string>[] = []
+    const { host, port } = makeEnv({}, {
+      onModelEffortsChange: async efforts => { persisted.push(efforts) },
+    })
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p', model: 'noplayer' }),
+    })
+    const llm = mountLlm(host, () => ({ provider: 'p', id: 'noplayer', name: 'Noplayer' }))
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model effort high')
+
+    expect(texts(port).at(-1)).toContain('该模型不支持推理强度设置（无 reasoning 能力）：p/noplayer。')
+    expect(llm.resolveModelInfo).toHaveBeenCalledTimes(1)
+    expect(persisted).toEqual([])
+  })
+
+  it('R39-d: a missing llm service writes through; the degradation reports once per process', async () => {
+    // The report-once flag is module state; a fresh module gives this test a
+    // clean flag regardless of tests that ran before it.
+    vi.resetModules()
+    const fresh = await import('../src/bridge.js')
+    const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-r39-'))
+    const config = resolveConfig({ appId: 'cli_test', appSecret: 'secret', workspace })
+    const port = new FakePort()
+    const host = fakeHost()
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'opencode-go', model: 'glm-5.3-flash' }),
+    })
+    const persisted: Record<string, string>[] = []
+    const reportLines: string[] = []
+    const dispose = fresh.installBridge(host, config, port, resolveAuthorization(config), line => reportLines.push(line), {
+      onModelEffortsChange: async efforts => { persisted.push(efforts) },
+    })
+    try {
+      emitInbound(port, 'm1', 'hello')
+      await sleep(20)
+      await textMessage(port, '/model effort high')
+      // Old-host behaviour preserved: the write goes through unvalidated.
+      expect(persisted.at(-1)).toEqual({ 'opencode-go/glm-5.3-flash': 'high' })
+      expect(texts(port).at(-1)).toContain('已将 opencode-go/glm-5.3-flash 的推理强度设为 high')
+
+      const notes = reportLines.filter(line => line.includes('host llm service unreachable'))
+      expect(notes).toHaveLength(1)
+
+      // A second set (even a second route) stays silent: the flag is
+      // process-wide on purpose.
+      host.services.set('agentDefaultModel', { currentSelection: () => ({ provider: 'p2', model: 'm2' }) })
+      await textMessage(port, '/model #2', { messageId: 'm_r39_d2' })
+      await sleep(20)
+      await textMessage(port, '/model effort low')
+      expect(persisted.at(-1)).toEqual({
+        'opencode-go/glm-5.3-flash': 'high',
+        'p2/m2': 'low',
+      })
+      expect(reportLines.filter(line => line.includes('host llm service unreachable'))).toHaveLength(1)
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('R39-e: default stays legal and clears through the existing path', async () => {
+    const persisted: Record<string, string>[] = []
+    const { host, port } = makeEnv({}, {
+      onModelEffortsChange: async efforts => { persisted.push(efforts) },
+    })
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p1', model: 'm1' }),
+    })
+    mountLlm(host, () => ({ provider: 'p1', id: 'm1', name: 'M1', reasoning: effortCapability(['low', 'high']) }))
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model effort low')
+    expect(persisted.at(-1)).toEqual({ 'p1/m1': 'low' })
+
+    // default never consults the capability; the existing clear path runs.
+    await textMessage(port, '/model effort default')
+    expect(texts(port).at(-1)).toContain('已恢复 p1/m1 的推理强度为默认')
+    expect(persisted.at(-1)).toEqual({})
   })
 })
 
@@ -4618,5 +4818,210 @@ describe('bridge: R37 session auto-heal (occupied session id)', () => {
     expect(markdowns(env.port).some(text => text.includes('自动开启新会话'))).toBe(false)
     // The generation pointer never moved.
     expect(env.dispose.state.chatActiveGen[env.agentKey]).toBeUndefined()
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R38: agent preset mounting (roster rows + resume-truth observation)  */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R38 agent preset mounting', () => {
+  /** The disable rows R38 mirrors from the dsh-web-app bundle (work order §4.1). */
+  const R38_DISABLE_IDS = [
+    'tool-bash', 'tool-pwsh', 'tool-jobs', 'tool-fs', 'tool-fs-search',
+    'skill-filesystem', 'tool-skill',
+    'command-goal', 'tool-goal', 'plan-mode',
+    'compaction-basic', 'command-compact', 'tool-result-pruner',
+    'tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork',
+    'workflow-worker-thread', 'tool-workflow', 'tool-ralph',
+    'agent-instructions', 'tool-todo', 'tool-web',
+  ]
+
+  /** `agentPresets` fake whose mount records into `order`. */
+  function mountRoster(order: string[]): unknown {
+    return { mount: async (_ctx: unknown, preset: string) => { order.push(`mount:${preset}`) } }
+  }
+
+  /** A `tools` spy whose register records into `order` (ordering vs. mount). */
+  function spyTools(order: string[]): unknown {
+    return {
+      register: (definition: { name: string }) => {
+        order.push(`register:${definition.name}`)
+        return () => undefined
+      },
+    }
+  }
+
+  async function makeR38Env(options?: {
+    observed?: { header?: { agentPreset?: string | null }; projections?: { values: { agentPreset?: string | null } } }
+    observeFault?: Error
+    preset?: string
+  }) {
+    const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-r38-'))
+    const canonical = await canonicalPath(workspace)
+    const order: string[] = []
+    const reportLines: string[] = []
+    const env = makeEnv(
+      { workspace, ...(options?.preset === undefined ? {} : { agentPreset: options.preset }) },
+      undefined,
+      undefined,
+      line => reportLines.push(line),
+    )
+    env.host.services.set('agentPresets', mountRoster(order))
+    env.host.services.set('tools', spyTools(order))
+    if (options?.observed !== undefined || options?.observeFault !== undefined) {
+      env.host.services.set('sessionQuery', {
+        observeSession: async () => {
+          if (options?.observeFault !== undefined) throw options.observeFault
+          return options?.observed
+        },
+      })
+    }
+    return {
+      ...env,
+      order,
+      reportLines,
+      sessionId: sessionIdOf('oc_chat1', canonical, 0),
+    }
+  }
+
+  it('R38-a: setup mounts the preset BEFORE the agent-face rows (create path)', async () => {
+    const env = await makeR38Env()
+    await textMessage(env.port, 'hello')
+
+    expect(env.host.created).toHaveLength(1)
+    expect(env.host.created[0]?.preset).toBe('standard')
+    // The preset layer joins first; send_file registration follows it.
+    expect(env.order).toEqual(['mount:standard', 'register:send_file'])
+  })
+
+  it('R38-b: resume mounts the projection-truth preset, not the header label', async () => {
+    const env = await makeR38Env({
+      // The old creation recorded 'minimal' in the header; the projection —
+      // what web composes from — says 'standard'. Projection wins.
+      observed: {
+        header: { agentPreset: 'minimal' },
+        projections: { values: { agentPreset: 'standard' } },
+      },
+    })
+    // A successful resume exercises the mount inside the SAME setup the
+    // create fallback would receive, mirroring web `resumeObserved`.
+    env.host.agents.resume = async options => {
+      if (options.setup !== undefined) await options.setup(env.host.setupContext)
+      const agent = new FakeAgent(options.resumeSessionId)
+      env.host.created.push(agent)
+      return { agent, async dispose(): Promise<void> {} }
+    }
+    await textMessage(env.port, 'hello')
+
+    expect(env.order).toEqual(['mount:standard', 'register:send_file'])
+    expect(env.dispose.state.sessionPresets.get(env.sessionId)).toBe('standard')
+  })
+
+  it('R38-c: no projection record falls back to the chain value, silently', async () => {
+    const env = await makeR38Env({
+      // Observation succeeds, but the session records nothing (a session
+      // created before the mechanism existed).
+      observed: { header: { agentPreset: null }, projections: { values: { agentPreset: null } } },
+    })
+    env.host.agents.resume = async options => {
+      if (options.setup !== undefined) await options.setup(env.host.setupContext)
+      const agent = new FakeAgent(options.resumeSessionId)
+      env.host.created.push(agent)
+      return { agent, async dispose(): Promise<void> {} }
+    }
+    await textMessage(env.port, 'hello')
+
+    expect(env.order).toEqual(['mount:standard', 'register:send_file'])
+    expect(env.dispose.state.sessionPresets.get(env.sessionId)).toBe('standard')
+    // Observing an existing but unrecorded session is a normal state, not an
+    // infrastructure failure: no preset-degradation report (FakePort's own
+    // unrelated stream-fallback line is expected noise here).
+    expect(env.reportLines.filter(line => line.includes('observing the session preset') || line.includes('sessionQuery unavailable'))).toEqual([])
+  })
+
+  it('R38-d: an observation failure falls back to the chain value and reports exactly once', async () => {
+    // The report-once flag is module state; a fresh module gives this test a
+    // clean flag regardless of tests that ran before it.
+    vi.resetModules()
+    const fresh = await import('../src/bridge.js')
+    const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-r38-'))
+    const canonical = await canonicalPath(workspace)
+    const config = resolveConfig({ appId: 'cli_test', appSecret: 'secret', workspace })
+    const port = new FakePort()
+    const host = fakeHost()
+    const order: string[] = []
+    host.services.set('agentPresets', mountRoster(order))
+    host.services.set('tools', spyTools(order))
+    host.services.set('sessionQuery', {
+      // Something OTHER than "session not found": the query backend itself
+      // is failing, which the operator should hear about — once.
+      observeSession: async () => { throw new Error('query backend offline') },
+    })
+    const reportLines: string[] = []
+    const dispose = fresh.installBridge(host, config, port, resolveAuthorization(config), line => reportLines.push(line))
+    host.agents.resume = async options => {
+      if (options.setup !== undefined) await options.setup(host.setupContext)
+      const agent = new FakeAgent(options.resumeSessionId)
+      host.created.push(agent)
+      return { agent, async dispose(): Promise<void> {} }
+    }
+    try {
+      await textMessage(port, 'hello')
+      const failures = reportLines.filter(line => line.includes('observing the session preset failed'))
+      expect(failures).toHaveLength(1)
+      expect(failures[0]).toContain('query backend offline')
+      expect(order).toEqual(['mount:standard', 'register:send_file'])
+
+      // A second scope (fresh session id, fresh observe attempt) still adds
+      // no further report: the flag is process-wide on purpose.
+      await textMessage(port, 'hello #2', {
+        messageId: 'm_r38_d2',
+        threadId: 'om_thread_2',
+      })
+      expect(reportLines.filter(line => line.includes('observing the session preset failed'))).toHaveLength(1)
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('R38-e: a host without agentPresets skips the mount instead of throwing', async () => {
+    const env = await makeR38Env()
+    env.host.services.delete('agentPresets')
+    await textMessage(env.port, 'hello')
+
+    // Session creation proceeded (old-host compatibility), the meta label is
+    // still written, and no mount was attempted.
+    expect(env.host.created).toHaveLength(1)
+    expect(env.host.created[0]?.preset).toBe('standard')
+    expect(env.order).toEqual(['register:send_file'])
+  })
+
+  it('R38-f: the observed preset is resolvable from projections or the header', async () => {
+    // Projections win; a null projection (explicit "no value") lets the
+    // header through; both empty mean "not recorded".
+    expect(observedPresetOf({ header: {}, projections: { values: { agentPreset: 'minimal' } } })).toBe('minimal')
+    expect(observedPresetOf({ header: { agentPreset: 'standard' }, projections: { values: { agentPreset: null } } })).toBe('standard')
+    expect(observedPresetOf({ header: { agentPreset: 'standard' }, projections: { values: {} } })).toBe('standard')
+    expect(observedPresetOf({ header: {}, projections: { values: { agentPreset: null } } })).toBeUndefined()
+    expect(observedPresetOf({ header: {} })).toBeUndefined()
+    expect(observedPresetOf({ header: { agentPreset: '   ' } })).toBeUndefined()
+  })
+
+  it('R38-g: the bundle patch mirrors the dsh-web-app disable list', () => {
+    const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    // Each disable row: `- id: <id>` immediately followed by `disabled: true`.
+    const disabledPresetRows = new Set(
+      [...patch.matchAll(/- id: (\S+)\n\s+disabled: true/g)].map(match => match[1] ?? ''),
+    )
+    // The disable set matches the work order exactly — no extra, no missing
+    // (an extra row would disable something the host keeps; a miss keeps a
+    // host-plane tool alive and defeats the preset takeover).
+    expect(disabledPresetRows).toEqual(new Set(R38_DISABLE_IDS))
+    // The preset roster row mounted by this bundle.
+    expect(patch).toContain("- id: agent-presets\n      name: '@deepseek-ai/dsh-agent-presets'")
+    expect(patch).toContain('default: standard')
+    // The channel's own roster row survives the freeze.
+    expect(patch).toContain('- id: feishu4dsh')
   })
 })

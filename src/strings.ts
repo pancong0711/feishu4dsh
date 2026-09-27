@@ -112,7 +112,20 @@ export interface Strings {
   effortSourcePreferred: string
   effortUnknown: string
   effortUsage: string
+  /**
+   * R39: rejection when the model HAS a reasoning capability but not the
+   * requested level. `supported` is the capability's effort-id list joined
+   * with " / ". The model shows the exact `provider/model` preference key.
+   */
+  effortUnsupported: (level: string, model: string, supported: string) => string
+  /** R39: rejection when the model carries no reasoning capability at all. */
+  effortUnsupportedNoCapability: (model: string) => string
+  /**
+   * R39: the confirmation names the EXACT `provider/model` key the
+   * preference is remembered under (`model` here is that full key).
+   */
   effortSet: (level: string, model: string) => string
+  /** @see effortSet for the key semantics of `model`. */
   effortCleared: (model: string) => string
   /* Session mode (/mode, R27): view / set the scope's agent preset. */
   modeTitle: string
@@ -324,8 +337,14 @@ const zhCN: Strings = {
   effortSourcePreferred: '（模型偏好）',
   effortUnknown: '尚未确定模型：先发起一轮对话，或用 /model <provider>/<model> 指定。',
   effortUsage: '用法：/model effort（查看） · /model effort <default|low|high|max>（设置当前模型的推理强度，下一轮生效并全局记住） · /model effort default（恢复默认）',
-  effortSet: (level, model) => `已将 ${model} 的推理强度设为 ${level}，下一轮生效（该模型的偏好已全局记住）。`,
-  effortCleared: model => `已恢复 ${model} 的推理强度为默认（请求不再携带 reasoning_effort 参数）。`,
+  effortSet: (level, model) => `已将 ${model} 的推理强度设为 ${level}，下一轮生效（该模型的偏好已全局记住；按 provider/model 精确记住）。`,
+  effortCleared: model => `已恢复 ${model} 的推理强度为默认（请求不再携带 reasoning_effort 参数；按 provider/model 精确记住）。`,
+  // R39: the capability truth comes from the host llm service; `supported`
+  // arrives pre-joined as "low / medium / xhigh"-style.
+  effortUnsupported: (level, model, supported) =>
+    `不支持 ${level}：${model} 支持的档位是 ${supported}。`,
+  effortUnsupportedNoCapability: model =>
+    `该模型不支持推理强度设置（无 reasoning 能力）：${model}。`,
   modeTitle: '会话模式',
   modeCurrent: preset => `当前会话模式：${preset}`,
   modeNotStarted: '当前会话尚未开启（下次新会话将使用下方模式）',
@@ -556,8 +575,13 @@ const enUS: Strings = {
   effortSourcePreferred: ' (model preference)',
   effortUnknown: 'No model is known yet: run a turn first, or pin one with /model <provider>/<model>.',
   effortUsage: 'Usage: /model effort (view) · /model effort <default|low|high|max> (set for the current model; takes effect next turn and is remembered globally) · /model effort default (reset)',
-  effortSet: (level, model) => `Set ${model} reasoning effort to ${level}; takes effect next turn and is remembered for this model.`,
-  effortCleared: model => `Reset ${model} reasoning effort to default (requests carry no reasoning_effort).`,
+  effortSet: (level, model) => `Set ${model} reasoning effort to ${level}; takes effect next turn and is remembered for this model (per provider/model).`,
+  effortCleared: model => `Reset ${model} reasoning effort to default (requests carry no reasoning_effort; remembered per provider/model).`,
+  // R39: capability truth comes from the host llm service.
+  effortUnsupported: (level, model, supported) =>
+    `Unsupported effort ${level}: ${model} supports ${supported}.`,
+  effortUnsupportedNoCapability: model =>
+    `This model does not support reasoning effort (no reasoning capability): ${model}.`,
   wsTitle: 'Workspaces',
   wsEmpty: 'No workspaces available.',
   wsCurrentTag: 'current',

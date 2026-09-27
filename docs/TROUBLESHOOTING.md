@@ -213,3 +213,17 @@ R11 起 `/cd` 与 `/ws add`、`/model` 共用审批 ACL：配置了 `approvers` 
 1. **止血**：受影响话题执行 `/new` 开新会话；确认飞书端恢复后，旧会话仅作历史查阅；
 2. **预防**：web 侧浏览历史请避免向 `feishu-*` 会话发送任何消息；需要长任务请在飞书话题内直接派活（后台 subagent 汇报自动回话题）；
 3. **根治**：属宿主能力缺口（无会话归属/单写入方锁），插件侧无法单独设护栏——已登记为**长期修复目标 R31**（核查与方案候选见内部工作单），并在 README 安全边界处公示本约定。
+
+## 5. preset「不生效」：`/mode` 切了模式，实际工具集不变（R38）
+
+**现象**：`/mode minimal` + 新会话后，会话头记录 `agentPreset: minimal`，但模型实际拿到的工具集仍是全量（`request/header` 工具数恒定不变，如 26 个），minimal 也能调用 fs/subagent。
+
+**判定**：`request/header` 是权威记录（飞书 `/status` 的"模式"一行来自插件自记的 `sessionPresets`，只说明**打算挂载什么**，不说明宿主实际装配了什么）。preset 要真正生效须三个条件同时成立，逐层排查：
+
+| 层 | 排查点 | 缺失时的表现 |
+|---|---|---|
+| ① 名册 | 宿主组合里必须挂 `agent-presets` 名册行（插件 bundle patch 已含；`dsh-web-app` 也有同款） | 无 `agentPresets` 服务 → setup 跳过 mount（每进程一条 roster 降级告警可选），preset 退回宿主层组合 |
+| ② mount | 入口必须在 agent setup 里调用 `agentPresets.mount(agentCtx, presetId)`（旧版插件 (< v0.9.0) 从未调用） | 会话头有标签、agent 却未加入任何 preset——dsh 会打 `published without joining an agent preset` 告警 |
+| ③ 宿主行让位 | 宿主模型面工具行（tool-bash/tool-fs/tool-subagent/tool-workflow/tool-goal/plan-mode 等）必须 `disabled: true` 让位给 preset 层 | 宿主行仍启用时工具面恒为宿主全量，preset 挂载与否都看不出差别 |
+
+**处置**：①③都在插件 bundle patch（`cordis.patch.yml`，R38 起）内——确认部署副本的该文件已同步（对照 `@deepseek-ai/dsh-web-app/cordis.patch.yml` 的 disabled 清单）；②升级插件 ≥ v0.9.0。此外 dsh 版本必须 ≥ 0.1.5-rc.1（更早版本无名册、无拆层语义，本组修复不可降级）。

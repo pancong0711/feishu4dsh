@@ -26,7 +26,7 @@
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `sessionScope` | `chat` | `chat`（整个聊天一个会话）/ `chat-thread`（按话题）/ `chat-sender`（按发送人） |
-| `agentPreset` | `standard` | 新会话默认模式（R27）；会话内用 `/mode` 按 scope 覆盖 |
+| `agentPreset` | `standard` | 新会话默认模式（R27/R38）；会话内用 `/mode` 按 scope 覆盖。**真实语义 = 挂载**：宿主 `agent-presets` 名册把该 preset 的组合（工具/提示面）挂到 Agent 的 scope 上，`meta.agentPreset` 只是随头记录的标签；存续会话 resume 时按宿主投影/会话头的真实值挂载（读不到回退本配置/链路值） |
 | `chatPresets` | `{}` | 运行时状态（`/mode` 写入）：scopeKey → 模式覆盖，勿手改 |
 | `requireMention` | `true` | 群聊是否需要 @ 机器人 |
 | `output` | `stream` | `stream` 流式逐块输出 / `card` 单卡片聚合 |
@@ -39,7 +39,7 @@
 
 > **思考过程显示**（R36 阶段二）：默认 `showReasoning: true` —— 一轮里模型产出的 reasoning 会以 `collapsible_panel` 折叠面板出现在回复卡片上方，**流式增量更新**，正文仍渲染在同一张卡片的 markdown 区；`turn/end` 把面板收成一行「💭 思考过程（1,204 字 · 18s）」并**默认折叠保留**（拍板 Q4）。**私聊默认展开、群聊默认折叠**（拍板 Q2），读者点标题即可自行展开。会话内用 `/reasoning`（无参查看当前值与来源）· `/reasoning on|off` 按 scope 覆盖并持久化，ACL 与 `/mode` 一致。超长思考保留头尾并标注「已省略 N 字」；思考区与正文区互不覆盖，思考内容绝不混入正文（正文落账语义不变）。**降级**：`showReasoning: false`、`/reasoning off` 或（`output: stream` 且）传输不支持整卡流时，一律回到阶段一/既有渲染路径（Markdown 流式 + 过程行）；`output: card` 不做 live 过程行，但收口卡片仍带折叠面板。`collapsible_panel` 需要飞书客户端 ≥ V7.9，更低版本会把面板体显示为「升级客户端」占位图（正文不受影响）。
 >
-> **模式与推理强度**（R27/R28）：`/mode` 查看/设置会话模式（standard/minimal，设置即开启新会话——`resume()` 不能换预设）；`/model effort` 按模型设置推理强度（`default/low/high/max`，`default` = 请求不携带 `reasoning_effort`；调整即全局记住该模型的偏好）。两者 ACL 与 `/model` 一致。
+> **模式与推理强度**（R27/R28，R38 修订）：`/mode` 查看/设置会话模式（standard/minimal，设置即开启新会话——`resume()` 不能换预设，且挂载的是会话真实 preset：standard=完整工具集，minimal=仅持久 shell 且无 runtime context/AGENTS 注入）；`/model effort` 按模型设置推理强度（`default/low/high/max`，`default` = 请求不携带 `reasoning_effort`；调整即全局记住该模型的偏好）。设置前**按模型能力预校验（R39）**：不支持的档位当场报错并列出支持档位；偏好按 `provider/model` 精确记住。两者 ACL 与 `/model` 一致。
 > **会话管理**（R29）：`/session` 列表（自动标题 = 日期+首条消息首行≤12字）、`/session <n>` 切回旧会话（自动停止进行中任务）、`/session rename`、`/session archive <n>` / `archive old [天数]`（归档与 dsh web 共用同一集合，当前版本归档单向）。切换/重命名/归档的 ACL 与 `/cd` 一致。
 >
 > **交互选择卡**（R32）：`/ws` 默认出**工作区选择卡**（当前项标 ✅，点击即切换，文本列表保留为 `/ws list`）；`/ws new` 打开**目录浏览卡**——在 `workspaceRoots` 配置的目录内逐级进入/翻页/返回上级，「✅ 就用这个目录」= 注册并切换；`/ws new <名称>` 在当前浏览位置新建文件夹并进入；`/model` 在状态文本后追加**模型选择卡**（`select_static` 下拉 + 分页，每页 15 条，当前模型标 ✅），候选清单来自 `modelCatalog` 配置；`/session` 文本列表后附**会话选择卡**（同一套稳定编号）。所有菜单点击都以**点击者身份**重查对应命令的审批 ACL，转发到别的会话的卡一律拒绝；菜单卡 15 分钟自动失效；文本命令全部保留兜底（`/cd` `/ws add` `/ws list` `/model <p/m>`）。

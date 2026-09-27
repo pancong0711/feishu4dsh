@@ -21,7 +21,7 @@ import {
   CARD_STREAM_MAX_CHARS, REASONING_PANEL_MAX_CHARS,
   type CardActionPayload, type MenuActionPayload,
 } from './cards.js'
-import type { HostAgentHandle, HostAgentOptions, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostModelSelection, HostSession, HostSessionEvent, HostTools, HostWorkspace, HostWorkspaceRegistry, TokenUsageData } from './host.js'
+import type { HostAgentHandle, HostAgentOptions, HostAgentPresets, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostLlm, HostModelSelection, HostSession, HostSessionEvent, HostSessionObservation, HostSessionQuery, HostTools, HostWorkspace, HostWorkspaceRegistry, TokenUsageData } from './host.js'
 import { assistantText, isAssistantChunkEvent, isAssistantMessageEvent, isStepStartEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
 import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedSelection, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
 import { readOutboundFile, sendFileTool, storeInboundFile, type OutboundFile, type SendFilePorts } from './files.js'
@@ -1563,6 +1563,116 @@ async function ensureAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
 const CHANNEL_DEFAULT_PRESET = 'standard'
 
 /**
+ * R38: module-level flag that lets the resume-side `sessionQuery` report its
+ * ONE-TIME degradation only. A host without the `sessionQuery` service (pre
+ * 0.1.5-rc.1), or one whose observation keeps failing, would otherwise emit
+ * this line for every message the channel ever sees. Cleared only by process
+ * restart — one notice per process is the point.
+ */
+let presetObservationReported = false
+
+/**
+ * R39: one-time operator note for "the channel wanted the host `llm`
+ * capability service but could not get it" — a missing service (older host)
+ * or consistently failing lookups would otherwise repeat on every effort
+ * set. Mirror of {@link presetObservationReported} (R38). Cleared only by
+ * process restart.
+ */
+let effortCapabilityReported = false
+
+/**
+ * Effort ids the plugin enumeration DOES promise but a real capability set
+ * typically exposes (`default` is the plugin-side RESET value and never a
+ * wire id, so hosts never list it): only `max` is at risk of looking
+ * "unsupported" while remaining a legal owner-level request. The R39
+ * pre-validation lets these through unread — equality with the capability
+ * list is preserved for the levels `EFFORT_LEVELS` already shares with the
+ * host enum (`low` / `high`).
+ */
+const EFFORT_RELEASE_VALVE_LEVELS: readonly string[] = ['max']
+
+/**
+ * Format one capability's effort ids for the rejection copy (R39): the host
+ * enum ids, adapter display order, joined as `low / medium / xhigh`.
+ */
+function formatEffortIds(capability: { readonly efforts?: readonly { readonly id: string }[] }): string {
+  return (capability.efforts ?? []).map(effort => effort.id).join(' / ')
+}
+
+/**
+ * R39 (RC2, web `selectModel` parity): best-effort capability pre-validation
+ * of an effort the user is about to remember — BEFORE anything is written or
+ * persisted. Mirrors the web host, which asks `ctx.llm.resolveCallConfig`
+ * FIRST and reports `UNSUPPORTED_REASONING_EFFORT` to the user in the same
+ * breath, instead of letting the next request hit it.
+ *
+ * Outcomes, driven strictly by the host `llm` service (all-optional contract):
+ * - `llm` missing or `resolveModelInfo` not callable → write-as-is, and
+ *   report ONCE per process (mirror of the R38 preset-observation flag:
+ *   `host llm service unreachable …`). No rejection is produced on hosts
+ *   that cannot answer.
+ * - The capability call throws (adapter offline, unknown route — error
+ *   kinds are deliberately indistinguishable here) → write-as-is, one
+ *   status line in the operator log (`env.report`, NOT a chat message).
+ * - Model has NO `reasoning` field → reject with
+ *   `effortUnsupportedNoCapability` (the request would fail with
+ *   UNSUPPORTED_REASONING_EFFORT no matter what level was asked).
+ * - Capability known but the level is not among `efforts` → reject with
+ *   `effortUnsupported` listing the supported ids. A capability that
+ *   carries an EMPTY/absent efforts list is treated as unknowable (old
+ *   adapters / odd metadata) and lets the write through.
+ * - Otherwise (level supported) → `undefined` and the normal write path
+ *   proceeds.
+ *
+ * The owner enumeration's `default` NEVER reaches this: it is the RESET
+ * value — legal by definition. So does `max`: dsh's web validates the request
+ * against the exact model capability at REQUEST time too, so a model that
+ * truthfully lacks `max` still fails on the next turn while `max` remains a
+ * first-class owner level here; a capability check that would break
+ * `EFFORT_LEVELS`' promise at the desk is skipped rather than guessed
+ * (and because `max` is `xhigh`'s owner-side synonym on some providers, a
+ * hard equality refusal on a raw-id read would be wrong).
+ *
+ * @returns the localized rejection to send, or `undefined` to proceed.
+ */
+async function rejectEffortIfUnsupported(
+  env: BridgeEnv,
+  level: string,
+  effective: HostModelSelection,
+  modelKey: string,
+  copy: Strings,
+): Promise<string | undefined> {
+  if (level === 'default' || EFFORT_RELEASE_VALVE_LEVELS.includes(level)) return undefined
+  const llm = env.host.get('llm') as HostLlm | undefined
+  if (llm === undefined || typeof llm.resolveModelInfo !== 'function') {
+    if (!effortCapabilityReported) {
+      effortCapabilityReported = true
+      env.report('feishu4dsh: host llm service unreachable; setting reasoning effort WITHOUT capability pre-validation')
+    }
+    return undefined
+  }
+  let capability: Awaited<ReturnType<HostLlm['resolveModelInfo']>>['reasoning']
+  try {
+    capability = (await llm.resolveModelInfo(effective.provider, effective.model)).reasoning
+  } catch (error) {
+    env.report(`feishu4dsh: effort capability pre-validation failed (${describeError(error)}); proceeding without it`)
+    return undefined
+  }
+  if (capability === undefined || capability === null) {
+    return copy.effortUnsupportedNoCapability(modelKey)
+  }
+  // An odd capability record (efforts absent, not an array, or empty) is not
+  // knowable enough to refuse on: keep the historical write-through, add no
+  // noise. (An empty list cannot reach null-capability semantics either: the
+  // host rejects adapter metadata with zero efforts itself,
+  // 'INVALID_MODEL_REASONING'.)
+  if (!Array.isArray(capability.efforts) || capability.efforts.length === 0) return undefined
+  const supported = formatEffortIds(capability)
+  if (capability.efforts.some(effort => effort.id === level)) return undefined
+  return copy.effortUnsupported(level, modelKey, supported)
+}
+
+/**
  * Validate a configured preset value against the known list, falling back to
  * the given default when it is missing or unknown (hand-edited settings must
  * not poison `agents.create`).
@@ -1622,16 +1732,74 @@ async function createSessionHandle(
     sessionId,
     meta: {
       ...(binding.workspacePath === '' ? {} : { cwd: binding.workspacePath }),
-      // Feishu sessions run the FULL coding-agent preset (fs/search/subagent/
-      // workflow tools). The deployment default is `minimal`, which ships only
-      // a bash terminal and cannot carry the requirement-doc → subagent
-      // collaboration flow. resume() cannot change presets, so existing
-      // sessions keep theirs until /new starts a fresh one. (R18)
+      // R18/R38: the preset lands on the session header (the old label) AND
+      // on the agent itself, because the shared setup mounts the preset
+      // composition FIRST — the label without the mount never took effect.
+      // What gets mounted is exactly `preset` whose source is the real
+      // preset the caller resolved. `resume()` cannot change presets, so
+      // existing sessions keep theirs until /new starts a fresh one. resume
+      // overrides this per session from the observed true preset (R38).
       agentPreset: preset,
     },
     agentOptions,
     setup,
   })
+}
+
+/**
+ * R38: the true preset of a persisted session seen through its observation,
+ * falling back to the channel's chain when the session records none.
+ *
+ * Preference order mirrors the web entrance (`projections.values` is the
+ * durable record; the header is the creation label, which the projection
+ * contains too): projections first, then the header. A value is adopted only
+ * when it is a non-empty string — `null`/`undefined` mean "nothing recorded"
+ * and leave the caller's fallback standing.
+ */
+export function observedPresetOf(observation: HostSessionObservation): string | undefined {
+  const projected = observation.projections?.values?.agentPreset
+  if (typeof projected === 'string' && projected.trim() !== '') return projected
+  const headerPreset = observation.header?.agentPreset
+  if (typeof headerPreset === 'string' && headerPreset.trim() !== '') return headerPreset
+  return undefined
+}
+
+/**
+ * R38: best-effort observation of the persisted session's true agent preset
+ * through the host `sessionQuery` service (dsh ≥ 0.1.5-rc.1). Resolves a
+ * preset only for a session the store knows AND that records one; every
+ * other case reports one line per process at most and yields `undefined`,
+ * which callers turn into the channel preset chain (the historical behavior
+ * for sessions created before the mechanism existed).
+ *
+ * This decides ONLY what the setup mounts — whether a session gets resumed
+ * at all is the host registry's answer, and the create fallback / R37
+ * generation self-heal keep their own control flow.
+ *
+ * @param env - the bridge environment.
+ * @param sessionId - the persisted session the channel would resume.
+ * @returns the observed preset id, or `undefined` when nothing reliable was
+ *   read.
+ */
+async function observePresetOf(env: BridgeEnv, sessionId: string): Promise<string | undefined> {
+  const query = env.host.get('sessionQuery') as HostSessionQuery | undefined
+  if (query === undefined) {
+    if (!presetObservationReported) {
+      presetObservationReported = true
+      env.report('feishu4dsh: sessionQuery unavailable (host < 0.1.5-rc.1); resuming sessions with the channel preset instead of their recorded one')
+    }
+    return undefined
+  }
+  try {
+    const observation = await query.observeSession(sessionId)
+    return observedPresetOf(observation)
+  } catch (error) {
+    if (!presetObservationReported) {
+      presetObservationReported = true
+      env.report(`feishu4dsh: observing the session preset failed (${describeError(error)}); resuming sessions with the channel preset instead of their recorded one`)
+    }
+    return undefined
+  }
 }
 
 /**
@@ -1693,13 +1861,18 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
   // be ACCOUNTED under it below -- without attachSession, dsh web groups
   // every channel session as ungrouped.
   const workspaceRecord = await registerWorkspace(env, binding.workspacePath)
-  const setup = composeAgentSetup(env, state, binding)
   // New agents need an explicit provider/model; without one the agent/request
   // waterfall has nothing to seed and turns fail with "has no provider/model".
   const agentOptions = defaultModelOf(env)
   // R27: preset chain — scope override (`/mode`) first, deployment default
   // second, channel fallback last.
-  const preset = nextPresetOf(env, state, binding)
+  const chainedPreset = nextPresetOf(env, state, binding)
+  // R38: a persisted session keeps its OWN preset — read as truth through the
+  // host's session observation when the host can answer, else the channel
+  // chain (the historical behavior: sessions created before the mechanism
+  // could record nothing). Observation failure never reaches the user.
+  const preset = await observePresetOf(env, sessionId) ?? chainedPreset
+  const setup = composeSetup(env, state, binding, preset)
 
   // The id this chat deterministically points at. When the self-heal advances
   // the generation below, the notice reports it as the OLD session id.
@@ -1730,9 +1903,10 @@ async function createAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
       generation = healed.generation
     }
   }
-  // R26: remember what THIS session was created with so /status can show the
-  // real mode; resumed sessions stay unrecorded (the host does not report the
-  // preset of a persisted session) and fall back to the channel default.
+  // R26/R38: remember what THIS session is composed with so /status shows the
+  // real mode. The value written is the mounted preset — the observed one on
+  // a resume, the chain one on a fresh create — so the display tracks the
+  // actual tool face rather than the channel default.
   state.sessionPresets.set(sessionId, preset)
   state.ledger.set(agentKey, { handle, generation, sessionId })
   state.sessionScopes.set(sessionId, binding.scopeKey)
@@ -1783,9 +1957,36 @@ function resolveBindingOf(state: BridgeState, sessionId: string): ChatBinding | 
   return scopeKey === undefined ? undefined : state.chats.get(scopeKey)
 }
 
-/** The per-agent composition: register the channel's tools on the agent plane. */
-function composeAgentSetup(env: BridgeEnv, state: BridgeState, binding: ChatBinding): (agentCtx: Context) => Promise<void> {
+/**
+ * Build the agent-side setup the channel's session factories share.
+ *
+ * The outer function stays synchronous and pure — the only `binding` it reads
+ * is the one captured at call time; `binding` itself is passed back to the
+ * registrars. The inner function is what dsh calls once per created/resumed
+ * Agent, with {@link agentCtx} the agent's own scope context. R38 keeps the
+ * kernel's webhook order: preset first, then the agent-face registrations —
+ * the preset's copy must win the race on shared registries.
+ *
+ * @param env - the bridge environment.
+ * @param state - mutable channel state the registrars consult and update.
+ * @param binding - the chat whose next agent receives this composition.
+ * @param preset - the agentPreset to mount for this session; an empty string
+ *   keeps the legacy no-preset behavior (a host without the roster row or a
+ *   caller that resolved no preset). A mount failure is NOT caught here: the
+ *   host rolls the agent creation back, so a broken preset composition fails
+ *   the turn loudly instead of yielding a half-composed session.
+ * @returns the setup callback the agent registry consumes.
+ */
+function composeSetup(env: BridgeEnv, state: BridgeState, binding: ChatBinding, preset: string): (agentCtx: Context) => Promise<void> {
   return async (agentCtx: Context) => {
+    // R38: the preset layer goes in FIRST — nearest scope wins over the
+    // channel registrations below (web composeAgent order). The service is
+    // optional: a host/entry without the agent-presets roster (pre 0.1.5-rc.1)
+    // simply has nothing to join, and the setup proceeds register-only.
+    const presets = agentCtx.get('agentPresets') as HostAgentPresets | undefined
+    if (preset !== '' && presets !== undefined && typeof presets.mount === 'function') {
+      await presets.mount(agentCtx, preset)
+    }
     installModelSelectionForAgent(env, state, binding, agentCtx)
     const tools = agentCtx.get('tools') as HostTools | undefined
     if (env.config.sendFiles && tools !== undefined && typeof tools.register === 'function') {
@@ -3608,6 +3809,14 @@ async function cmdModelEffort(
   }
 
   const modelKey = `${effective.provider}/${effective.model}`
+  // R39 (RC2): validate against the model's REAL capability before any
+  // state is touched — a rejection below must not leave a poisoned
+  // preference in the table or settings.
+  const rejection = await rejectEffortIfUnsupported(env, level, effective, modelKey, copy)
+  if (rejection !== undefined) {
+    await safeSend(env, chatId, rejection, replyTo)
+    return
+  }
   if (level === 'default') delete state.modelEfforts[modelKey]
   else state.modelEfforts[modelKey] = level
   try {
@@ -3619,7 +3828,9 @@ async function cmdModelEffort(
   await safeSend(
     env,
     chatId,
-    level === 'default' ? copy.effortCleared(effective.model) : copy.effortSet(level, effective.model),
+    // R39 (RC3): name the exact provider/model key — the preference binds to
+    // THIS model form, and a same-name model on another provider has its own.
+    level === 'default' ? copy.effortCleared(modelKey) : copy.effortSet(level, modelKey),
     replyTo,
   )
 }
