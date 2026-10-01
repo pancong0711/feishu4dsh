@@ -4833,8 +4833,8 @@ describe('bridge: R38 agent preset mounting', () => {
     'command-goal', 'tool-goal', 'plan-mode',
     'compaction-basic', 'command-compact', 'tool-result-pruner',
     'tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork',
-    'workflow-worker-thread', 'tool-workflow', 'tool-ralph',
-    'agent-instructions', 'tool-todo', 'tool-web',
+    'workflow-ptc', 'tool-workflow', 'tool-ralph',
+    'agent-instructions', 'tool-todo', 'tool-plugin-manager', 'tool-web',
   ]
 
   /** `agentPresets` fake whose mount records into `order`. */
@@ -5018,10 +5018,19 @@ describe('bridge: R38 agent preset mounting', () => {
     // (an extra row would disable something the host keeps; a miss keeps a
     // host-plane tool alive and defeats the preset takeover).
     expect(disabledPresetRows).toEqual(new Set(R38_DISABLE_IDS))
-    // The preset roster row mounted by this bundle.
-    expect(patch).toContain("- id: agent-presets\n      name: '@deepseek-ai/dsh-agent-presets'")
+    // dsh 0.2.0 (R41): the roster is the registry service row plus one
+    // declarative `@deepseek-ai/dsh-agent-preset` row per shipped preset.
+    expect(patch).toContain("- id: agent-preset-registry\n      name: '@deepseek-ai/dsh-agent-preset-registry'")
     expect(patch).toContain('default: standard')
-    // The channel's own roster row survives the freeze.
+    for (const preset of ['standard', 'minimal']) {
+      expect(patch).toContain(`- id: preset-${preset}\n      name: '@deepseek-ai/dsh-agent-preset'`)
+      expect(patch).toMatch(new RegExp(`- id: preset-${preset}[\\s\\S]*?config:[\\s\\S]*?id: ${preset}\\n`))
+    }
+    // The removed 0.1.5-era surfaces must not come back: the old package row
+    // and the old host row id (`workflow-worker-thread` was renamed).
+    expect(patch).not.toMatch(/name:\s*'@deepseek-ai\/dsh-agent-presets'/)
+    expect(patch).not.toContain('- id: workflow-worker-thread')
+    // The channel's own row survives the freeze.
     expect(patch).toContain('- id: feishu4dsh')
   })
 })

@@ -222,8 +222,8 @@ R11 起 `/cd` 与 `/ws add`、`/model` 共用审批 ACL：配置了 `approvers` 
 
 | 层 | 排查点 | 缺失时的表现 |
 |---|---|---|
-| ① 名册 | 宿主组合里必须挂 `agent-presets` 名册行（插件 bundle patch 已含；`dsh-web-app` 也有同款） | 无 `agentPresets` 服务 → setup 跳过 mount（每进程一条 roster 降级告警可选），preset 退回宿主层组合 |
+| ① 注册表与声明 | 宿主组合里必须同时有 `agent-preset-registry` 行（`dsh-web-app` 同款）与目标 preset 的 `@deepseek-ai/dsh-agent-preset` 声明行（插件 API ≥ v0.10.0 出厂声明 `standard`/`minimal`；dsh ≤ 0.1.5 是旧 `dsh-agent-presets` 包，语义不同） | 无 registry → 无 `agentPresets` 服务，setup 跳过 mount；有 registry 无声明 → `Unknown agent preset: <id>`（0.2.0 文案）/ `available: none` |
 | ② mount | 入口必须在 agent setup 里调用 `agentPresets.mount(agentCtx, presetId)`（旧版插件 (< v0.9.0) 从未调用） | 会话头有标签、agent 却未加入任何 preset——dsh 会打 `published without joining an agent preset` 告警 |
 | ③ 宿主行让位 | 宿主模型面工具行（tool-bash/tool-fs/tool-subagent/tool-workflow/tool-goal/plan-mode 等）必须 `disabled: true` 让位给 preset 层 | 宿主行仍启用时工具面恒为宿主全量，preset 挂载与否都看不出差别 |
 
-**处置**：①③都在插件 bundle patch（`cordis.patch.yml`，R38 起）内——确认部署副本的该文件已同步（对照 `@deepseek-ai/dsh-web-app/cordis.patch.yml` 的 disabled 清单）；②升级插件 ≥ v0.9.0。此外 dsh 版本必须 ≥ 0.1.5-rc.1（更早版本无名册、无拆层语义，本组修复不可降级）。
+**处置**：①③都在插件 bundle patch（`cordis.patch.yml`，R38 起；R41 迁 0.2.0 口径）内——确认部署副本的该文件已同步（对照 `@deepseek-ai/dsh-web-app/cordis.patch.yml` 的 disabled 清单，0.2.0 为 24 条）；②升级插件 ≥ v0.10.0（dsh 0.2.0 线）/ v0.9.0（dsh 0.1.5 线，二者不可混装）。dsh `0.2.0-rc.2` 起预设不再内置，缺声明即报 `Unknown agent preset`。

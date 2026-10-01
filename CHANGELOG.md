@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.0 (2026-10-01)
+
+**R41：迁移到 dsh 0.2.0-rc.2 的 Agent 预设机制（破坏性兼容断代）**
+
+- **兼容底线**：要求 **dsh ≥ 0.2.0-rc.2**。dsh 0.2.0 把预设机制整体重做，本版与 v0.9.x（dsh 0.1.5 线）**不可混装**。
+- **背景**：0.2.0 移除了 `@deepseek-ai/dsh-agent-presets`（内置 standard/minimal/cordis/ptc 预设目录 + roster 服务），改为 `@deepseek-ai/dsh-agent-preset-registry`（`agentPresets` 服务）**+ 每个预设一条 `@deepseek-ai/dsh-agent-preset` 声明行**（组合内联在 `plugins`），且 **dsh 不再内置任何预设**；配置载体由 `settings.yaml` 迁移到 per-profile `cordis.patch.yml`。升级后飞书入口曾报 `agent-presets: preset "minimal" not found (available: none)`，导致会话无法 resume/创建。
+- **修复**：
+  - 插件 bundle patch（`cordis.patch.yml`）改为挂 `agent-preset-registry` 行，并**出厂声明** `standard`（完整编码 Agent）与 `minimal`（仅持久 shell、无 runtime context 注入）两条预设；部署层 profile patch 可用同 id 覆盖声明，保留按部署定制的能力；
+  - 宿主模型面工具行 disable 清单对齐 0.2.0 的 24 行：`workflow-worker-thread` → `workflow-ptc`（0.2.0 改名）、新增 `tool-plugin-manager`；
+  - bridge 代码零改动：`agentPresets.mount` / `sessionQuery.observeSession` / `llm.resolveModelInfo` / `meta.agentPreset` 等契约在 0.2.0 形状兼容。
+- **测试**：283/283（R38-g patch 断言升级为 0.2.0 口径：24 行 disable 精确相等、registry 行与两条声明在位、旧包与旧行 id 负断言）。
+
 ## 0.9.0 (2026-09-27)
 
 **R38+R39：preset 真正生效（minimal 从未生效的修复）+ `/model effort` 预校验与精确键**

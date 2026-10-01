@@ -26,7 +26,7 @@
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `sessionScope` | `chat` | `chat`（整个聊天一个会话）/ `chat-thread`（按话题）/ `chat-sender`（按发送人） |
-| `agentPreset` | `standard` | 新会话默认模式（R27/R38）；会话内用 `/mode` 按 scope 覆盖。**真实语义 = 挂载**：宿主 `agent-presets` 名册把该 preset 的组合（工具/提示面）挂到 Agent 的 scope 上，`meta.agentPreset` 只是随头记录的标签；存续会话 resume 时按宿主投影/会话头的真实值挂载（读不到回退本配置/链路值） |
+| `agentPreset` | `standard` | 新会话默认模式（R27/R38，R41 迁移 dsh 0.2.0）；会话内用 `/mode` 按 scope 覆盖。**真实语义 = 挂载**：值必须是已声明的 preset id（插件 bundle patch 出厂声明 `standard`/`minimal`；部署层 profile patch 可按同 id 覆盖声明），宿主 `agent-preset-registry` 把该 preset 的组合（工具/提示面）挂到 Agent 的 scope 上，`meta.agentPreset` 只是随头记录的标签；存续会话 resume 时按宿主投影/会话头的真实值挂载（读不到回退本配置/链路值） |
 | `chatPresets` | `{}` | 运行时状态（`/mode` 写入）：scopeKey → 模式覆盖，勿手改 |
 | `requireMention` | `true` | 群聊是否需要 @ 机器人 |
 | `output` | `stream` | `stream` 流式逐块输出 / `card` 单卡片聚合 |

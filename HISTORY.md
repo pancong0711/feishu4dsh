@@ -36,6 +36,7 @@
 | 0.8.0 | 2026-09-11 | **思考过程可见**：回复卡片新增可折叠的 reasoning 面板（流式）+ 过程行止血（占位本地化、步数/耗时/工具计数）+ `showReasoning` 与 `/reasoning on\|off` 开关；私聊展开、群聊折叠 |
 | 0.8.1 | 2026-09-14 | **修复会话恢复失败死循环**：恢复失败第一因进运维日志；新建撞"id 已占用"自动推进代际自愈（有界）并告知用户 |
 | 0.9.0 | 2026-09-27 | **preset 真正生效 + effort 预校验**：agent preset 由宿主名册真实挂载（/mode 从此改变实际工具面；要求 dsh ≥ 0.1.5-rc.1）+ `/model effort` 按模型能力当场校验、确认文案显精确 provider/model 键 |
+| 0.10.0 | 2026-10-01 | **迁移 dsh 0.2.0 预设机制**：`dsh-agent-presets` → `agent-preset-registry` + 出厂声明 standard/minimal（0.2.0 不再内置预设）；disable 清单对齐 24 行（`workflow-ptc` / `tool-plugin-manager`）；配置载体迁 per-profile patch |
 
 ## 三、当前方向
 
