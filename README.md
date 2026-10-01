@@ -56,6 +56,7 @@ journalctl --user -u dsh-feishu4dsh.service -f
 | 回复 | `stream` 流式 / `card` 聚合；`showProcess` 按轮聚合显示工具调用与 Token 用量摘要；`showReasoning`（默认开）把思考过程放在可折叠面板里流式展示，轮末折叠保留（私聊默认展开、群聊默认折叠，`/reasoning on\|off` 按会话调整） |
 | 协作卡片 | 工具/出站文件审批，超时按拒绝（fail-closed） |
 | 会话隔离 | 按聊天/话题/发送人三种粒度，重启可恢复，`/new` 重开；`/session` 回溯/重命名/归档（与 dsh web 共用归档集合） |
+| **模式（preset）** | `standard` = 完整工具集；`minimal` = 仅持久 shell（无文件/子代理工具，也不注入运行时上下文）。`/mode` 查看/切换（切换即开新会话），`/status` 显示当前模式 |
 | **多工作区** | 会话 = scope×工作区；`/ws` 点选进入、`/ws new` 浏览新建、`/cd` 兜底切换，均持久化 |
 | 交互选择卡 | `/ws` `/model` `/session` 均有点选卡片（当前项标 ✅，`/model` 支持分页下拉）；点击以点击者身份过审批 ACL，菜单 15 分钟自动失效 |
 | 授权 | 应用可用范围 + 发送人/群白名单 + 审批人名单（只收窄） |
@@ -95,7 +96,7 @@ pnpm build        # tsc 产出 lib/
 
 ## 版本与兼容性
 
-针对 **dsh `0.1.1-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.1.1-rc.2` 上验证（本地与 publish 发布副本均使用该版本）。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。
+要求 **dsh `>= 0.2.0-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.2.0-rc.2` 上验证。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。兼容底线说明：0.2.0 起 Agent 预设由 `@deepseek-ai/dsh-agent-preset-registry`（注册表服务）+ 每预设一条 `@deepseek-ai/dsh-agent-preset` 声明行提供（dsh 不再内置预设），插件 bundle patch 出厂声明 `standard` / `minimal` 并把宿主模型面工具行让位给 preset 层；dsh `0.1.5-rc.1` 及以下使用已废弃的 `@deepseek-ai/dsh-agent-presets` 包与 `settings.yaml` 载体，**本版本不可用**（需配套 v0.9.x）。
 
 ## 路线图
 

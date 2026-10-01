@@ -93,6 +93,7 @@ dsh 的服务 API 在预览期会变化，因此宿主契约**收敛在 `src/hos
 - **`ctx.on('session/event')`**：会话日志事件（`turn/start`、`assistant/chunk`、`assistant/message`、`tool/call`、`turn/end`），桥层把它们渲染进聊天。
 - **`ctx.on('approval/request')` 瀑布**：权限提问。只回答**本通道拥有的** Agent（`sessionScopes` 查得到），其余一律 `next()` 交给下一个应答者——这保证多通道共存时不抢答。
 - **可选服务**（缺省则降级，不阻塞启动）：`tools`（注册 `send_file`）、`commands`（宿主斜杠命令）、`attachments`（图片附件化）、`settings`（持久化配置段与工作区选择）、`workspaceRegistry`（列举/注册工作区，供 `/ws` `/cd`）、`agentDefaultModel`（`/status` 展示）、`loader`（等待组合完成）。
+- **预设与模型能力服务（R38/R39/R41，可选）**：`agentPresets`（`mount(agentCtx, presetId)` 在 agent setup 里把预设组合挂到该会话 scope——preset 由 `agent-preset-registry` + 每预设一条 `@deepseek-ai/dsh-agent-preset` 声明提供，插件 bundle patch 出厂声明 `standard`/`minimal`，部署层可按 id 覆盖）、`sessionQuery`（`observeSession(id)` 读会话投影的真实 preset，resume 按真值挂载、读不到回退链路值）、`llm`（`resolveModelInfo(provider, model)` 读模型能力，`/model effort` 设置前预校验档位）。
 - **宿主配置只读契约（R30）**：`dsh-settings` 对下发的配置节**深度冻结**（`deepFreeze`，设计行为而非事故）——凡从 `config.*` 读入桥内工作状态的对象图（如 `chatSessions` 的会话注册表），水合时必须在边界处**重建**（逐条浅拷贝/克隆，见 `hydrateSessionRegistry`），绝不按引用采纳；可变性由插件自有结构承担。持久化键还须过形状校验（agentKey = `scope§workspace`，见 `isAgentKey`）。
 - **会话单写入方假设（长期目标 R31）**：桥层的事件渲染、每 agentKey 单句柄与审批路由均以「通道独占驱动所建会话」为前提；宿主契约未暴露会话归属/活动排他（`HostSession` 仅 id/events/requestHeader），无法检测或拒绝外部（如 dsh web）驱动同一会话——双写入方会串扰渲染乃至损坏会话日志。当前以文档约定规避，根治待上游能力或回合发起方过滤。
 
