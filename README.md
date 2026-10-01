@@ -15,15 +15,15 @@
 前置：Node.js `^22.19 || >=24`、已装 dsh、一个飞书自建应用（[docs/FEISHU-SETUP.md](docs/FEISHU-SETUP.md)）。
 
 ```sh
-# 本地目录挂载（开发推荐）或发布到 npm 后按包名安装
-dsh plugin --profile web add /path/to/feishu4dsh
+# 专用 profile（推荐）：首次会自动以 dsh-base 初始化该 profile，再挂载本插件
+dsh plugin --profile feishu4dsh add /path/to/feishu4dsh
 
 export FEISHU_APP_ID=cli_xxxxxxxx
 export FEISHU_APP_SECRET=xxxxxxxx
-dsh web            # 控制台出现 `feishu4dsh: connected as <机器人>` 即成功
+dsh --profile feishu4dsh    # 日志出现 `feishu4dsh: connected as <机器人>` 即成功
 ```
 
-默认 **WebSocket 长连接**，无需公网/回调 URL。在飞书私聊机器人或在群里 @它即可。
+本插件自带 Agent 预设声明（`standard` = 完整工具集 / `minimal` = 仅持久 shell）与宿主工具面让位 patch，**为专用 profile 设计**：请让它独占一个 profile 进程（`dsh web` 如需控制台可另起一个 profile，二者共享 `$DSH_HOME`）。默认 **WebSocket 长连接**，无需公网/回调 URL。在飞书私聊机器人或在群里 @它即可。
 
 ## 进程管理（systemd 推荐）
 

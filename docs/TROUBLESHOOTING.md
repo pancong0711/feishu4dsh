@@ -227,3 +227,16 @@ R11 起 `/cd` 与 `/ws add`、`/model` 共用审批 ACL：配置了 `approvers` 
 | ③ 宿主行让位 | 宿主模型面工具行（tool-bash/tool-fs/tool-subagent/tool-workflow/tool-goal/plan-mode 等）必须 `disabled: true` 让位给 preset 层 | 宿主行仍启用时工具面恒为宿主全量，preset 挂载与否都看不出差别 |
 
 **处置**：①③都在插件 bundle patch（`cordis.patch.yml`，R38 起；R41 迁 0.2.0 口径）内——确认部署副本的该文件已同步（对照 `@deepseek-ai/dsh-web-app/cordis.patch.yml` 的 disabled 清单，0.2.0 为 24 条）；②升级插件 ≥ v0.10.0（dsh 0.2.0 线）/ v0.9.0（dsh 0.1.5 线，二者不可混装）。dsh `0.2.0-rc.2` 起预设不再内置，缺声明即报 `Unknown agent preset`。
+
+## 6. `/model effort` 设置后请求 400：provider 拒绝 `reasoning_effort`
+
+**现象**：某模型设置推理强度后，下一轮 `本轮执行失败`，会话日志 `turn/end.reason.error.message`
+含 `native reasoning control reasoning_effort is not allowed`（或同类 400）。
+
+**原因**：模型目录声明"支持 effort"与**网关是否接受该参数**是两件事。已知
+`opencode-go`（OpenCode Zen 网关）会拒绝 `reasoning_effort` 参数——即使其目录条目
+声明支持。dsh 的能力校验只看目录声明，拦不住这类网关侧拒绝。
+
+**处置**：在该模型上执行 `/model effort default` 清除偏好（请求不再携带参数），即可
+恢复；需要更强推理请改用网关原生支持的模型/通道（如 `zai-coding-cn/glm-5.3-flash`
+或 `deepseek-official/*`，这些已实测生效）。
