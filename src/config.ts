@@ -14,6 +14,18 @@ import Schema from '@deepseek-ai/schemastery'
  * surface, is what ships now.
  */
 export const AGENT_PRESETS = ['standard', 'minimal'] as const
+
+/**
+ * R44: mark a config field as runtime-writable. The dsh 0.2.0 settings service
+ * only accepts writes under `volatile`-marked schema paths; our pinned
+ * schemastery 3.18.1 lacks the typed `.volatile()` helper (3.18.4 has it), so
+ * the marker goes through `.extra('volatile', true)` with a key cast — the same
+ * runtime shape (`schema.meta.volatile === true`), which is all
+ * `dsh-settings`' `isVolatilePath` reads.
+ */
+function runtimeWritable<S>(schema: S): S {
+  return (schema as { extra(key: string, value: boolean): S }).extra('volatile', true)
+}
 export type AgentPreset = (typeof AGENT_PRESETS)[number]
 
 /**
@@ -115,21 +127,21 @@ export const Config = Schema.object({
   workspaceRoots: Schema.array(String).default([]),
   // Hidden runtime state managed by `/cd`; kept `any` so the schema's
   // inferred type stays portable (no dependency on cosmokit's Dict).
-  chatWorkspaces: Schema.any().default({}).hidden(),
+  chatWorkspaces: runtimeWritable(Schema.any().default({}).hidden()),
   // Hidden runtime state managed by `/ws add` / `/ws remove`.
-  userWorkspaces: Schema.array(String).default([]).hidden(),
+  userWorkspaces: runtimeWritable(Schema.array(String).default([]).hidden()),
   sessionScope: Schema.union(['chat', 'chat-thread', 'chat-sender']).default('chat'),
   agentPreset: Schema.union([...AGENT_PRESETS]).default('standard'),
-  chatPresets: Schema.any().default({}).hidden(),
-  modelEfforts: Schema.any().default({}).hidden(),
-  modelCatalog: Schema.array(String).default([]),
-  chatSessions: Schema.any().default({}).hidden(),
-  chatActiveGen: Schema.any().default({}).hidden(),
+  chatPresets: runtimeWritable(Schema.any().default({}).hidden()),
+  modelEfforts: runtimeWritable(Schema.any().default({}).hidden()),
+  modelCatalog: runtimeWritable(Schema.array(String).default([])),
+  chatSessions: runtimeWritable(Schema.any().default({}).hidden()),
+  chatActiveGen: runtimeWritable(Schema.any().default({}).hidden()),
   requireMention: Schema.boolean().default(true),
   output: Schema.union(['stream', 'card']).default('stream'),
   showProcess: Schema.boolean().default(true),
   showReasoning: Schema.boolean().default(true),
-  chatReasoning: Schema.any().default({}).hidden(),
+  chatReasoning: runtimeWritable(Schema.any().default({}).hidden()),
   receiveFiles: Schema.boolean().default(true),
   maxReceiveFileBytes: Schema.number().default(20 * 1024 * 1024),
   maxMessageReceiveBytes: Schema.number().default(1024 * 1024 * 1024),

@@ -692,6 +692,36 @@ describe('bridge: commands', () => {
     expect(text).toContain('/mode standard')
   })
 
+  it('R44-b: /mode advances past a disk-collided generation and opens the fresh session', async () => {
+    const { host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    expect(first?.preset).toBe('minimal')
+    // The registry lags reality: the NEXT generation already exists on disk
+    // (created by a previous process) and records the OLD preset.
+    host.services.set('sessionQuery', {
+      observeSession: (id: string) =>
+        id === `${first?.id!.replace(/-r\d+$/, '')}-r1`   // not used; ids derive from the real path
+          ? Promise.resolve({ header: {}, projections: { values: { agentPreset: 'minimal' } } })
+          : Promise.reject(new Error('session not found')),
+    })
+    // Simpler and honest: collide on EXACTLY the next generation id, computed
+    // the same way the bridge derives it (feishu-<digest>-rN). The digest is
+    // stable, so reuse the created id's base.
+    const base = String(first?.id).replace(/-r\d+$/, '')
+    host.services.set('sessionQuery', {
+      observeSession: (id: string) =>
+        id === `${base}-r1` ? Promise.resolve({ header: {}, projections: { values: {} } }) : Promise.reject(new Error('not found')),
+    })
+    await textMessage(port, '/mode standard')
+    // The next message must NOT resume the collided r1 (locked minimal); it
+    // creates r2 with the switched preset.
+    await textMessage(port, 'hello again')
+    const second = host.created[1]
+    expect(second?.id).toBe(`${base}-r2`)
+    expect(second?.preset).toBe('standard')
+  })
+
   it('R42-b: /compact in minimal answers with the switch hint, not "unknown command"', async () => {
     const { port } = makeEnv({ agentPreset: 'minimal' })
     await textMessage(port, 'hello')

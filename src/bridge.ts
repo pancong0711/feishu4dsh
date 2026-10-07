@@ -1717,6 +1717,14 @@ function nextPresetOf(env: BridgeEnv, state: BridgeState, binding: ChatBinding):
 const SESSION_HEAL_MAX_RETRIES = 3
 
 /**
+ * R44-B: how many EXTRA generation steps the `/mode`/`/new` freshness check
+ * may spend when the advanced id already exists on disk (a stale hydrated
+ * registry). Mirrors the create-side R37 heal; the resume side needs its own
+ * because a collision there RESUMES the old session instead of erroring.
+ */
+const GENERATION_FRESHNESS_CHECKS = 5
+
+/**
  * R37-B: does this create() failure mean the session ID ITSELF is taken?
  * dsh reports two shapes for that: `session "..." already exists` (the
  * SessionStore still holds the id a half-failed resume registered) and the
@@ -3144,7 +3152,26 @@ async function resetSessionScope(env: BridgeEnv, state: BridgeState, binding: Ch
   }
   // R29: the next generation is one past the highest KNOWN generation (the
   // registry), never reusing ids a `/session` switch-back pointed at.
-  const nextGen = nextGenOf(state.chatSessions, agentKey, state.ledger.generationOf(agentKey))
+  // R44-B: the reset's whole point is that the NEXT message opens a FRESH
+  // session with the new preset — so the pointer must land on an id that does
+  // not exist on disk. A stale registry (a settings/persistence outage leaves
+  // the hydrated pointer behind reality, as the 10-07 /mode incident showed)
+  // can make the advanced id collide with an existing session; resuming it
+  // succeeds and the session keeps its LOCKED preset, silently defeating the
+  // switch. Verify freshness against the disk and keep advancing, bounded.
+  let nextGen = nextGenOf(state.chatSessions, agentKey, state.ledger.generationOf(agentKey))
+  const query = env.host.get('sessionQuery') as HostSessionQuery | undefined
+  if (query !== undefined && typeof query.observeSession === 'function') {
+    for (let attempt = 0; attempt < GENERATION_FRESHNESS_CHECKS; attempt += 1) {
+      try {
+        await query.observeSession(sessionIdOf(binding.scopeKey, binding.workspacePath, nextGen))
+        // The id exists — step past it and re-check.
+        nextGen += 1
+      } catch {
+        break // not found → fresh
+      }
+    }
+  }
   state.ledger.reset(agentKey, nextGen)
   state.chatActiveGen[agentKey] = nextGen
   persistSessions(env, state)

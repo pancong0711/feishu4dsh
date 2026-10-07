@@ -6,6 +6,31 @@
 import { createRequire } from 'node:module'
 import type { Context } from '@deepseek-ai/cordis'
 import { Config, resolveConfig, hasCredentials } from './config.js'
+
+/**
+ * R44: the durable-state write seam for dsh 0.2.0. A plugin's settings section
+ * IS its profile-patch entry config; writes go through `settings.update(ns,
+ * patch)` and only `volatile`-marked paths are accepted (the marker lives in
+ * `src/config.ts`). The old 0.1.5 `settings.register(ns, schema, { base })` is
+ * gone — calling it threw a TypeError only a cordis logger saw (invisible to
+ * journald), which silently disabled every persistence hook. Returns a
+ * bridge-facing scope or `undefined`, and notifies ONCE when unusable.
+ */
+export function buildSettingsScope(
+  settings: { update(ns: string, patch: object, expectedRevision?: string): Promise<unknown> } | undefined,
+  notify: (line: string) => void,
+  ns = 'feishu4dsh',
+): { update(patch: object): Promise<unknown> } | undefined {
+  if (settings === undefined || typeof settings.update !== 'function') {
+    notify(
+      'feishu4dsh: settings 服务不可用（宿主缺 settings.update API）— '
+      + '运行态持久化已禁用：/mode、/model 清单与推理强度、会话注册表的改动重启即丢。',
+    )
+    return undefined
+  }
+  return { update: patch => settings.update(ns, patch) }
+}
+
 import type { ResolvedConfig } from './config.js'
 import { resolveAuthorization, describeAuthorization } from './acl.js'
 import { createFeishuPort } from './adapter.js'
@@ -51,24 +76,23 @@ export function apply(ctx: Context, config: Config): void {
 
     let resolved = resolveConfig(config)
 
-    // Durable state flows through the settings section when one is composed;
+    // Durable state flows through the settings service when one is composed;
     // this channel keeps only the entry config otherwise. A workspace chosen
     // via /cd is written back here so it survives a restart.
-    let settingsScope: { get(): unknown; update(patch: object): Promise<unknown> } | undefined
+    //
+    // R44 (dsh 0.2.0): the old `settings.register(ns, schema, { base })` seam is
+    // GONE — in 0.2.0 a plugin's settings section IS its profile-patch entry
+    // config (validated against the entry's own `Config` schema by the settings
+    // service), and writes go through `settings.update(ns, patch)`, which only
+    // accepts `volatile`-marked config paths. Registration used to fail with a
+    // TypeError that only a cordis logger saw (invisible to journald), silently
+    // disabling EVERY persistence hook — /mode's switch, the session registry,
+    // the effort table all died with the restart. Reads now come from the entry
+    // config directly; the volatile fields are marked in `src/config.ts`.
     const settings = ctx.get('settings') as {
-      register(ns: string, schema: unknown, options?: { base?: unknown }): { get(): unknown; update(patch: object): Promise<unknown> }
+      update(ns: string, patch: object, expectedRevision?: string): Promise<unknown>
     } | undefined
-    if (settings !== undefined) {
-      try {
-        settingsScope = settings.register('feishu4dsh', Config, { base: config })
-        resolved = resolveConfig(settingsScope.get() as Config)
-      } catch (error) {
-        ctx.logger('feishu4dsh').warn(
-          'settings registration failed; continuing with entry config only: %s',
-          error instanceof Error ? error.message : error,
-        )
-      }
-    }
+    const settingsScope = buildSettingsScope(settings, internals.notify)
 
     if (!hasCredentials(resolved)) {
       internals.notify(

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.0 (2026-10-07)
+
+**R44：修复 dsh 0.2.0 上的持久化断链（根）与 `/mode` 切换失效（果）**
+
+- **问题**：升级 dsh 0.2.0 后，插件的全部运行态持久化**静默失效**——`/mode` 切换在内存里成功、却因指针落后于磁盘而撞回旧会话（会话预设首轮后锁定），用户看到「切换无效」；`/model` 清单增删、推理强度表、会话注册表的改动全部重启即丢，且日志里**没有任何报错**。
+- **根因**：0.2.0 移除了 `settings.register(ns, schema, { base })`（插件的 settings 节即 profile patch 的 entry config，校验走插件自身 Config schema）。插件启动时调用它抛 TypeError，仅 cordis logger 可见（journald 不可见）；随后 `settingsScope = undefined` 让 7 个持久化 hook 全部变为 undefined，bridge 的可选链调用静默跳过——连 catch 都进不去，零失败上报。
+- **修复**：
+  - **A（根）**：runtime.ts 迁到 0.2.0 API——写经 `settings.update('feishu4dsh', patch)`（deep-merge，等价旧语义）；读 = entry config（R30 深冻结水合边界不变）；`src/config.ts` 把 8 个运行时状态字段标 `volatile`（0.2.0 只接受 volatile 路径写入；经构建产物核验 `meta.volatile === true` 8/8）。
+  - **B（保险带）**：`/mode`//`/new` 的代次推进后核对目标 id 在磁盘上的新鲜度（`sessionQuery.observeSession` 成功=已存在 → 继续推进，有界 5 次）——持久化再出故障也能真正切出会话；与 R37 的 create 侧自愈分工互补。
+  - **C（可观测）**：settings 服务不可用时通过运维通知明确告警（「持久化已禁用：/mode、/model 清单与推理强度、会话注册表的改动重启即丢」），不再静默。
+- **测试**：292/292（新增 4：ns 包装 / 缺失告警 / volatile 元数据 / 撞车推进）。
+
 ## 0.10.2 (2026-10-07)
 
 **R43：`/model del` 持久化修复 + 子命令防呆**

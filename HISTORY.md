@@ -39,6 +39,7 @@
 | 0.10.0 | 2026-10-01 | **迁移 dsh 0.2.0 预设机制**：`dsh-agent-presets` → `agent-preset-registry` + 出厂声明 standard/minimal（0.2.0 不再内置预设）；disable 清单对齐 24 行（`workflow-ptc` / `tool-plugin-manager`）；配置载体迁 per-profile patch |
 | 0.10.1 | 2026-10-07 | **minimal 命令提示（R42）**：minimal 下 `/help` 列出 `/compact` 并提示 `/mode standard` 切换；直接调用 `/compact` 给出同样说明（保 minimal 省 token 的语义，不动 preset 组合） |
 | 0.10.2 | 2026-10-07 | **R43 `/model del` 持久化修复 + 防呆**：删除即时落盘（此前重启后条目回来）；`remove` 成为 `del` 别名；带空白的伪目标回用法、不再 pin/写清单 |
+| 0.11.0 | 2026-10-07 | **R44 持久化断链修复**：dsh 0.2.0 移除 `settings.register` 致 7 个持久化 hook 静默死亡（/mode 切换失效的根因）；迁 `settings.update` API + 运行时字段 volatile + 代次新鲜度核对 + 不可用告警 |
 
 ## 三、当前方向
 
