@@ -72,6 +72,10 @@ export interface Strings {
   helpChannelHeader: string
   /** Section header for commands delegated to the dsh host. */
   helpHostHeader: string
+  /** R42: host commands the current preset deliberately does not mount. */
+  helpUnavailableHeader: string
+  helpUnavailableCommand: (command: string, preset: string) => string
+  commandUnavailable: (command: string, preset: string) => string
   /** Inline source tag for a channel-owned command line. */
   helpChannelTag: string
   /** Inline source tag for a dsh host command line. */
@@ -287,6 +291,12 @@ const zhCN: Strings = {
   helpTitle: '可用命令',
   helpChannelHeader: 'feishu4dsh 频道命令',
   helpHostHeader: 'dsh 宿主命令',
+  helpUnavailableHeader: '当前模式未提供',
+  helpUnavailableCommand: (command, preset) =>
+    `${command} — ${preset} 模式未提供（用 /mode standard 切换后可用）`,
+  commandUnavailable: (command, preset) =>
+    `${command} 在 ${preset} 模式下不可用：该模式不做上下文压缩（以最省 token 为设计目标）。` +
+    '用 /mode standard 切换后可用（会开启新会话）。',
   helpChannelTag: '频道',
   helpHostTag: 'dsh',
   channelCommands: [
@@ -485,6 +495,12 @@ const enUS: Strings = {
   helpTitle: 'Commands',
   helpChannelHeader: 'feishu4dsh channel commands',
   helpHostHeader: 'dsh host commands',
+  helpUnavailableHeader: 'Not provided by the current mode',
+  helpUnavailableCommand: (command, preset) =>
+    `${command} — not provided by the ${preset} mode (switch with /mode standard)`,
+  commandUnavailable: (command, preset) =>
+    `${command} is unavailable in the ${preset} mode: that mode performs no context compaction ` +
+    '(it targets the cheapest possible turn). Switch with /mode standard (opens a new session).',
   helpChannelTag: 'channel',
   helpHostTag: 'dsh',
   channelCommands: [

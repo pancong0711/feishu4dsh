@@ -1563,6 +1563,22 @@ async function ensureAgent(env: BridgeEnv, state: BridgeState, binding: ChatBind
 const CHANNEL_DEFAULT_PRESET = 'standard'
 
 /**
+ * R42: host commands a preset deliberately does not mount, surfaced in `/help`
+ * and on direct invocation so a user learns the mode switch instead of reading
+ * a bare "unknown command". `minimal` omits the compaction stack on purpose —
+ * its whole point is the cheapest possible turn — so `/compact` exists only
+ * where a preset declares it (the shipped `standard`).
+ */
+const PRESET_UNAVAILABLE_HOST_COMMANDS: Readonly<Record<string, readonly string[]>> = {
+  minimal: ['compact'],
+}
+
+/** The commands the session's preset deliberately omits (empty when none). */
+function unavailableHostCommandsOf(env: BridgeEnv, state: BridgeState, binding: ChatBinding): readonly string[] {
+  return PRESET_UNAVAILABLE_HOST_COMMANDS[sessionPresetOf(env, state, binding)] ?? []
+}
+
+/**
  * R38: module-level flag that lets the resume-side `sessionQuery` report its
  * ONE-TIME degradation only. A host without the `sessionQuery` service (pre
  * 0.1.5-rc.1), or one whose observation keeps failing, would otherwise emit
@@ -3092,6 +3108,18 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
           return
         }
       }
+      // R42: a command the current preset deliberately omits gets the mode
+      // hint; only genuinely unknown input falls through to commandUnknown.
+      const typed = line.slice(1).split(/\s+/, 1)[0] ?? ''
+      if (typed !== '' && unavailableHostCommandsOf(env, state, binding).includes(typed)) {
+        await safeSend(
+          env,
+          chatId,
+          state.copy.commandUnavailable(`/${typed}`, sessionPresetOf(env, state, binding)),
+          replyTo,
+        )
+        return
+      }
       await safeSend(env, chatId, state.copy.commandUnknown(line), replyTo)
       return
     }
@@ -4097,6 +4125,20 @@ async function cmdHelp(env: BridgeEnv, state: BridgeState, binding: ChatBinding,
     lines.push(`**${state.copy.helpHostHeader}**`)
     for (const command of hostLines) {
       lines.push(`${command} [${state.copy.helpHostTag}]`)
+    }
+  }
+  // R42: commands this preset deliberately leaves unmounted — list them so the
+  // user can switch modes instead of guessing. A command the host DID register
+  // (any preset that mounts it) is filtered out: this section only ever
+  // advertises what the current mode cannot do.
+  const preset = sessionPresetOf(env, state, binding)
+  const unavailable = unavailableHostCommandsOf(env, state, binding)
+    .filter(command => !hostLines.some(line => line.startsWith(`/${command} —`)))
+  if (unavailable.length > 0) {
+    lines.push('')
+    lines.push(`**${state.copy.helpUnavailableHeader}**`)
+    for (const command of unavailable) {
+      lines.push(state.copy.helpUnavailableCommand(`/${command}`, preset))
     }
   }
   await safeSend(env, binding.chatId, lines.join('\n'), replyTo)

@@ -676,6 +676,32 @@ describe('bridge: commands', () => {
     expect(text).toContain('feishu4dsh 频道命令')
   })
 
+  it('R42-a: /help lists mode-gated host commands with a switch hint (minimal)', async () => {
+    const { host, port } = makeEnv({ agentPreset: 'minimal' })
+    // Seed an active agent so the session records its real preset.
+    await textMessage(port, 'hello')
+    host.services.set('commands', {
+      list: () => [{ name: 'plan', description: 'plan the work' }],
+      execute: async () => undefined,
+    })
+    await textMessage(port, '/help')
+    const help = port.sent.filter(m => String(m.input.markdown ?? '').includes('/new')).pop()
+    const text = String(help?.input.markdown)
+    expect(text).toContain('当前模式未提供')
+    expect(text).toContain('/compact')
+    expect(text).toContain('/mode standard')
+  })
+
+  it('R42-b: /compact in minimal answers with the switch hint, not "unknown command"', async () => {
+    const { port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    await textMessage(port, '/compact')
+    const text = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
+    expect(text).toContain('/compact 在 minimal 模式下不可用')
+    expect(text).toContain('/mode standard')
+    expect(text).not.toContain('未知命令')
+  })
+
   it('/new resets the session generation', async () => {
     const { host, port } = makeEnv()
     await textMessage(port, 'hello')

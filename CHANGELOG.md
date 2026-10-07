@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.1 (2026-10-01)
+
+**R42：minimal 模式下的 `/compact` 可用性提示**
+
+- **背景**：`/compact` 是宿主插件行（`dsh-command-compact` + `compaction-basic`），按 preset 挂载；`minimal` 刻意不含压缩栈（省 token 为该模式的设计目标），此前在 minimal 下输入 `/compact` 只会得到「未知命令」，用户无从得知"切模式即可用"。
+- **变更**（仅 UX，不改任何 preset 组合）：
+  - minimal 会话 `/help` 在宿主命令区后新增「**当前模式未提供**」区，列出 `/compact` 并提示 `/mode standard`（切换会开启新会话）；宿主实际已注册的同名命令会被过滤，避免重复；
+  - minimal 会话直接输入 `/compact` 时回复同样的说明（含设计理由），不再回「未知命令」；
+  - `standard` 行为不变（`/compact` 正常列出并可用）。
+- **测试**：285/285（新增 2 条：minimal 的 `/help` 提示、`/compact` 直接调用提示）。
+
 ## 0.10.0 (2026-10-01)
 
 **R41：迁移到 dsh 0.2.0-rc.2 的 Agent 预设机制（破坏性兼容断代）**
