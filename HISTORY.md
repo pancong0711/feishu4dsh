@@ -38,6 +38,7 @@
 | 0.9.0 | 2026-09-27 | **preset 真正生效 + effort 预校验**：agent preset 由宿主名册真实挂载（/mode 从此改变实际工具面；要求 dsh ≥ 0.1.5-rc.1）+ `/model effort` 按模型能力当场校验、确认文案显精确 provider/model 键 |
 | 0.10.0 | 2026-10-01 | **迁移 dsh 0.2.0 预设机制**：`dsh-agent-presets` → `agent-preset-registry` + 出厂声明 standard/minimal（0.2.0 不再内置预设）；disable 清单对齐 24 行（`workflow-ptc` / `tool-plugin-manager`）；配置载体迁 per-profile patch |
 | 0.10.1 | 2026-10-07 | **minimal 命令提示（R42）**：minimal 下 `/help` 列出 `/compact` 并提示 `/mode standard` 切换；直接调用 `/compact` 给出同样说明（保 minimal 省 token 的语义，不动 preset 组合） |
+| 0.10.2 | 2026-10-07 | **R43 `/model del` 持久化修复 + 防呆**：删除即时落盘（此前重启后条目回来）；`remove` 成为 `del` 别名；带空白的伪目标回用法、不再 pin/写清单 |
 
 ## 三、当前方向
 

@@ -54,6 +54,12 @@ describe('model-selection: parseModelTarget', () => {
     expect(parseModelTarget('openrouter/deepseek/r1')).toEqual({ provider: 'openrouter', model: 'deepseek/r1' })
   })
 
+  it('refuses a provider containing whitespace (R43)', () => {
+    // `/model remove p/m` must not become provider "remove p".
+    expect(parseModelTarget('remove p9/m9')).toBeUndefined()
+    expect(parseModelTarget('rm p9/m9')).toBeUndefined()
+  })
+
   it('refuses a missing slash or empty halves', () => {
     expect(parseModelTarget('abc')).toBeUndefined()
     expect(parseModelTarget('')).toBeUndefined()

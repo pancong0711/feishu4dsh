@@ -239,5 +239,9 @@ export function parseModelTarget(raw: string): HostModelSelection | undefined {
   const provider = text.slice(0, slash).trim()
   const model = text.slice(slash + 1).trim()
   if (provider === '' || model === '') return undefined
+  // R43: a provider never contains whitespace — rejecting it here keeps
+  // `/model remove p/m` (and every other slack-typed subcommand with a slash)
+  // from pinning a bogus `provider="remove p"` and auto-learning it.
+  if (/\s/.test(provider)) return undefined
   return { provider, model }
 }

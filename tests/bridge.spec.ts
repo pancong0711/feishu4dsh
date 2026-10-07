@@ -3654,16 +3654,42 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     await textMessage(port, '/model add p9/m9')
     expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已在点选清单中'))).toBe(true)
     await textMessage(port, '/model add nonsense')
-    console.log('R33-a DEBUG:', JSON.stringify(port.sent.map(m => String(m.input.markdown ?? '')).slice(-3)))
     expect(port.sent.some(m => String(m.input.markdown ?? '').includes('用法：/model add'))).toBe(true)
 
-    // del: persisted; missing answers politely; the last entry is protected.
+    // del: persisted (R43 断言收紧——此前只断言回复文案); missing answers
+    // politely; the last entry is protected.
     await textMessage(port, '/model del p9/m9')
     expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已将 p9/m9 移出点选清单'))).toBe(true)
+    expect(persisted.at(-1)).toEqual(['p1/m1'])
     await textMessage(port, '/model del p9/m9')
     expect(port.sent.some(m => String(m.input.markdown ?? '').includes('不在点选清单中'))).toBe(true)
     await textMessage(port, '/model del p1/m1')
     expect(port.sent.some(m => String(m.input.markdown ?? '').includes('至少保留 1 条'))).toBe(true)
+  })
+
+  it('R43-a: /model remove is a del alias and persists like del', async () => {
+    const persisted: string[][] = []
+    const { port } = makeEnv({ modelCatalog: ['p1/m1', 'p9/m9'] }, {
+      onModelCatalogChange: async entries => { persisted.push([...entries]) },
+    })
+    await textMessage(port, '/model remove p9/m9')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已将 p9/m9 移出点选清单'))).toBe(true)
+    expect(persisted.at(-1)).toEqual(['p1/m1'])
+  })
+
+  it('R43-b: a slack-typed subcommand with a slash never pins or learns a bogus model', async () => {
+    const persisted: string[][] = []
+    const { port } = makeEnv({ modelCatalog: ['p1/m1'] }, {
+      onModelCatalogChange: async entries => { persisted.push([...entries]) },
+    })
+    await textMessage(port, '/model rm p9/m9')
+    const text = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
+    // The guard rejects the whitespace-bearing provider before any switch, so
+    // the reply is the generic `/model` usage — the point is that no pin, no
+    // learn and no persist happened.
+    expect(text).toContain('用法：/model')
+    expect(text).not.toContain('已切换')
+    expect(persisted).toEqual([])
   })
 
   it('R33-b: an empty catalog shows a guidance hint on /model', async () => {

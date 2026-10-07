@@ -42,7 +42,7 @@
 > **模式与推理强度**（R27/R28，R38/R42 修订）：`/mode` 查看/设置会话模式（standard/minimal，设置即开启新会话——`resume()` 不能换预设，且挂载的是会话真实 preset：standard=完整工具集，minimal=仅持久 shell 且无 runtime context/AGENTS 注入）；**minimal 亦不挂上下文压缩栈（省 token 的设计目标），故 `/compact` 仅 standard 可用**——minimal 下 `/help` 会把 `/compact` 列在「当前模式未提供」区并提示 `/mode standard`，直接输入 `/compact` 同样得到该提示（R42）；`/model effort` 按模型设置推理强度（`default/low/high/max`，`default` = 请求不携带 `reasoning_effort`；调整即全局记住该模型的偏好）。设置前**按模型能力预校验（R39）**：不支持的档位当场报错并列出支持档位；偏好按 `provider/model` 精确记住。两者 ACL 与 `/model` 一致。
 > **会话管理**（R29）：`/session` 列表（自动标题 = 日期+首条消息首行≤12字）、`/session <n>` 切回旧会话（自动停止进行中任务）、`/session rename`、`/session archive <n>` / `archive old [天数]`（归档与 dsh web 共用同一集合，当前版本归档单向）。切换/重命名/归档的 ACL 与 `/cd` 一致。
 >
-> **交互选择卡**（R32）：`/ws` 默认出**工作区选择卡**（当前项标 ✅，点击即切换，文本列表保留为 `/ws list`）；`/ws new` 打开**目录浏览卡**——在 `workspaceRoots` 配置的目录内逐级进入/翻页/返回上级，「✅ 就用这个目录」= 注册并切换；`/ws new <名称>` 在当前浏览位置新建文件夹并进入；`/model` 在状态文本后追加**模型选择卡**（`select_static` 下拉 + 分页，每页 15 条，当前模型标 ✅），候选清单来自 `modelCatalog` 配置；`/session` 文本列表后附**会话选择卡**（同一套稳定编号）。所有菜单点击都以**点击者身份**重查对应命令的审批 ACL，转发到别的会话的卡一律拒绝；菜单卡 15 分钟自动失效；文本命令全部保留兜底（`/cd` `/ws add` `/ws list` `/model <p/m>`）。
+> **交互选择卡**（R32）：`/ws` 默认出**工作区选择卡**（当前项标 ✅，点击即切换，文本列表保留为 `/ws list`）；`/ws new` 打开**目录浏览卡**——在 `workspaceRoots` 配置的目录内逐级进入/翻页/返回上级，「✅ 就用这个目录」= 注册并切换；`/ws new <名称>` 在当前浏览位置新建文件夹并进入；`/model` 在状态文本后追加**模型选择卡**（`select_static` 下拉 + 分页，每页 15 条，当前模型标 ✅），候选清单来自 `modelCatalog` 配置；`/session` 文本列表后附**会话选择卡**（同一套稳定编号）。所有菜单点击都以**点击者身份**重查对应命令的审批 ACL，转发到别的会话的卡一律拒绝；菜单卡 15 分钟自动失效；文本命令全部保留兜底（`/cd` `/ws add` `/ws list` `/model <p/m>`）。**清单增删（R33/R43）**：`/model add <p/m>` 加入、`/model del <p/m>`（别名 `/model remove`）移出，删除**即时持久化**；带空白的伪目标（如 `/model rm p/m`）会被拒绝并回用法，不会 pin 到不存在的 provider、也不会写进清单。
 
 ## 工作区
 

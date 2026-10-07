@@ -60,7 +60,7 @@ journalctl --user -u dsh-feishu4dsh.service -f
 | **多工作区** | 会话 = scope×工作区；`/ws` 点选进入、`/ws new` 浏览新建、`/cd` 兜底切换，均持久化 |
 | 交互选择卡 | `/ws` `/model` `/session` 均有点选卡片（当前项标 ✅，`/model` 支持分页下拉）；点击以点击者身份过审批 ACL，菜单 15 分钟自动失效 |
 | 授权 | 应用可用范围 + 发送人/群白名单 + 审批人名单（只收窄） |
-| 命令 | `/help` `/new` `/mode` `/reasoning` `/session` `/stop` `/status` `/ws` `/cd` `/model`（含 effort 与点选卡片） |
+| 命令 | `/help` `/new` `/mode` `/reasoning` `/session` `/stop` `/status` `/ws` `/cd` `/model`（含 effort、清单增删与点选卡片） |
 | 文件 | 入站进 `.feishu4dsh/inbox/`；`send_file` 回传，群聊逐次审批 |
 | i18n | `locale: auto` 跟随读者语言，默认中文 |
 

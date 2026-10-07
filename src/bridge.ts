@@ -3696,19 +3696,21 @@ async function cmdModel(
     return
   }
 
-  // R33: manage the picker catalog — add / del entries (approver-gated).
-  if (rest.startsWith('add ') || rest.startsWith('del ')) {
+  // R33/R43: manage the picker catalog — add / del (alias: remove), approver-gated.
+  const catalogOp = /^(add|del|remove)\s+(.+)$/.exec(rest)
+  if (catalogOp !== null) {
     if (!canManageWorkspaces(env, senderId)) {
       await safeSend(env, chatId, copy.modelNoPermission, replyTo)
       return
     }
-    const entry = rest.slice(4).trim()
+    const op = catalogOp[1] ?? ''
+    const entry = (catalogOp[2] ?? '').trim()
     const target = parseModelTarget(entry)
     if (target === undefined) {
       await safeSend(env, chatId, copy.modelAddDelUsage, replyTo)
       return
     }
-    if (rest.startsWith('add ')) {
+    if (op === 'add') {
       const outcome = addModelCatalogEntry(env, state, entry)
       await safeSend(env, chatId, outcome === 'full'
         ? copy.modelCatalogFull(MODEL_CATALOG_CAP)
@@ -3718,9 +3720,17 @@ async function cmdModel(
       return
     }
     const outcome = removeModelCatalogEntry(state, entry)
-    if (outcome === 'missing') await safeSend(env, chatId, copy.modelDelMissing(entry), replyTo)
-    else if (outcome === 'last') await safeSend(env, chatId, copy.modelRemoveLast, replyTo)
-    else await safeSend(env, chatId, copy.modelDeleted(entry), replyTo)
+    if (outcome === 'ok') {
+      // R43: the deletion must survive a restart exactly like an add does —
+      // before this fix the in-memory list shrank while the stored catalog
+      // kept the entry (only an unrelated auto-learn write could persist it).
+      persistModelCatalog(env, state)
+      await safeSend(env, chatId, copy.modelDeleted(entry), replyTo)
+    } else if (outcome === 'missing') {
+      await safeSend(env, chatId, copy.modelDelMissing(entry), replyTo)
+    } else {
+      await safeSend(env, chatId, copy.modelRemoveLast, replyTo)
+    }
     return
   }
 
