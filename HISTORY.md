@@ -37,7 +37,7 @@
 | 0.8.1 | 2026-09-14 | **修复会话恢复失败死循环**：恢复失败第一因进运维日志；新建撞"id 已占用"自动推进代际自愈（有界）并告知用户 |
 | 0.9.0 | 2026-09-27 | **preset 真正生效 + effort 预校验**：agent preset 由宿主名册真实挂载（/mode 从此改变实际工具面；要求 dsh ≥ 0.1.5-rc.1）+ `/model effort` 按模型能力当场校验、确认文案显精确 provider/model 键 |
 | 0.10.0 | 2026-10-01 | **迁移 dsh 0.2.0 预设机制**：`dsh-agent-presets` → `agent-preset-registry` + 出厂声明 standard/minimal（0.2.0 不再内置预设）；disable 清单对齐 24 行（`workflow-ptc` / `tool-plugin-manager`）；配置载体迁 per-profile patch |
-| 0.10.1 | 2026-10-01 | **minimal 命令提示（R42）**：minimal 下 `/help` 列出 `/compact` 并提示 `/mode standard` 切换；直接调用 `/compact` 给出同样说明（保 minimal 省 token 的语义，不动 preset 组合） |
+| 0.10.1 | 2026-10-07 | **minimal 命令提示（R42）**：minimal 下 `/help` 列出 `/compact` 并提示 `/mode standard` 切换；直接调用 `/compact` 给出同样说明（保 minimal 省 token 的语义，不动 preset 组合） |
 
 ## 三、当前方向
 
