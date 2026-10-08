@@ -7,8 +7,9 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { mkdir, realpath, stat } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { AGENT_PRESETS, REASONING_CHOICES, type ReasoningChoice, type ResolvedConfig } from './config.js'
 import type { Authorization } from './acl.js'
@@ -21,7 +22,7 @@ import {
   CARD_STREAM_MAX_CHARS, REASONING_PANEL_MAX_CHARS,
   type CardActionPayload, type MenuActionPayload,
 } from './cards.js'
-import type { HostAgentHandle, HostAgentOptions, HostAgentPresets, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostLlm, HostModelSelection, HostSession, HostSessionEvent, HostSessionObservation, HostSessionQuery, HostTools, HostWorkspace, HostWorkspaceRegistry, TokenUsageData } from './host.js'
+import type { HostAgentHandle, HostAgentOptions, HostAgentPresets, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostLlm, HostModelSelection, HostSession, HostSessionEvent, HostSessionObservation, HostSessionQuery, HostTools, HostWorkspace, HostWorkspaceRegistry, AssistantMessageData, TokenUsageData } from './host.js'
 import { assistantText, isAssistantChunkEvent, isAssistantMessageEvent, isStepStartEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
 import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedSelection, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
 import { readOutboundFile, sendFileTool, storeInboundFile, type OutboundFile, type SendFilePorts } from './files.js'
@@ -422,6 +423,24 @@ export interface BridgeState {
   readonly pendingAgents: Map<string, Promise<HostAgentHandle>>
   /** Bindings whose current turn already streamed assistant deltas. */
   readonly streamedTurns: Set<ChatBinding>
+  /**
+   * R46: scope key -> in-flight channel compaction. Armed before the
+   * summarization followup is queued; resolved by the render path at that
+   * turn's `turn/end`. One entry per scope — a second /compact is refused.
+   */
+  readonly pendingCompactions: Map<string, PendingCompaction>
+  /**
+   * R46: scope key -> text messages that arrived while a compaction ran.
+   * Forwarded into the fresh session after the opener, in arrival order.
+   */
+  readonly compactionHolds: Map<string, { readonly text: string; readonly messageId: string }[]>
+  /**
+   * R45 (P3): session ids whose queue drop was initiated BY THE CHANNEL
+   * (`/stop` / `/session` switch / preset reset) and must NOT trigger the
+   * user receipt — those actions already send their own confirmation. One
+   * entry suppresses exactly ONE canceled `agent/inbox/spliced` event.
+   */
+  readonly quietQueueDrops: Set<string>
   /** userMessage.id -> Feishu anchor of the scope that produced it (R22). */
   readonly replyTargets: Map<string, ReplyTarget>
   /** `/model` picker catalog, runtime-mutable (R33): seeded from config, learned on switch. */
@@ -466,6 +485,9 @@ function createBridgeState(): BridgeState {
     selections: new Map(),
     pendingAgents: new Map(),
     streamedTurns: new Set(),
+    pendingCompactions: new Map(),
+    compactionHolds: new Map(),
+    quietQueueDrops: new Set(),
     replyTargets: new Map(),
     modelCatalog: [],
     cardMenus: new MenuRegistry(),
@@ -1116,6 +1138,26 @@ async function handleInboundMessage(env: BridgeEnv, state: BridgeState, message:
     return
   }
 
+  // R46 §2.5: while a channel compaction runs, text messages are HELD and
+  // forwarded into the fresh session after the opener (they must not queue
+  // into the doomed session). Attachments are bounced with a resend notice —
+  // v1 holds text only.
+  const pendingForScope = state.pendingCompactions.get(scopeKey)
+  if (pendingForScope !== undefined) {
+    const hasMedia = (message.resources ?? []).length > 0
+    if (hasMedia) {
+      await safeSend(env, message.chatId, state.copy.compactAttachmentHolding, message.messageId)
+      return
+    }
+    const text = message.content.trim()
+    if (text === '') return
+    const holds = state.compactionHolds.get(scopeKey) ?? []
+    if (holds.length === 0) await safeSend(env, message.chatId, state.copy.compactHolding, message.messageId)
+    holds.push({ text, messageId: message.messageId })
+    state.compactionHolds.set(scopeKey, holds)
+    return
+  }
+
   const blocks: HostContentBlock[] = []
   const notes: string[] = []
   await collectMedia(env, state, message, binding.workspacePath, blocks, notes)
@@ -1570,9 +1612,280 @@ const CHANNEL_DEFAULT_PRESET = 'standard'
  * where a preset declares it (the shipped `standard`).
  */
 const PRESET_UNAVAILABLE_HOST_COMMANDS: Readonly<Record<string, readonly string[]>> = {
-  minimal: ['compact'],
+  // R46: `compact` left this list — where the host stack is absent the
+  // CHANNEL provides /compact (summarize→archive→fresh session), so it is
+  // discoverable in the channel section of /help instead of the unavailable
+  // section (the R42 wording lives on for any future host-gated command).
+  minimal: [],
 }
 
+
+
+/**
+ * R45 (P4): guidance for a context-length failure. The channel's own commands
+ * can trim the session: `/compact` (host, standard presets) or `/new` (channel,
+ * always available) — the exact line is shared via the strings table so it can
+ * adapt per locale.
+ */
+function contextReductionHint(env: BridgeEnv, _state: BridgeState, copy: Strings): string | undefined {
+  return copy.contextLimitHint
+}
+
+/** The `agent/inbox/spliced` payload: one host-side queue mutation. */
+interface InboxSpliceData {
+  readonly target: unknown
+  readonly start: number
+  readonly removedCount?: number
+  readonly inserted: readonly unknown[]
+  readonly outcome?: 'canceled'
+}
+
+/**
+ * R45 (P3): mark the CURRENT session of this binding so the next canceled
+ * queue-drop event for it stays silent — the drop is channel-initiated
+ * (`/stop` / `/session` switch / preset reset) and each of those already
+ * replies with its own confirmation. Consumed once by the event handler.
+ */
+function quietNextQueueDrop(state: BridgeState, binding: ChatBinding): void {
+  const sessionId = state.ledger.get(currentAgentKey(binding))?.sessionId
+  if (sessionId === undefined) return
+  state.quietQueueDrops.add(sessionId)
+}
+
+/**
+ * One in-flight channel compaction (R46). `turn` arms at the summarization
+ * turn's `turn/start` (it is not known when /compact is parsed — the followup
+ * may queue behind other work); `text` accumulates from the turn's deltas
+ * (committed messages are the fallback for non-streaming routes, deduped by
+ * `sawChunks`).
+ */
+interface PendingCompaction {
+  turn: number
+  text: string
+  sawChunks: boolean
+  resolve: (outcome: { ok: boolean; text: string; detail: string }) => void
+}
+
+/** Bounded wait for the summarization turn (R46 §2.7). */
+const COMPACT_SUMMARY_TIMEOUT_MS = 180_000
+/** R46 §2.4: verbatim-tail character budget spent newest-turn-first. */
+const COMPACT_TAIL_CHAR_BUDGET = 6000
+/** R46 §2.3: archive directory, relative to the binding workspace. */
+const COMPACT_DIRNAME = '.feishu4dsh/compact'
+
+/**
+ * Delegate one slash line to the host command runtime (R46 refactor of the
+ * `runCommand` default arm). Resolves true when the runtime recognized AND
+ * executed the line (its text, if any, is already sent); false leaves the
+ * decision to the caller.
+ */
+async function tryRunHostCommand(env: BridgeEnv, state: BridgeState, binding: ChatBinding, line: string, replyTo?: string): Promise<boolean> {
+  const entry = state.ledger.get(currentAgentKey(binding))
+  const commands = env.host.get('commands') as HostCommands | undefined
+  if (entry === undefined || commands === undefined) return false
+  const controller = new AbortController()
+  const execution = await commands.execute(entry.handle.agent, line, controller.signal)
+  if (execution === undefined) return false
+  const text = execution.result.kind === 'error'
+    ? execution.result.text
+    : execution.result.text ?? ''
+  if (text !== '') await safeSend(env, binding.chatId, text, replyTo)
+  return true
+}
+
+/**
+ * The `/compact` body (R46): summarize -> archive to a workspace file ->
+ * fresh session -> hand over (summary + optional verbatim tail + question).
+ * Ordering is the safety contract: NOTHING destructive happens before the
+ * summary text is captured and written to disk, so any failure leaves the
+ * session exactly as it was and a retry is always safe.
+ */
+async function cmdCompact(env: BridgeEnv, state: BridgeState, binding: ChatBinding, args: string, senderId: string, replyTo?: string): Promise<void> {
+  const copy = state.copy
+  if (!canManageWorkspaces(env, senderId)) {
+    await safeSend(env, binding.chatId, copy.sessionNoPermission, replyTo)
+    return
+  }
+  const trimmed = args.trim()
+  let keepTurns = 0
+  let question = trimmed
+  const leading = /^(\d+)(?:\s+([\s\S]*))?$/.exec(trimmed)
+  if (leading !== null) {
+    keepTurns = Number(leading[1])
+    question = (leading[2] ?? '').trim()
+  }
+  if (state.pendingCompactions.has(binding.scopeKey) || binding.turnHasOutput) {
+    await safeSend(env, binding.chatId, copy.compactBusy, replyTo)
+    return
+  }
+  const entry = state.ledger.get(currentAgentKey(binding))
+  if (entry === undefined) {
+    await safeSend(env, binding.chatId, copy.compactNoSession, replyTo)
+    return
+  }
+  // The verbatim tail must be read BEFORE the summarization turn appends.
+  const tails = extractRecentTurnTexts(entry.handle.agent.session, keepTurns, copy)
+
+  let resolvePending!: (outcome: { ok: boolean; text: string; detail: string }) => void
+  const settled = new Promise<{ ok: boolean; text: string; detail: string }>(resolve => { resolvePending = resolve })
+  state.pendingCompactions.set(binding.scopeKey, { turn: -1, text: '', sawChunks: false, resolve: resolvePending })
+  try {
+    safeOpenStream(env, state, binding)
+    entry.handle.agent.followup({
+      id: randomUUID(),
+      role: 'user',
+      content: [{ type: 'text', text: copy.compactInstruction }],
+      source: { kind: 'user' },
+    })
+    const outcome = await Promise.race([
+      settled,
+      new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), COMPACT_SUMMARY_TIMEOUT_MS)),
+    ])
+    if (outcome === undefined) {
+      await safeSend(env, binding.chatId, copy.compactFailed(copy.compactTimedOut), replyTo)
+      return
+    }
+    if (!outcome.ok) {
+      await safeSend(env, binding.chatId, copy.compactFailed(outcome.detail === '' ? copy.compactEmptySummary : outcome.detail), replyTo)
+      return
+    }
+    const summary = outcome.text.trim()
+    if (summary === '') {
+      await safeSend(env, binding.chatId, copy.compactFailed(copy.compactEmptySummary), replyTo)
+      return
+    }
+    const file = writeCompactArchive(binding.workspacePath, state, binding, summary)
+    const held = state.compactionHolds.get(binding.scopeKey) ?? []
+    // Only now may the destructive step run (R46 §2.5 red line).
+    await resetSessionScope(env, state, binding, 'compact')
+    state.compactionHolds.delete(binding.scopeKey)
+    await safeSend(env, binding.chatId, copy.compactDone(file, held.length === 0 ? '' : String(held.length)), replyTo)
+    // Hand over: summary + optional verbatim tail + optional carried question.
+    const opener = buildCompactOpener(copy, summary, tails, question)
+    const openerId = randomUUID()
+    if (replyTo !== undefined) state.replyTargets.set(openerId, { scopeKey: binding.scopeKey, messageId: replyTo })
+    const fresh = await ensureAgent(env, state, binding, opener)
+    safeOpenStream(env, state, binding)
+    fresh.agent.followup({ id: openerId, role: 'user', content: [{ type: 'text', text: opener }], source: { kind: 'user' } })
+    for (const hold of held) {
+      const holdId = randomUUID()
+      state.replyTargets.set(holdId, { scopeKey: binding.scopeKey, messageId: hold.messageId })
+      fresh.agent.followup({ id: holdId, role: 'user', content: [{ type: 'text', text: hold.text }], source: { kind: 'user' } })
+    }
+  } finally {
+    state.pendingCompactions.delete(binding.scopeKey)
+  }
+}
+
+/** Persist the summary under `<workspace>/.feishu4dsh/compact/<stamp>.md`. */
+function writeCompactArchive(workspacePath: string, state: BridgeState, binding: ChatBinding, summary: string): string {
+  const dir = join(workspacePath, COMPACT_DIRNAME)
+  mkdirSync(dir, { recursive: true })
+  const now = new Date()
+  const stamp = [
+    String(now.getFullYear()).padStart(4, '0'),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+  ].join('') + '-' + [
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('')
+  const sessionId = currentSessionId(state, binding) ?? 'unknown-session'
+  // The LIVE preset of the session being archived (not the next-session one).
+  const preset = state.sessionPresets.get(sessionId) ?? 'unknown'
+  const file = join(dir, `${stamp}.md`)
+  const header = [
+    '# feishu4dsh 会话压缩摘要',
+    '',
+    `- 时间: ${now.toISOString()}`,
+    `- 源会话: ${sessionId}`,
+    `- 模式: ${preset}`,
+    '',
+  ].join('\n')
+  writeFileSync(file, header + summary + '\n', 'utf8')
+  return file
+}
+
+/**
+ * Rebuild the last `keep` text-bearing turns from the session log (R46 §2.4):
+ * human inputs (source.kind=user) and assistant texts, tool-only turns skipped.
+ * Returns oldest-first; empty when the host exposes no log.
+ */
+function extractRecentTurnTexts(session: HostSession, keep: number, copy: Strings): string[] {
+  const events = session.events
+  if (events === undefined || keep <= 0) return []
+  const turns: string[] = []
+  let current: { user: string[]; assistant: string[] } | undefined
+  const flush = (): void => {
+    if (current === undefined) return
+    const lines = [
+      ...current.user.map(text => `【${copy.compactTailUser}】${text}`),
+      ...current.assistant.map(text => `【${copy.compactTailAssistant}】${text}`),
+    ]
+    if (lines.length > 0) turns.push(lines.join('\n\n'))
+    current = undefined
+  }
+  for (const event of events) {
+    if (event.type === 'turn/start') { flush(); current = { user: [], assistant: [] }; continue }
+    if (event.type === 'turn/end') { flush(); continue }
+    if (current === undefined) continue
+    if (event.type === 'user/message') {
+      const data = event.data as { content?: readonly { readonly type?: string; readonly text?: unknown }[]; source?: { readonly kind?: string } }
+      if (data.source?.kind !== 'user') continue
+      const text = (data.content ?? [])
+        .filter(block => block.type === 'text' && typeof block.text === 'string')
+        .map(block => String(block.text))
+        .join('\n')
+        .trim()
+      if (text !== '') current.user.push(text)
+    } else if (event.type === 'assistant/message') {
+      const text = assistantText(event.data as AssistantMessageData).trim()
+      if (text !== '') current.assistant.push(text)
+    }
+  }
+  flush()
+  return turns.slice(-keep)
+}
+
+/** Assemble the fresh session's first message (R46 §2.4 budget). */
+function buildCompactOpener(copy: Strings, summary: string, tails: string[], question: string): string {
+  const parts: string[] = [copy.compactOpenerHeader, copy.compactOpenerSummaryHeader, summary]
+  if (tails.length > 0) {
+    const body: string[] = []
+    let budget = COMPACT_TAIL_CHAR_BUDGET
+    // Spend the budget NEWEST first so truncation (if any) bites the oldest
+    // material — the summary already covers old ground in condensed form.
+    for (let index = tails.length - 1; index >= 0; index -= 1) {
+      let piece = tails[index] ?? ''
+      if (budget <= 0) {
+        // One truncation note total; older turns collapse into it.
+        body.unshift(copy.compactTailTruncated)
+        break
+      }
+      if (piece.length > budget) piece = piece.slice(0, budget) + copy.compactTailTruncated
+      budget -= piece.length
+      body.unshift(piece)
+    }
+    parts.push(copy.compactOpenerTailHeader(String(tails.length)), ...body)
+  }
+  if (question !== '') parts.push(copy.compactOpenerQuestionHeader, question)
+  return parts.join('\n\n')
+}
+
+/**
+ * The user receipt for a HOST-initiated queue drop (R45 P3): the host removed
+ * queued inputs the channel had accepted, so silence would read as "the bot
+ * ignored me". Fire-and-forget — a receipt is a courtesy line, never a render
+ * pipeline input, so it must not queue into the binding's serialized path.
+ */
+function renderQueueDropReceipt(env: BridgeEnv, state: BridgeState, binding: ChatBinding, data: InboxSpliceData): void {
+  const count = data.removedCount ?? 0
+  if (count <= 0) return
+  const sessionId = state.ledger.get(currentAgentKey(binding))?.sessionId
+  if (sessionId !== undefined && state.quietQueueDrops.delete(sessionId)) return
+  void safeSend(env, binding.chatId, state.copy.queuedInputsDropped(String(count)))
+}
 /** The commands the session's preset deliberately omits (empty when none). */
 function unavailableHostCommandsOf(env: BridgeEnv, state: BridgeState, binding: ChatBinding): readonly string[] {
   return PRESET_UNAVAILABLE_HOST_COMMANDS[sessionPresetOf(env, state, binding)] ?? []
@@ -2756,6 +3069,19 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
   const currentSessionId = state.ledger.get(currentAgentKey(binding))?.sessionId
   if (session.id !== currentSessionId) return
 
+  // R45 (P3): the host removed queued inputs from this session's inbox. A
+  // channel-initiated /stop / /session switch / preset reset cancels the
+  // agent and ALREADY replies — those pre-registered in `quietQueueDrops` and
+  // consume the suppression here; any OTHER canceled drop (the host aborting
+  // a turn with inputs still queued, e.g. the 2026-10-07 audit case) would
+  // otherwise be invisible: the user typed, the host dropped, no receipt.
+  // This event renders nothing else, so it returns before the turn branches.
+  if (event.type === 'agent/inbox/spliced') {
+    const data = event.data as InboxSpliceData
+    if (data.outcome === 'canceled') renderQueueDropReceipt(env, state, binding, data)
+    return
+  }
+
   if (isTurnStartEvent(event)) {
     // R21 §3.3 turn/start hygiene: a stream still attached here that already
     // CARRIES content is residue of an aborted previous round (hung append in
@@ -2771,6 +3097,10 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
       void stale.finish().catch(() => undefined)
       env.report(`feishu4dsh: stale stream reclaimed at turn/start of scope ${scopeKey}`)
     }
+    // R46: arm the pending compaction to THIS summarization turn (the turn
+    // number only becomes known here — the followup may have queued).
+    const compaction = state.pendingCompactions.get(scopeKey)
+    if (compaction !== undefined && compaction.turn === -1) compaction.turn = event.data.turn
     binding.turn = event.data.turn
     binding.toolCallCounts = new Map()
     binding.turnUsage = emptySessionUsage()
@@ -2843,6 +3173,12 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
       return
     }
     if (chunk.type !== 'text-delta' || chunk.text === undefined || chunk.text === '') return
+    // R46: capture the compaction turn's summary text as it streams.
+    const compaction = state.pendingCompactions.get(scopeKey)
+    if (compaction !== undefined && compaction.turn === event.data.turn) {
+      compaction.text += chunk.text
+      compaction.sawChunks = true
+    }
     safeOpenStream(env, state, binding)
     state.streamedTurns.add(binding)
     binding.turnHasOutput = true
@@ -2858,6 +3194,12 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
     // Non-streaming routes commit one assembled message; when no chunk
     // streamed anything for this binding's current turn, this IS the answer.
     const text = assistantText(event.data)
+    // R46: capture the compaction turn's summary when no deltas streamed it
+    // (a committed message repeats streamed content — dedupe via sawChunks).
+    const compaction = state.pendingCompactions.get(scopeKey)
+    if (compaction !== undefined && compaction.turn === event.data.turn && !compaction.sawChunks && text !== '') {
+      compaction.text += text
+    }
     if (text === '') return
     if (state.streamedTurns.has(binding)) {
       // Deltas already carried this content; the committed message repeats it.
@@ -2881,11 +3223,25 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
   }
 
   if (isTurnEndEvent(event)) {
+    // R46: settle the pending compaction at ITS turn's close. A null reason
+    // (interrupted close, P1) or an error both settle NOT-ok — the session
+    // stays untouched and the user can retry. Normal cleanup continues below.
+    const compaction = state.pendingCompactions.get(scopeKey)
+    if (compaction !== undefined && compaction.turn === event.data.turn) {
+      const reason = event.data.reason
+      compaction.resolve({ ok: reason !== null && reason.kind !== 'error', text: compaction.text, detail: turnErrorDetail(event.data) })
+    }
     const detail = turnErrorDetail(event.data)
     if (detail !== '') {
       safeOpenStream(env, state, binding)
       binding.turnHasOutput = true
       await binding.stream?.append(`\n\n${state.copy.turnFailed(detail)}`)
+      // R45 (P4): a context-limit failure is a structural situation the user
+      // can act on — in minimal there is no pruner and no /compact, so the
+      // guidance differs by the session's LIVE preset instead of assuming.
+      if (contextReductionHint && /maximum context length/i.test(detail)) {
+        await binding.stream?.append(`\n${contextReductionHint(env, state, state.copy)}`)
+      }
     }
     const toolCallCounts = binding.toolCallCounts
     binding.toolCallCounts = undefined
@@ -3058,6 +3414,14 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
       await cmdHelp(env, state, binding, replyTo)
       return
     }
+    case '/compact': {
+      // R46: presets that mount the host compaction stack (standard) keep the
+      // host command's semantics; the channel takes over only where the host
+      // lacks one (minimal) — one command name, zero double registration.
+      if (await tryRunHostCommand(env, state, binding, line, replyTo)) return
+      await cmdCompact(env, state, binding, line.slice('/compact'.length).trim(), senderId, replyTo)
+      return
+    }
     case '/new': {
       await resetSessionScope(env, state, binding, 'session reset')
       await safeSend(env, chatId, state.copy.newSessionDone, replyTo)
@@ -3081,6 +3445,10 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
         await safeSend(env, chatId, state.copy.nothingToStop, replyTo)
         return
       }
+      // R45 (P3): register BEFORE cancel — the host splices the queue
+      // synchronously inside cancel() and publishes the event inline, so a
+      // later registration would race the receipt check and lose.
+      quietNextQueueDrop(state, binding)
       entry.handle.agent.cancel('stopped from chat')
       await safeSend(env, chatId, state.copy.stopped, replyTo)
       return
@@ -3102,20 +3470,7 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
       return
     }
     default: {
-      // Delegate to the host command runtime when one is composed.
-      const entry = state.ledger.get(currentAgentKey(binding))
-      const commands = env.host.get('commands') as HostCommands | undefined
-      if (entry !== undefined && commands !== undefined) {
-        const controller = new AbortController()
-        const execution = await commands.execute(entry.handle.agent, line, controller.signal)
-        if (execution !== undefined) {
-          const text = execution.result.kind === 'error'
-            ? execution.result.text
-            : execution.result.text ?? ''
-          if (text !== '') await safeSend(env, chatId, text, replyTo)
-          return
-        }
-      }
+      if (await tryRunHostCommand(env, state, binding, line, replyTo)) return
       // R42: a command the current preset deliberately omits gets the mode
       // hint; only genuinely unknown input falls through to commandUnknown.
       const typed = line.slice(1).split(/\s+/, 1)[0] ?? ''
@@ -3147,8 +3502,13 @@ async function resetSessionScope(env: BridgeEnv, state: BridgeState, binding: Ch
   const agentKey = currentAgentKey(binding)
   const entry = state.ledger.get(agentKey)
   if (entry !== undefined) {
+    // R45 (P3): register BEFORE cancel — see the /stop note on the race.
+    quietNextQueueDrop(state, binding)
     entry.handle.agent.cancel(cause)
     await entry.handle.dispose().catch(() => undefined)
+    // R45 (P3): the dead session id can never splice again — retire its
+    // unconsumed suppression marker so the Set cannot grow unbounded.
+    state.quietQueueDrops.delete(entry.handle.agent.session.id)
   }
   // R29: the next generation is one past the highest KNOWN generation (the
   // registry), never reusing ids a `/session` switch-back pointed at.
@@ -3175,6 +3535,11 @@ async function resetSessionScope(env: BridgeEnv, state: BridgeState, binding: Ch
   state.ledger.reset(agentKey, nextGen)
   state.chatActiveGen[agentKey] = nextGen
   persistSessions(env, state)
+  // R38... then R44-C2: the binding was streamed under the OLD session; its
+  // identity now points at a fresh generation, so the to-be-streamed turn must
+  // not be suppressed by stale state. (dispose() clears wholesale; the reset
+  // must clear this one too.)
+  state.streamedTurns.delete(binding)
   // R32: session menus are stale the moment the generation moves.
   dropScopeMenus(state, binding.scopeKey)
   for (const [sessionId] of [...state.sessionScopes]) {
@@ -3438,8 +3803,12 @@ async function switchSessionToRecord(env: BridgeEnv, state: BridgeState, binding
   // D1: the running task dies with the switch, exactly like /stop.
   const entry = state.ledger.get(agentKey)
   if (entry !== undefined) {
+    // R45 (P3): register BEFORE cancel — see the /stop note on the race.
+    quietNextQueueDrop(state, binding)
     entry.handle.agent.cancel('session switch')
     await entry.handle.dispose().catch(() => undefined)
+    // R45 (P3): retire the dead session's unconsumed suppression marker.
+    state.quietQueueDrops.delete(entry.handle.agent.session.id)
   }
   // pointerTo keeps any live entry by contract -- drop the disposed one so
   // the next message really creates the target session's agent.
@@ -4150,11 +4519,29 @@ async function applyWorkspaceSwitch(env: BridgeEnv, state: BridgeState, binding:
  * the dsh host's delegated commands — and tag each line with where it comes
  * from, so the origin of every command is unambiguous.
  */
+/** True when a live agent's host command runtime exposes /compact (R46). */
+function tryHostCompactListed(env: BridgeEnv, state: BridgeState, binding: ChatBinding): boolean {
+  const entry = state.ledger.get(currentAgentKey(binding))
+  const commands = env.host.get('commands') as HostCommands | undefined
+  if (entry === undefined || commands === undefined) return false
+  try {
+    return commands.list(entry.handle.agent).some(command => command.name === 'compact')
+  } catch {
+    return false
+  }
+}
+
 async function cmdHelp(env: BridgeEnv, state: BridgeState, binding: ChatBinding, replyTo?: string): Promise<void> {
   const lines: string[] = [`**${state.copy.helpTitle}**`]
   lines.push(`**${state.copy.helpChannelHeader}**`)
   for (const command of state.copy.channelCommands) {
     lines.push(`${command} [${state.copy.helpChannelTag}]`)
+  }
+  // R46: where the host compaction stack is absent (minimal), the CHANNEL
+  // owns /compact — advertise it here so the command is discoverable; the
+  // host section already lists it where the host provides it.
+  if (!(await tryHostCompactListed(env, state, binding))) {
+    lines.push(`${state.copy.compactHelpLine} [${state.copy.helpChannelTag}]`)
   }
   const hostLines = hostCommandLines(env, state, binding)
   if (hostLines.length > 0) {
@@ -4205,6 +4592,8 @@ async function dispose(env: BridgeEnv, state: BridgeState): Promise<void> {
   state.sessionScopes.clear()
   state.replyTargets.clear()
   state.streamedTurns.clear()
+  state.pendingCompactions.clear()
+  state.compactionHolds.clear()
   state.selections.clear()
   state.sessionPresets.clear()
   // R32: retire menu cards and their expiry timers with the bridge.

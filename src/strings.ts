@@ -76,6 +76,37 @@ export interface Strings {
   helpUnavailableHeader: string
   helpUnavailableCommand: (command: string, preset: string) => string
   commandUnavailable: (command: string, preset: string) => string
+  /** R45 (P4): appended to a context-length failure (channel commands can shrink the session). */
+  contextLimitHint: string
+  /** R45 (P3): receipt when the host discarded queued inputs without running them. */
+  queuedInputsDropped: (count: string) => string
+  /** R46: /compact channel help line (only where the host compaction stack is absent). */
+  compactHelpLine: string
+  /** R46: the summarization instruction sent to the model as the compaction turn. */
+  compactInstruction: string
+  /** R46: refusal when a compaction is already pending or a turn is running. */
+  compactBusy: string
+  /** R46: refusal when there is no live session to compact. */
+  compactNoSession: string
+  /** R46: failure receipt; the session is preserved verbatim. */
+  compactFailed: (detail: string) => string
+  /** R46: failure reasons. */
+  compactTimedOut: string
+  compactEmptySummary: string
+  /** R46: success receipt (file path + how many held messages were forwarded). */
+  compactDone: (path: string, held: string) => string
+  /** R46: first notice when a text message is held during a compaction. */
+  compactHolding: string
+  /** R46: refusal for attachments during a compaction (v1 holds text only). */
+  compactAttachmentHolding: string
+  /** R46: opener sections. */
+  compactOpenerHeader: string
+  compactOpenerSummaryHeader: string
+  compactOpenerTailHeader: (count: string) => string
+  compactTailTruncated: string
+  compactOpenerQuestionHeader: string
+  compactTailUser: string
+  compactTailAssistant: string
   /** Inline source tag for a channel-owned command line. */
   helpChannelTag: string
   /** Inline source tag for a dsh host command line. */
@@ -297,6 +328,28 @@ const zhCN: Strings = {
   commandUnavailable: (command, preset) =>
     `${command} 在 ${preset} 模式下不可用：该模式不做上下文压缩（以最省 token 为设计目标）。` +
     '用 /mode standard 切换后可用（会开启新会话）。',
+  contextLimitHint: '上下文已接近上限：用 /compact 打包压缩本会话历史（标准模式组合），或用 /new 开新会话。',
+  queuedInputsDropped: count => `排队中的 ${count} 条消息已被终止未能执行（会话该轮已停止）。重新发送即可继续。`,
+  compactHelpLine: '/compact [N] [问题] — 压缩上下文：旧历史总结为摘要文件（.feishu4dsh/compact/）并开启新会话；N=最近 N 轮原文随行；问题=新会话首问',
+  compactInstruction:
+    '请把本次会话（截至当前）压缩为一份交接摘要，供开启新会话时无缝继续。要求：' +
+    '①用 Markdown；②分节【背景与目标】【已完成与结论】【关键决定与口径】【未决事项与下一步】【重要文件/路径/命令】；' +
+    '③只写事实与结论，不写寒暄，不复述原文；④直接输出摘要本身，不要调用工具，不要额外说明。',
+  compactBusy: '当前会话正忙（压缩进行中或上一轮未结束），稍候再试 /compact。',
+  compactNoSession: '当前没有可压缩的会话。',
+  compactFailed: detail => `压缩失败，本会话原样保留（可重试）：${detail}`,
+  compactTimedOut: '摘要生成超时',
+  compactEmptySummary: '模型未返回摘要内容',
+  compactDone: (path, held) => `已压缩并开启新会话。摘要文件：${path}${held === '' ? '' : `；挂起消息已转发 ${held} 条`}`,
+  compactHolding: '正在压缩上下文，这条消息已挂起，将在新会话开始后自动发出。',
+  compactAttachmentHolding: '正在压缩上下文，暂不受理附件——请稍后重发这条带附件的消息。',
+  compactOpenerHeader: '[feishu4dsh /compact] 上一会话已压缩归档，以下为交接材料。请据此继续工作。',
+  compactOpenerSummaryHeader: '## 上一会话摘要',
+  compactOpenerTailHeader: count => `## 最近 ${count} 轮对话原文`,
+  compactTailTruncated: '（……超出预算已截断，全文见摘要文件与会话存档）',
+  compactOpenerQuestionHeader: '## 新问题',
+  compactTailUser: '用户',
+  compactTailAssistant: '助手',
   helpChannelTag: '频道',
   helpHostTag: 'dsh',
   channelCommands: [
@@ -501,6 +554,28 @@ const enUS: Strings = {
   commandUnavailable: (command, preset) =>
     `${command} is unavailable in the ${preset} mode: that mode performs no context compaction ` +
     '(it targets the cheapest possible turn). Switch with /mode standard (opens a new session).',
+  contextLimitHint: 'Context is near its limit: use /compact (compacts this session history; standard-mode combo) or /new (fresh session, always available).',
+  queuedInputsDropped: count => `${count} queued message(s) were dropped before running (that turn was stopped). Send them again to continue.`,
+  compactHelpLine: '/compact [N] [question] — compact the context: older history is summarized into a file (.feishu4dsh/compact/) and a fresh session opens; N keeps the last N turns verbatim; question becomes the first ask of the new session',
+  compactInstruction:
+    'Condense this conversation (up to now) into a handover summary so a fresh session can continue seamlessly. ' +
+    'Requirements: 1) Markdown; 2) sections 【Background & goal】【Done & conclusions】【Key decisions】【Open items & next steps】【Important files/paths/commands】; ' +
+    '3) facts and conclusions only — no pleasantries, no verbatim retelling; 4) output the summary itself only: no tool calls, no extra commentary.',
+  compactBusy: 'This session is busy (a compaction is running or the previous turn has not ended); retry /compact shortly.',
+  compactNoSession: 'There is no live session to compact.',
+  compactFailed: detail => `Compaction failed; this session is preserved as-is (retry anytime): ${detail}`,
+  compactTimedOut: 'summary generation timed out',
+  compactEmptySummary: 'the model returned no summary text',
+  compactDone: (path, held) => `Compacted and opened a fresh session. Summary file: ${path}${held === '' ? '' : `; ${held} held message(s) forwarded`}`,
+  compactHolding: 'Compacting the context; this message is held and will be sent automatically once the new session starts.',
+  compactAttachmentHolding: 'A compaction is running; attachments are not accepted right now — please resend this message with attachments afterwards.',
+  compactOpenerHeader: '[feishu4dsh /compact] The previous session was compacted and archived; the handover material follows. Continue from here.',
+  compactOpenerSummaryHeader: '## Previous session summary',
+  compactOpenerTailHeader: count => `## Last ${count} turn(s), verbatim`,
+  compactTailTruncated: '(……truncated over budget; full text lives in the summary file and the archived session)',
+  compactOpenerQuestionHeader: '## New question',
+  compactTailUser: 'User',
+  compactTailAssistant: 'Assistant',
   helpChannelTag: 'channel',
   helpHostTag: 'dsh',
   channelCommands: [

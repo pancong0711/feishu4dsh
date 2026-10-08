@@ -100,10 +100,16 @@ export interface StepStartData {
 /** The `turn/end` payload. */
 export interface TurnEndData {
   readonly turn: number
+  /**
+   * dsh 0.2.0 may hand back `null` here — a turn the HOST could not finish
+   * (e.g. the process died mid-turn and a later materialize closed it) used
+   * to emit a reason object; the null shape exists since 0.2.0 (the 2026-10-07
+   * rendering case). Treat as an interrupted close.
+   */
   readonly reason: {
     readonly kind: string
     readonly error?: { readonly code?: string; readonly message?: string }
-  }
+  } | null
 }
 
 /** The `tool/call` payload: one model-requested tool invocation. */
@@ -172,7 +178,8 @@ export function assistantText(data: AssistantMessageData): string {
 
 /** Render a failed turn's reason as one operator-readable line. */
 export function turnErrorDetail(data: TurnEndData): string {
-  if (data.reason.kind !== 'error') return ''
+  // Null-safe: a `null` reason is the interrupted close (see the type note).
+  if (data.reason === null || data.reason.kind !== 'error') return ''
   const error = data.reason.error
   return error === undefined ? '' : `${error.code ?? 'error'}: ${error.message ?? ''}`.trimEnd()
 }

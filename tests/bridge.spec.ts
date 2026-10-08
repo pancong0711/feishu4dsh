@@ -676,7 +676,7 @@ describe('bridge: commands', () => {
     expect(text).toContain('feishu4dsh 频道命令')
   })
 
-  it('R42-a: /help lists mode-gated host commands with a switch hint (minimal)', async () => {
+  it('R42-a/R46: /help in minimal lists /compact as a CHANNEL command (host stack absent)', async () => {
     const { host, port } = makeEnv({ agentPreset: 'minimal' })
     // Seed an active agent so the session records its real preset.
     await textMessage(port, 'hello')
@@ -687,9 +687,12 @@ describe('bridge: commands', () => {
     await textMessage(port, '/help')
     const help = port.sent.filter(m => String(m.input.markdown ?? '').includes('/new')).pop()
     const text = String(help?.input.markdown)
-    expect(text).toContain('当前模式未提供')
-    expect(text).toContain('/compact')
-    expect(text).toContain('/mode standard')
+    // R46: compact moved OUT of the unavailable section — the channel owns it.
+    expect(text).toContain('feishu4dsh 频道命令')
+    expect(text).toContain('/compact [N] [问题]')
+    expect(text).toContain('[频道]')
+    expect(text).toContain('[dsh]')
+    expect(text).not.toContain('/compact 在 minimal 模式下不可用')
   })
 
   it('R44-b: /mode advances past a disk-collided generation and opens the fresh session', async () => {
@@ -722,14 +725,18 @@ describe('bridge: commands', () => {
     expect(second?.preset).toBe('standard')
   })
 
-  it('R42-b: /compact in minimal answers with the switch hint, not "unknown command"', async () => {
-    const { port } = makeEnv({ agentPreset: 'minimal' })
+  it('R42-b/R46-d2: /compact in minimal starts the channel pipeline (not unknown, not the R42 hint)', async () => {
+    const { host, port } = makeEnv({ agentPreset: 'minimal' })
     await textMessage(port, 'hello')
     await textMessage(port, '/compact')
-    const text = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
-    expect(text).toContain('/compact 在 minimal 模式下不可用')
-    expect(text).toContain('/mode standard')
+    await sleep(10)
+    const text = port.sent.map(m => String(m.input.markdown ?? '')).join('\\n')
     expect(text).not.toContain('未知命令')
+    expect(text).not.toContain('/compact 在 minimal 模式下不可用')
+    // The pipeline armed: the summarization instruction went to the model.
+    const agent = host.created[0]
+    const instruction = agent?.followups.find(f => f.content.some(b => b.type === 'text' && String(b.text).includes('摘要')))
+    expect(instruction).toBeDefined()
   })
 
   it('/new resets the session generation', async () => {
@@ -5114,5 +5121,284 @@ describe('bridge: R38 agent preset mounting', () => {
     expect(patch).not.toContain('- id: workflow-worker-thread')
     // The channel's own row survives the freeze.
     expect(patch).toContain('- id: feishu4dsh')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R45: render-chain hardening (P1–P3) + context-limit guidance (P4)    */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R45 render-chain hardening', () => {
+  it('R45-a (P1): a null turn/end reason renders as a plain close, never throws', async () => {
+    const { host, port } = makeEnv({ showProcess: false })
+    await textMessage(port, 'hello')
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: 'partial answer' }] } },
+    })
+    // dsh 0.2.0 interrupted-close shape (the 2026-10-07 audit case):
+    // `reason: null` — before R45 the non-null assertion on `reason.kind`
+    // threw here and the terminal card never rendered.
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: null } })
+    await sleep(20)
+
+    expect(port.sent.find(m => String(m.input.markdown ?? '').includes('partial answer'))).toBeDefined()
+    // A null reason carries no failure detail — no "本轮执行失败" line and no
+    // process/summary residue may leak into the chat either.
+    expect(port.sent.filter(m => String(m.input.markdown ?? '').includes('本轮执行失败'))).toHaveLength(0)
+  })
+
+  it('R45-b (P2): /new clears the streaming-state marker the dispose path also clears', async () => {
+    const { host, port, dispose } = makeEnv({ showProcess: false })
+    await textMessage(port, 'hello')
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/chunk',
+      data: { turn: 1, chunk: { type: 'text-delta', text: 'streaming…' } },
+    })
+    await sleep(10)
+    expect(dispose.state.streamedTurns.size).toBeGreaterThanOrEqual(1)
+
+    await textMessage(port, '/new')
+    await sleep(20)
+    // R44-C2 residue: reset used to leave the marker behind, so the FIRST
+    // turn of the fresh generation could lose its body to a stale repeat
+    // check or its opening to a stale stream.
+    expect(dispose.state.streamedTurns.size).toBe(0)
+  })
+
+  it('R45-c (P3): a host-side queue drop gets a user receipt; a channel-initiated one stays silent', async () => {
+    const { host, port } = makeEnv({ showProcess: false })
+    await textMessage(port, 'hello')
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    // Case 1: the host aborts a turn with inputs still queued (audit case) —
+    // no channel action, so the user MUST get the receipt.
+    host.emit('session/event', { id: agent.id }, {
+      type: 'agent/inbox/spliced',
+      data: { target: 'next-turn', start: 0, removedCount: 3, inserted: [], outcome: 'canceled' },
+    })
+    await sleep(10)
+    const receipts = port.sent.filter(m => String(m.input.markdown ?? '').includes('排队中的 3 条消息'))
+    expect(receipts).toHaveLength(1)
+
+    // Case 2: channel-initiated /stop pre-registers the session id BEFORE
+    // cancel (the splice fires inline), so the same event shape stays silent.
+    await textMessage(port, '/stop')
+    await sleep(10)
+    port.sent.length = 0
+    host.emit('session/event', { id: agent.id }, {
+      type: 'agent/inbox/spliced',
+      data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' },
+    })
+    await sleep(10)
+    const afterStop = port.sent.filter(m => String(m.input.markdown ?? '').includes('排队中的'))
+    expect(afterStop).toHaveLength(0)
+  })
+
+  it('R45-d (P4): a context-length failure appends the reduction guidance to the stream', async () => {
+    const { host, port } = makeEnv({ showProcess: false })
+    await textMessage(port, 'hello')
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: agent.id }, {
+      type: 'turn/end',
+      data: { turn: 1, reason: { kind: 'error', error: { code: 'invalid_request_error', message: 'This model\'s maximum context length is 131072 tokens' } } },
+    })
+    await sleep(20)
+
+    const lines = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
+    expect(lines).toContain('本轮执行失败')
+    expect(lines).toContain('上下文已接近上限')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R46: channel /compact — summarize, archive, fresh session           */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R46 channel /compact', () => {
+  /** Drive the summarization turn: arm + committed message + clean close. */
+  async function runSummarizationTurn(host: ReturnType<typeof fakeHost>, agent: FakeAgent, summary: string): Promise<void> {
+    host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: summary }] } },
+    })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+    await sleep(30)
+  }
+
+  it('R46-a: minimal /compact summarizes, archives with a timestamp, resets, and hands the summary to the fresh session', async () => {
+    const { workspace, host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+
+    await textMessage(port, '/compact 3 帮我修这个bug')
+    await sleep(10)
+    // Step 1: the summarization instruction reached the model as a followup.
+    const instruction = first.followups[1]
+    expect(String(instruction?.content[0]?.type && instruction.content)).toBeDefined()
+    expect(instruction?.content.some(b => b.type === 'text' && String(b.text).includes('摘要'))).toBe(true)
+
+    await runSummarizationTurn(host, first, '## 交接摘要\n已完成:R45。未决:R46。')
+
+    // Step 2: receipt names an archive file inside the workspace; the file exists.
+    const receipt = port.sent.map(m => String(m.input.markdown ?? '')).find(t => t.includes('已压缩并开启新会话'))
+    expect(receipt).toBeDefined()
+    const noted = String(receipt).match(/摘要文件：(\S+\.md)/)
+    expect(noted).not.toBeNull()
+    const archivePath = String(noted?.[1])
+    expect(archivePath.startsWith(join(workspace, '.feishu4dsh', 'compact'))).toBe(true)
+    const archive = readFileSync(archivePath, 'utf8')
+    expect(archive).toContain('源会话:')
+    expect(archive).toContain('已完成:R45')
+
+    // Step 3: a fresh session generation; the opener carries summary + question.
+    await textMessage(port, 'ping') // triggers ensureAgent on the new generation
+    const second = host.created[1]
+    expect(second).toBeDefined()
+    expect(second?.id).not.toBe(first.id)
+    const opener = second?.followups[0]
+    const openerText = String(opener?.content.find(b => b.type === 'text')?.text ?? '')
+    expect(openerText).toContain('上一会话摘要')
+    expect(openerText).toContain('已完成:R45')
+    expect(openerText).toContain('新问题')
+    expect(openerText).toContain('帮我修这个bug')
+  })
+
+  it('R46-b: /compact N carries only the last N turns verbatim, oldest-first inside budget', async () => {
+    const { host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+    first.sessionEvents = [
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'user/message', data: { content: [{ type: 'text', text: 'turn1 question' }], source: { kind: 'user' } } },
+      { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: 'turn1 answer' }] } } },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } },
+      { type: 'turn/start', data: { turn: 2 } },
+      { type: 'assistant/message', data: { turn: 2, message: { content: [{ type: 'text', text: 'turn2 toolonly' }] } } },
+      { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } },
+      { type: 'turn/start', data: { turn: 3 } },
+      { type: 'user/message', data: { content: [{ type: 'text', text: 'turn3 question' }], source: { kind: 'user' } } },
+      { type: 'assistant/message', data: { turn: 3, message: { content: [{ type: 'text', text: 'turn3 answer' }] } } },
+      { type: 'turn/end', data: { turn: 3, reason: { kind: 'complete' } } },
+    ] as never
+
+    await textMessage(port, '/compact 1')
+    await runSummarizationTurn(host, first, '摘要内容')
+    await textMessage(port, 'ping')
+    const openerText = String(host.created[1]?.followups[0]?.content.find(b => b.type === 'text')?.text ?? '')
+    expect(openerText).toContain('最近 1 轮对话原文')
+    expect(openerText).toContain('turn3 answer')
+    expect(openerText).not.toContain('turn1')
+    expect(openerText).not.toContain('turn2') // tool-free check: turn2 carries no user text; only its assistant text would match — it must be excluded (only 1 kept)
+  })
+
+  it('R46-c: a failed summarization turn preserves the session (no file, no reset, failure receipt)', async () => {
+    const { workspace, host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+
+    await textMessage(port, '/compact')
+    await sleep(10)
+    host.emit('session/event', { id: first.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: first.id }, {
+      type: 'turn/end',
+      data: { turn: 1, reason: { kind: 'error', error: { code: 'x', message: 'boom' } } },
+    })
+    await sleep(30)
+
+    const text = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
+    expect(text).toContain('压缩失败')
+    expect(existsSync(join(workspace, '.feishu4dsh', 'compact'))).toBe(false)
+    // The session survives: the next plain message still reaches agent #1.
+    await textMessage(port, 'ping')
+    expect(host.created).toHaveLength(1)
+    expect(first.followups.at(-1)?.content.some(b => b.type === 'text' && String(b.text).includes('ping'))).toBe(true)
+  })
+
+  it('R46-c2: a null-reason (interrupted) compaction turn also settles failed and preserves the session', async () => {
+    const { workspace, host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+    await textMessage(port, '/compact')
+    await sleep(10)
+    host.emit('session/event', { id: first.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: first.id }, { type: 'turn/end', data: { turn: 1, reason: null } })
+    await sleep(30)
+    expect(port.sent.map(m => String(m.input.markdown ?? '')).join('\n')).toContain('压缩失败')
+    expect(existsSync(join(workspace, '.feishu4dsh', 'compact'))).toBe(false)
+    await textMessage(port, 'ping')
+    expect(host.created).toHaveLength(1)
+  })
+
+
+  it('R46-d: /compact in standard keeps the host command (no channel pipeline)', async () => {
+    const { host, port } = makeEnv() // default preset = standard
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+    host.services.set('commands', {
+      list: () => [{ name: 'compact', description: 'compact context' }],
+      execute: async () => ({ result: { kind: 'success', text: 'host compact ran' } }),
+    })
+    await textMessage(port, '/compact')
+    await sleep(10)
+    expect(port.sent.some(m => String(m.input.markdown ?? '') === 'host compact ran')).toBe(true)
+    // No channel pipeline: no summarization instruction followup was issued.
+    expect(first.followups.some(f => f.content.some(b => b.type === 'text' && String(b.text).includes('摘要')))).toBe(false)
+  })
+
+  it('R46-e: /compact while a visible turn is running refuses without queueing the instruction', async () => {
+    const { host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+    host.emit('session/event', { id: first.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: first.id }, {
+      type: 'assistant/chunk',
+      data: { turn: 1, chunk: { type: 'text-delta', text: 'working…' } },
+    })
+    await sleep(10)
+    await textMessage(port, '/compact')
+    await sleep(10)
+    const text = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
+    expect(text).toContain('正忙')
+    expect(first.followups.some(f => f.content.some(b => b.type === 'text' && String(b.text).includes('摘要')))).toBe(false)
+  })
+
+  it('R46-f: text messages sent during the compaction are held and forwarded after the opener', async () => {
+    const { host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+    await textMessage(port, '/compact')
+    await sleep(10)
+    await textMessage(port, '还在吗') // held while the summarization turn runs
+    await sleep(10)
+    await runSummarizationTurn(host, first, '摘要')
+    await sleep(10)
+    const held = first.followups.find(f => f.content.some(b => b.type === 'text' && String(b.text) === '还在吗'))
+    expect(held).toBeUndefined() // it must NOT reach the doomed session
+    // It lands in the fresh session after the opener.
+    const second = host.created[1]
+    const texts = second?.followups.map(f => f.content.filter(b => b.type === 'text').map(b => String(b.text)).join('')) ?? []
+    expect(texts.some(t => t.includes('上一会话摘要'))).toBe(true)
+    expect(texts.some(t => t === '还在吗')).toBe(true)
   })
 })
