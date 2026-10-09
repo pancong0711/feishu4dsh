@@ -5364,6 +5364,25 @@ describe('bridge: R46 channel /compact', () => {
     expect(first.followups.some(f => f.content.some(b => b.type === 'text' && String(b.text).includes('摘要')))).toBe(false)
   })
 
+
+  it('R46-g: a destructive command during a compaction settles it canceled and drops held messages loudly', async () => {
+    const { host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+    await textMessage(port, '/compact')
+    await sleep(10)
+    await textMessage(port, '挂起一下') // held
+    await sleep(10)
+    await textMessage(port, '/new') // destructive mid-compaction
+    await sleep(10)
+    const text = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
+    expect(text).toContain('压缩已被取消')
+    expect(text).toContain('挂起的 1 条消息未执行')
+    // And the doomed session never receives the held text.
+    expect(first.followups.some(f => f.content.some(b => b.type === 'text' && String(b.text) === '挂起一下'))).toBe(false)
+  })
+
   it('R46-e: /compact while a visible turn is running refuses without queueing the instruction', async () => {
     const { host, port } = makeEnv({ agentPreset: 'minimal' })
     await textMessage(port, 'hello')

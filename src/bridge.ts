@@ -1668,6 +1668,12 @@ interface PendingCompaction {
 
 /** Bounded wait for the summarization turn (R46 §2.7). */
 const COMPACT_SUMMARY_TIMEOUT_MS = 180_000
+/**
+ * Commands that kill the compaction's session (reset or agent cancel). When
+ * one arrives mid-compaction, the pending compaction is settled as canceled
+ * and held messages are dropped with an explicit notice (R46 §2.5).
+ */
+const COMPACT_CANCELING_COMMANDS: ReadonlySet<string> = new Set(['/new', '/stop', '/mode', '/session', '/cd'])
 /** R46 §2.4: verbatim-tail character budget spent newest-turn-first. */
 const COMPACT_TAIL_CHAR_BUDGET = 6000
 /** R46 §2.3: archive directory, relative to the binding workspace. */
@@ -1758,19 +1764,28 @@ async function cmdCompact(env: BridgeEnv, state: BridgeState, binding: ChatBindi
     const held = state.compactionHolds.get(binding.scopeKey) ?? []
     // Only now may the destructive step run (R46 §2.5 red line).
     await resetSessionScope(env, state, binding, 'compact')
-    state.compactionHolds.delete(binding.scopeKey)
     await safeSend(env, binding.chatId, copy.compactDone(file, held.length === 0 ? '' : String(held.length)), replyTo)
     // Hand over: summary + optional verbatim tail + optional carried question.
-    const opener = buildCompactOpener(copy, summary, tails, question)
-    const openerId = randomUUID()
-    if (replyTo !== undefined) state.replyTargets.set(openerId, { scopeKey: binding.scopeKey, messageId: replyTo })
-    const fresh = await ensureAgent(env, state, binding, opener)
-    safeOpenStream(env, state, binding)
-    fresh.agent.followup({ id: openerId, role: 'user', content: [{ type: 'text', text: opener }], source: { kind: 'user' } })
-    for (const hold of held) {
-      const holdId = randomUUID()
-      state.replyTargets.set(holdId, { scopeKey: binding.scopeKey, messageId: hold.messageId })
-      fresh.agent.followup({ id: holdId, role: 'user', content: [{ type: 'text', text: hold.text }], source: { kind: 'user' } })
+    // The holds die with this attempt ONLY on success; an opener failure must
+    // not silently drop user texts (R46 red line, part 3).
+    try {
+      const opener = buildCompactOpener(copy, summary, tails, question)
+      const openerId = randomUUID()
+      if (replyTo !== undefined) state.replyTargets.set(openerId, { scopeKey: binding.scopeKey, messageId: replyTo })
+      const fresh = await ensureAgent(env, state, binding, opener)
+      safeOpenStream(env, state, binding)
+      fresh.agent.followup({ id: openerId, role: 'user', content: [{ type: 'text', text: opener }], source: { kind: 'user' } })
+      for (const hold of held) {
+        const holdId = randomUUID()
+        state.replyTargets.set(holdId, { scopeKey: binding.scopeKey, messageId: hold.messageId })
+        fresh.agent.followup({ id: holdId, role: 'user', content: [{ type: 'text', text: hold.text }], source: { kind: 'user' } })
+      }
+      state.compactionHolds.delete(binding.scopeKey)
+    } catch (error) {
+      const dropped = held.length
+      state.compactionHolds.delete(binding.scopeKey)
+      await safeSend(env, binding.chatId, copy.compactFailed(`${describeError(error)}${dropped > 0 ? `；挂起的 ${dropped} 条消息未能转发，请重发` : ''}`), replyTo)
+      return
     }
   } finally {
     state.pendingCompactions.delete(binding.scopeKey)
@@ -3228,8 +3243,15 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
     // stays untouched and the user can retry. Normal cleanup continues below.
     const compaction = state.pendingCompactions.get(scopeKey)
     if (compaction !== undefined && compaction.turn === event.data.turn) {
+      // R46 red line, part 1: ONLY a clean close may archive. A canceled or
+      // materialized-interrupted close (even without an error field) may have
+      // produced a PARTIAL summary — archiving it would lock in half the
+      // context and then reset the session on top. Fail closed instead: the
+      // session stays verbatim and the user retries.
       const reason = event.data.reason
-      compaction.resolve({ ok: reason !== null && reason.kind !== 'error', text: compaction.text, detail: turnErrorDetail(event.data) })
+      const detail = turnErrorDetail(event.data)
+      const ok = reason !== null && reason.kind === 'complete'
+      compaction.resolve({ ok, text: compaction.text, detail: detail === '' && !ok ? `turn 以 ${reason === null ? 'null（中断收口）' : reason.kind} 收口` : detail })
     }
     const detail = turnErrorDetail(event.data)
     if (detail !== '') {
@@ -3408,6 +3430,20 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
   const chatId = binding.chatId
   const replyTo = binding.replyTo
   const name = line.split(/\s+/)[0] ?? ''
+
+  // R46: a destructive command lands while a channel compaction is pending —
+  // the compaction is over either way (its session is about to die), so settle
+  // it NOW: the awaiting /compact gets an explicit cancellation instead of
+  // timing out 3 minutes later, and held messages are dropped LOUDLY (never
+  // silently — the user typed them).
+  if (state.pendingCompactions.has(binding.scopeKey) && COMPACT_CANCELING_COMMANDS.has(name)) {
+    const pending = state.pendingCompactions.get(binding.scopeKey)
+    state.pendingCompactions.delete(binding.scopeKey)
+    pending?.resolve({ ok: false, text: '', detail: state.copy.compactCanceled })
+    const held = state.compactionHolds.get(binding.scopeKey) ?? []
+    state.compactionHolds.delete(binding.scopeKey)
+    if (held.length > 0) void safeSend(env, binding.chatId, state.copy.compactHeldDropped(String(held.length)))
+  }
 
   switch (name) {
     case '/help': {

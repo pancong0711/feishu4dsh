@@ -97,6 +97,10 @@ export interface Strings {
   compactDone: (path: string, held: string) => string
   /** R46: first notice when a text message is held during a compaction. */
   compactHolding: string
+  /** R46: the compaction was canceled by a destructive command (/new, /stop, …). */
+  compactCanceled: string
+  /** R46: held messages dropped because the session was reset mid-compaction. */
+  compactHeldDropped: (count: string) => string
   /** R46: refusal for attachments during a compaction (v1 holds text only). */
   compactAttachmentHolding: string
   /** R46: opener sections. */
@@ -342,6 +346,8 @@ const zhCN: Strings = {
   compactEmptySummary: '模型未返回摘要内容',
   compactDone: (path, held) => `已压缩并开启新会话。摘要文件：${path}${held === '' ? '' : `；挂起消息已转发 ${held} 条`}`,
   compactHolding: '正在压缩上下文，这条消息已挂起，将在新会话开始后自动发出。',
+  compactCanceled: '压缩已被取消。',
+  compactHeldDropped: count => `会话已重置，压缩期间挂起的 ${count} 条消息未执行——请重新发送。`,
   compactAttachmentHolding: '正在压缩上下文，暂不受理附件——请稍后重发这条带附件的消息。',
   compactOpenerHeader: '[feishu4dsh /compact] 上一会话已压缩归档，以下为交接材料。请据此继续工作。',
   compactOpenerSummaryHeader: '## 上一会话摘要',
@@ -568,6 +574,8 @@ const enUS: Strings = {
   compactEmptySummary: 'the model returned no summary text',
   compactDone: (path, held) => `Compacted and opened a fresh session. Summary file: ${path}${held === '' ? '' : `; ${held} held message(s) forwarded`}`,
   compactHolding: 'Compacting the context; this message is held and will be sent automatically once the new session starts.',
+  compactCanceled: 'The compaction was canceled.',
+  compactHeldDropped: count => `The session was reset; ${count} message(s) held during the compaction were not executed — please send them again.`,
   compactAttachmentHolding: 'A compaction is running; attachments are not accepted right now — please resend this message with attachments afterwards.',
   compactOpenerHeader: '[feishu4dsh /compact] The previous session was compacted and archived; the handover material follows. Continue from here.',
   compactOpenerSummaryHeader: '## Previous session summary',

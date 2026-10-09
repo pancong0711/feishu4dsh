@@ -42,6 +42,7 @@
 | 0.11.0 | 2026-10-07 | **R44 持久化断链修复**：dsh 0.2.0 移除 `settings.register` 致 7 个持久化 hook 静默死亡（/mode 切换失效的根因）；迁 `settings.update` API + 运行时字段 volatile + 代次新鲜度核对 + 不可用告警 |
 | 0.11.1 | 2026-10-08 | **R45 渲染链加固**：`turn/end reason:null` 空安全（0.2.0 中断收口不再抛错）；reset 补清 streamedTurns；宿主丢弃排队输入发回执（通道取消静默闸）；context-length 失败追加 `/compact`/`/new` 引导 |
 | 0.12.0 | 2026-10-08 | **R46 频道 /compact**：minimal 零挂载的上下文压缩——摘要存档（.feishu4dsh/compact/，带时间戳）+ 新会话开场注入摘要与最近 N 轮原文（可附新问题）；standard 保持宿主 /compact；失败保上下文红线；挂起队列转发 |
+| 0.12.1 | 2026-10-08 | **R46 审计修复**：/compact 收口判定收紧为 complete（取消/中断不再误存部分摘要）；pending 期间破坏性命令即时取消结算+挂起消息响亮丢弃；opener 失败兜底；README/TROUBLESHOOTING 补 /compact 口径 |
 
 ## 三、当前方向
 
