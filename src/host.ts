@@ -97,6 +97,17 @@ export interface StepStartData {
   readonly step: number
 }
 
+/**
+ * The host's turn-close vocabulary (R47 contract). Source of truth:
+ * `@deepseek-ai/dsh-session` types — `TurnEndReasonMap` keys: `completed`,
+ * `aborted`, `blocked`, `error`, `max-tokens` (0.2.0 may also hand back a
+ * `null` reason for materialized interrupted closes). Comparing against any
+ * string outside this set is a bug; the `host-contract` spec enforces it.
+ */
+export const TURN_END_KINDS = ['completed', 'aborted', 'blocked', 'error', 'max-tokens'] as const
+/** A clean successful close — the ONLY one compaction may archive under (R47 F1). */
+export const TURN_END_COMPLETED: (typeof TURN_END_KINDS)[number] = 'completed'
+
 /** The `turn/end` payload. */
 export interface TurnEndData {
   readonly turn: number

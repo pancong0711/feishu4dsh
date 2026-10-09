@@ -338,7 +338,7 @@ const zhCN: Strings = {
   compactInstruction:
     '请把本次会话（截至当前）压缩为一份交接摘要，供开启新会话时无缝继续。要求：' +
     '①用 Markdown；②分节【背景与目标】【已完成与结论】【关键决定与口径】【未决事项与下一步】【重要文件/路径/命令】；' +
-    '③只写事实与结论，不写寒暄，不复述原文；④直接输出摘要本身，不要调用工具，不要额外说明。',
+    '③只写事实与结论，不写寒暄，不复述原文；④直接输出摘要本身，不要调用工具，不要额外说明；⑤第一行必须是 `# ` 开头的一级标题，标题之前不得有任何文字（包括思考或说明）。',
   compactBusy: '当前会话正忙（压缩进行中或上一轮未结束），稍候再试 /compact。',
   compactNoSession: '当前没有可压缩的会话。',
   compactFailed: detail => `压缩失败，本会话原样保留（可重试）：${detail}`,
@@ -566,7 +566,7 @@ const enUS: Strings = {
   compactInstruction:
     'Condense this conversation (up to now) into a handover summary so a fresh session can continue seamlessly. ' +
     'Requirements: 1) Markdown; 2) sections 【Background & goal】【Done & conclusions】【Key decisions】【Open items & next steps】【Important files/paths/commands】; ' +
-    '3) facts and conclusions only — no pleasantries, no verbatim retelling; 4) output the summary itself only: no tool calls, no extra commentary.',
+    '3) facts and conclusions only — no pleasantries, no verbatim retelling; 4) output the summary itself only: no tool calls, no extra commentary; 5) the FIRST line must be a top-level "# " heading with nothing before it (no thinking, no preamble).',
   compactBusy: 'This session is busy (a compaction is running or the previous turn has not ended); retry /compact shortly.',
   compactNoSession: 'There is no live session to compact.',
   compactFailed: detail => `Compaction failed; this session is preserved as-is (retry anytime): ${detail}`,

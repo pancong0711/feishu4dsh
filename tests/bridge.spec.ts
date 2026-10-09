@@ -302,7 +302,7 @@ describe('bridge: replies', () => {
     })
     host.emit('session/event', { id: agent.id }, {
       type: 'turn/end',
-      data: { turn: 1, reason: { kind: 'complete' } },
+      data: { turn: 1, reason: { kind: 'completed' } },
     })
     await sleep(5)
 
@@ -337,7 +337,7 @@ describe('bridge: replies', () => {
     const beforeTurnEnd = port.sent.filter(m => typeof m.input.markdown === 'string' && String(m.input.markdown).startsWith('> '))
     expect(beforeTurnEnd).toHaveLength(0)
 
-    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
     await sleep(20)
 
     const summaries = port.sent.filter(m => typeof m.input.markdown === 'string' && String(m.input.markdown).startsWith('> '))
@@ -373,7 +373,7 @@ describe('bridge: replies', () => {
       type: 'tool/call',
       data: { turn: 1, callId: 'call_1', name: 'bash', arguments: '{}' },
     })
-    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
     await sleep(20)
 
     const summary = port.sent.find(m => typeof m.input.markdown === 'string' && String(m.input.markdown).startsWith('> '))
@@ -412,7 +412,7 @@ describe('bridge: replies', () => {
       type: 'tool/call',
       data: { turn: 1, callId: 'call_1', name: 'bash', arguments: '{}' },
     })
-    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
     await sleep(20)
 
     const summary = port.sent.find(m => typeof m.input.markdown === 'string' && String(m.input.markdown).startsWith('> '))
@@ -468,7 +468,7 @@ describe('bridge: replies', () => {
       type: 'assistant/message',
       data: { turn: 1, message: { content: [{ type: 'text', text: 'first answer' }] } },
     })
-    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
     await sleep(20)
 
     // Second queued message's turn starts after the first turn/end cleared
@@ -479,7 +479,7 @@ describe('bridge: replies', () => {
       type: 'assistant/message',
       data: { turn: 2, message: { content: [{ type: 'text', text: 'second answer' }] } },
     })
-    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
     await sleep(20)
 
     const firstReply = port.sent.find(m => m.input.markdown === 'first answer')
@@ -511,7 +511,7 @@ describe('bridge: replies', () => {
       data: { turn: 1, message: { content: [{ type: 'text', text: 'Hello world' }] } },
     })
     host.emit('session/event', { id: agent.id }, {
-      type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } },
+      type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } },
     })
     await sleep(5)
 
@@ -545,7 +545,7 @@ describe('bridge: replies', () => {
       data: { turn: 1, message: { content: [{ type: 'text', text: 'not ours' }] } },
     })
     host.emit('session/event', { id: 'someone-elses-session' }, {
-      type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } },
+      type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } },
     })
     await sleep(5)
     const reply = port.sent.find(m => m.input.markdown === 'not ours')
@@ -1580,7 +1580,7 @@ describe('bridge: R11 switch hardening', () => {
       host.emit('session/event', { id: oldAgent?.id }, {
         type: 'assistant/chunk', data: { turn: 1, chunk: { type: 'text-delta', text: 'live answer' } },
       })
-      host.emit('session/event', { id: oldAgent?.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+      host.emit('session/event', { id: oldAgent?.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
       await sleep(20)
       expect(port.sent.some(m => String(m.input.markdown ?? '').includes('live answer'))).toBe(true)
 
@@ -1593,7 +1593,7 @@ describe('bridge: R11 switch hardening', () => {
       host.emit('session/event', { id: oldAgent?.id }, {
         type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'stale bleed' } },
       })
-      host.emit('session/event', { id: oldAgent?.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+      host.emit('session/event', { id: oldAgent?.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
       await sleep(20)
 
       expect(port.sent.length).toBe(sentAfterSwitch)
@@ -1707,7 +1707,7 @@ describe('bridge: R20 host-autonomous turn thread anchor', () => {
         type: 'assistant/chunk', data: { turn: options.turn, chunk: { type: 'text-delta', text: options.text } },
       })
     }
-    host.emit('session/event', { id: sessionId }, { type: 'turn/end', data: { turn: options.turn, reason: { kind: 'complete' } } })
+    host.emit('session/event', { id: sessionId }, { type: 'turn/end', data: { turn: options.turn, reason: { kind: 'completed' } } })
   }
 
   it('R20-a: a host-autonomous turn falls back to the last inbound message as its thread anchor', async () => {
@@ -1725,7 +1725,7 @@ describe('bridge: R20 host-autonomous turn thread anchor', () => {
       type: 'assistant/message',
       data: { turn: 1, message: { content: [{ type: 'text', text: 'seed answer' }] } },
     })
-    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
     await sleep(20)
     const seededReply = port.sent.find(m => m.input.markdown === 'seed answer')
     expect(seededReply?.options).toEqual({ replyTo: 'om_seed', replyInThread: true })
@@ -1953,7 +1953,7 @@ describe('bridge: R21 reply-stream liveness hardening', () => {
     if (agent === undefined) throw new Error('agent missing')
     env.host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
     env.port.opened[0]?.open({})
-    env.host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+    env.host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
     await sleep(40)
     return agent
   }
@@ -1974,7 +1974,7 @@ describe('bridge: R21 reply-stream liveness hardening', () => {
       // Parked on the ready gate: nothing delivered yet, nothing lost either.
       expect(port.sent.filter(m => typeof m.input.markdown === 'string')).toHaveLength(0)
 
-      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
       await until(() => port.sent.some(m => m.input.markdown === 'salvaged answer'))
 
       const salvage = port.sent.find(m => m.input.markdown === 'salvaged answer')
@@ -2011,7 +2011,7 @@ describe('bridge: R21 reply-stream liveness hardening', () => {
       port.opened[1]?.open({})
       await until(() => port.opened[1]?.chunks.join('') === 'Hello world')
 
-      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
       await sleep(80)
       // Content went through the stream; no plain-message fallback was sent.
       expect(port.sent.filter(m => typeof m.input.markdown === 'string')).toHaveLength(0)
@@ -2050,7 +2050,7 @@ describe('bridge: R21 reply-stream liveness hardening', () => {
       await until(() => port.opened[2]?.chunks.join('') === 'fresh answer')
       expect(port.opened[1]?.chunks).toEqual([])
 
-      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 3, reason: { kind: 'complete' } } })
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 3, reason: { kind: 'completed' } } })
       // The orphaned buffer was salvaged by the old stream's bounded finish…
       await until(() => port.sent.some(m => m.input.markdown === 'orphan draft'))
       expect(port.sent.find(m => m.input.markdown === 'orphan draft')?.options)
@@ -2079,7 +2079,7 @@ describe('bridge: R21 reply-stream liveness hardening', () => {
       host.emit('session/event', { id: agent.id }, {
         type: 'assistant/chunk', data: { turn: 2, chunk: { type: 'text-delta', text: 'B-fast' } },
       })
-      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
       await until(() => port.opened[1]?.chunks.join('') === 'A-slowB-fast')
       expect(port.opened[1]?.chunks).toEqual(['A-slow', 'B-fast'])
 
@@ -2092,7 +2092,7 @@ describe('bridge: R21 reply-stream liveness hardening', () => {
       expect(port.opened).toHaveLength(3)
       port.opened[2]?.open({})
       await until(() => port.opened[2]?.chunks.join('') === 'C-last')
-      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 3, reason: { kind: 'complete' } } })
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 3, reason: { kind: 'completed' } } })
       await sleep(80)
       expect(port.sent.filter(m => typeof m.input.markdown === 'string')).toHaveLength(0)
     } finally {
@@ -2117,7 +2117,7 @@ describe('bridge: R21 reply-stream liveness hardening', () => {
       // The stream request fails only AFTER the open call hung a while — the
       // classic "long silence, then error" shape behind the R21 symptom.
       setTimeout(() => port.opened[1]?.failOpen(new Error('sdk exploded')), 40)
-      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
 
       await until(() => port.sent.some(m => m.input.markdown === 'doomed draft'))
       expect(port.sent.find(m => m.input.markdown === 'doomed draft')?.options)
@@ -2149,7 +2149,7 @@ describe('bridge: R21 reply-stream liveness hardening', () => {
       })
       await until(() => port.opened[1]?.chunks.join('') === 'part-')
 
-      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } })
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
       // Round three can only proceed once turn/end — and its bounded finish —
       // has resolved; a wedged finish would stall the serialized queue here
       // and this poll would hit its own timeout instead.
@@ -2253,7 +2253,7 @@ describe('bridge: R22 card-mode convergence and memory hygiene', () => {
       type: 'assistant/message',
       data: { turn, message: { content: [{ type: 'text', text }] } },
     })
-    host.emit('session/event', { id: sessionId }, { type: 'turn/end', data: { turn, reason: { kind: 'complete' } } })
+    host.emit('session/event', { id: sessionId }, { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } })
   }
 
   /** Poll until a condition holds; fails loudly instead of hanging forever. */
@@ -2403,7 +2403,7 @@ describe('bridge: R22 card-mode convergence and memory hygiene', () => {
 
       // Any completed turn runs the deterministic sweep.
       host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
-      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+      host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
       await sleep(30)
 
       expect(state.replyTargets.size).toBe(REPLY_TARGETS_MAX)
@@ -3940,7 +3940,7 @@ describe('bridge: R36 reasoning process line', () => {
   }
 
   const TURN_START = { type: 'turn/start', data: { turn: 1 } }
-  const TURN_END = { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } }
+  const TURN_END = { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }
 
   it('R36-1: arms the SDK streaming placeholder from the shared strings table', () => {
     const zh = resolveConfig({ appId: 'cli_a', appSecret: 's', locale: 'zh-CN' })
@@ -4319,7 +4319,7 @@ describe('bridge: R36-2 reasoning card', () => {
   }
 
   const TURN_START = { type: 'turn/start', data: { turn: 1 } }
-  const TURN_END = { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } }
+  const TURN_END = { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }
   const LIVE = {
     cardPatchMinIntervalMs: 0,
     cardPatchMinChars: 0,
@@ -5235,9 +5235,76 @@ describe('bridge: R46 channel /compact', () => {
       type: 'assistant/message',
       data: { turn: 1, message: { content: [{ type: 'text', text: summary }] } },
     })
-    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
     await sleep(30)
   }
+
+
+  /** Emit a full summarization turn with a chosen close reason kind. */
+  async function runSummarizationTurnWith(host: ReturnType<typeof fakeHost>, agent: FakeAgent, text: string, kind: string): Promise<void> {
+    host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text }] } },
+    })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind } } })
+    await sleep(30)
+  }
+
+
+  it('R47-a: a real host close (`completed`) archives and resets end-to-end', async () => {
+    const { workspace, host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+    await textMessage(port, '/compact')
+    await sleep(10)
+    host.emit('session/event', { id: first.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: first.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: '# 交接\n已完成 R46。' }] } },
+    })
+    // The REAL vocabulary (v0.12.1 regression used the fixture-only 'complete').
+    host.emit('session/event', { id: first.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await sleep(30)
+    const receipt = port.sent.map(m => String(m.input.markdown ?? '')).find(t => t.includes('已压缩并开启新会话'))
+    expect(receipt).toBeDefined()
+    expect(existsSync(join(workspace, '.feishu4dsh', 'compact'))).toBe(true)
+    await textMessage(port, 'ping')
+    expect(host.created.length).toBe(2)
+  })
+
+  it('R47-b: an aborted close never archives (A1 semantics hold on the real vocabulary)', async () => {
+    const { workspace, host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+    await textMessage(port, '/compact')
+    await sleep(10)
+    host.emit('session/event', { id: first.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: first.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: '# 半份摘要' }] } },
+    })
+    host.emit('session/event', { id: first.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: 'stopped from chat' } } })
+    await sleep(30)
+    expect(port.sent.map(m => String(m.input.markdown ?? '')).join('\n')).toContain('压缩失败')
+    expect(existsSync(join(workspace, '.feishu4dsh', 'compact'))).toBe(false)
+  })
+
+  it('R47-c: meta preamble before the heading is stripped; no-heading output archives as-is', async () => {
+    const { workspace, host, port } = makeEnv({ agentPreset: 'minimal' })
+    await textMessage(port, 'hello')
+    const first = host.created[0]
+    if (first === undefined) throw new Error('agent missing')
+    await textMessage(port, '/compact')
+    await runSummarizationTurnWith(host, first, 'We need produce summary Markdown…（meta 泄漏）\n# 真摘要\n正文', 'completed')
+    const noted = port.sent.map(m => String(m.input.markdown ?? '')).join('\n').match(/摘要文件：(\S+\.md)/)
+    expect(noted).not.toBeNull()
+    const archive = readFileSync(String(noted?.[1]), 'utf8')
+    expect(archive).toContain('# 真摘要')
+    expect(archive).not.toContain('We need produce')
+  })
 
   it('R46-a: minimal /compact summarizes, archives with a timestamp, resets, and hands the summary to the fresh session', async () => {
     const { workspace, host, port } = makeEnv({ agentPreset: 'minimal' })
@@ -5287,14 +5354,14 @@ describe('bridge: R46 channel /compact', () => {
       { type: 'turn/start', data: { turn: 1 } },
       { type: 'user/message', data: { content: [{ type: 'text', text: 'turn1 question' }], source: { kind: 'user' } } },
       { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: 'turn1 answer' }] } } },
-      { type: 'turn/end', data: { turn: 1, reason: { kind: 'complete' } } },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
       { type: 'turn/start', data: { turn: 2 } },
       { type: 'assistant/message', data: { turn: 2, message: { content: [{ type: 'text', text: 'turn2 toolonly' }] } } },
-      { type: 'turn/end', data: { turn: 2, reason: { kind: 'complete' } } },
+      { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
       { type: 'turn/start', data: { turn: 3 } },
       { type: 'user/message', data: { content: [{ type: 'text', text: 'turn3 question' }], source: { kind: 'user' } } },
       { type: 'assistant/message', data: { turn: 3, message: { content: [{ type: 'text', text: 'turn3 answer' }] } } },
-      { type: 'turn/end', data: { turn: 3, reason: { kind: 'complete' } } },
+      { type: 'turn/end', data: { turn: 3, reason: { kind: 'completed' } } },
     ] as never
 
     await textMessage(port, '/compact 1')

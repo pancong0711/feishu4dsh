@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.12.2 (2026-10-09)
+
+**R47：`/compact` 收口词表修复（completed）——真机取证后的一次单词级止血 + 防再犯门禁 + 摘要卫生**
+
+- **根因（真机实证 `feishu-755ea2773268-r7`）**：宿主 `TurnEndReasonMap` 的真实键集是 `completed / aborted / blocked / error / max-tokens`（+null），而本仓测试基建自早期起使用不存在的 `'complete'`；v0.12.1 的 A1「收紧」把判定锚在了测试假词表上 → 所有真实成功收口落入失败分支，`/compact` 在真机上从未成功（fail-closed 设计满分：会话无损、可重试，但功能达成度 0%）。
+- **修复**：
+  - F1：收口判定改 `kind === 'completed'`（经 `TURN_END_COMPLETED` 常量）；
+  - F2：**契约对账门禁**（`tests/host-contract.spec.ts`）——src 中 reason.kind 比较字面量与 fixture 造载荷都必须落在宿主词表内，漂移即 CI 红；词表常量注明类型出处（dsh-session `TurnEndReasonMap`）；
+  - F3：fixture 清扫——28 处 `{ kind: 'complete' }` → `'completed'`（涉及 R21–R46 各代测试）；
+  - F4：**摘要卫生**——双语指令加硬约束「第一行必须是 `# ` 一级标题」；插件兜底 `normalizeCompactSummary()`：捕获文本从第一个 `# ` 标题起存档（模型 meta 思考泄漏不再污染摘要文件；无标题则原文照存）。
+- **测试**：310/310（新增 6：R47-a 真实词表端到端 / R47-b `aborted` 仍判失败 / R47-c meta 前缀剥离 / host-contract ×3）。
+
 ## 0.12.1 (2026-10-08)
 
 **R46 发布后审计修复：/compact 三处边界缺陷（全部为「用户消息/会话绝不静默丢失」性质）**

@@ -43,6 +43,7 @@
 | 0.11.1 | 2026-10-08 | **R45 渲染链加固**：`turn/end reason:null` 空安全（0.2.0 中断收口不再抛错）；reset 补清 streamedTurns；宿主丢弃排队输入发回执（通道取消静默闸）；context-length 失败追加 `/compact`/`/new` 引导 |
 | 0.12.0 | 2026-10-08 | **R46 频道 /compact**：minimal 零挂载的上下文压缩——摘要存档（.feishu4dsh/compact/，带时间戳）+ 新会话开场注入摘要与最近 N 轮原文（可附新问题）；standard 保持宿主 /compact；失败保上下文红线；挂起队列转发 |
 | 0.12.1 | 2026-10-08 | **R46 审计修复**：/compact 收口判定收紧为 complete（取消/中断不再误存部分摘要）；pending 期间破坏性命令即时取消结算+挂起消息响亮丢弃；opener 失败兜底；README/TROUBLESHOOTING 补 /compact 口径 |
+| 0.12.2 | 2026-10-09 | **R47 收口词表修复**：宿主真实键集是 `completed` 而 fixture 用了不存在的 `complete`，v0.12.1 收紧判定误锚假词表致 /compact 真机从未成功；修复+契约对账门禁（词表漂移 CI 红）+摘要卫生（meta 前缀剥离） |
 
 ## 三、当前方向
 

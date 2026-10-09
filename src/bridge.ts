@@ -23,7 +23,7 @@ import {
   type CardActionPayload, type MenuActionPayload,
 } from './cards.js'
 import type { HostAgentHandle, HostAgentOptions, HostAgentPresets, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostLlm, HostModelSelection, HostSession, HostSessionEvent, HostSessionObservation, HostSessionQuery, HostTools, HostWorkspace, HostWorkspaceRegistry, AssistantMessageData, TokenUsageData } from './host.js'
-import { assistantText, isAssistantChunkEvent, isAssistantMessageEvent, isStepStartEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
+import { assistantText, TURN_END_COMPLETED, isAssistantChunkEvent, isAssistantMessageEvent, isStepStartEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
 import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedSelection, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
 import { readOutboundFile, sendFileTool, storeInboundFile, type OutboundFile, type SendFilePorts } from './files.js'
 import { accumulateSessionUsage, emptySessionUsage, hasSessionUsage, statsOfEvents, type SessionUsage } from './session-stats.js'
@@ -1760,7 +1760,11 @@ async function cmdCompact(env: BridgeEnv, state: BridgeState, binding: ChatBindi
       await safeSend(env, binding.chatId, copy.compactFailed(copy.compactEmptySummary), replyTo)
       return
     }
-    const file = writeCompactArchive(binding.workspacePath, state, binding, summary)
+    // R47 (F4): models sometimes prepend meta reasoning ("We need produce…")
+    // to the requested Markdown. Prefer the section that starts with a real
+    // heading; keep the raw text when no heading exists (honest archive).
+    const archived = normalizeCompactSummary(summary)
+    const file = writeCompactArchive(binding.workspacePath, state, binding, archived)
     const held = state.compactionHolds.get(binding.scopeKey) ?? []
     // Only now may the destructive step run (R46 §2.5 red line).
     await resetSessionScope(env, state, binding, 'compact')
@@ -1861,6 +1865,17 @@ function extractRecentTurnTexts(session: HostSession, keep: number, copy: String
   }
   flush()
   return turns.slice(-keep)
+}
+
+/**
+ * Strip a leading non-Markdown preamble from the model's compaction output
+ * (R47 F4): the archive begins at its first `# ` heading when one exists.
+ */
+function normalizeCompactSummary(text: string): string {
+  const lines = text.split('\n')
+  const index = lines.findIndex(line => line.startsWith('# '))
+  if (index < 0) return text
+  return lines.slice(index).join('\n').trimStart()
 }
 
 /** Assemble the fresh session's first message (R46 §2.4 budget). */
@@ -3250,7 +3265,7 @@ async function renderScopeEvent(env: BridgeEnv, state: BridgeState, scopeKey: st
       // session stays verbatim and the user retries.
       const reason = event.data.reason
       const detail = turnErrorDetail(event.data)
-      const ok = reason !== null && reason.kind === 'complete'
+      const ok = reason !== null && reason.kind === TURN_END_COMPLETED
       compaction.resolve({ ok, text: compaction.text, detail: detail === '' && !ok ? `turn 以 ${reason === null ? 'null（中断收口）' : reason.kind} 收口` : detail })
     }
     const detail = turnErrorDetail(event.data)
