@@ -37,7 +37,7 @@ import {
   type MenuOption, type MenuState,
 } from './card-menu.js'
 import { resolveLocale, strings, type Locale, type Strings } from './strings.js'
-import { formatBytes, formatNumber, formatStamp, shortHash } from './util.js'
+import { formatBytes, formatNumber, formatStamp, shortHash, splitWithCodeFences } from './util.js'
 
 /* ------------------------------------------------------------------ */
 /* Host surface the bridge needs (structurally satisfied by cordis ctx) */
@@ -574,7 +574,7 @@ export function openReplyStream(
   options: ReplyStreamOptions = {},
 ): ReplyStream {
   const { port } = env
-  const sendOptions = replyTo === undefined ? undefined : { replyTo, replyInThread: true }
+  const sendOptions = anchorOptions(replyTo)
   let buffer = ''
 
   if (env.config.output === 'card' || options.cardReasoning === true) {
@@ -727,9 +727,7 @@ export function openReplyStream(
         // contract the old open-failure catch path implemented.
         if ((failed || openFailed || capped) && !streamed && !fallbackSent && buffer.trim() !== '') {
           fallbackSent = true
-          await port.send(chatId, { markdown: buffer }, sendOptions).catch(
-            sendError => env.report(`feishu4dsh: reply send failed: ${describeError(sendError)}`),
-          )
+          await sendLongMarkdown(env, chatId, buffer, sendOptions, 'reply send')
         }
       },
     }
@@ -742,9 +740,7 @@ export function openReplyStream(
     },
     async finish(): Promise<void> {
       if (buffer.trim() === '') return
-      await port.send(chatId, { markdown: buffer }, sendOptions).catch(
-        error => env.report(`feishu4dsh: reply send failed: ${describeError(error)}`),
-      )
+      await sendLongMarkdown(env, chatId, buffer, sendOptions, 'reply send')
     },
     hasPayload(): boolean {
       return buffer.trim() !== ''
@@ -946,9 +942,9 @@ function openCardReplyStream(
   const sendFallback = async (text: string): Promise<void> => {
     if (fallbackSent) return
     fallbackSent = true
-    await port.send(chatId, { markdown: text }, options).catch(
-      error => env.report(`feishu4dsh: reply send failed: ${describeError(error)}`),
-    )
+    // R48: the overflow/panel fallback can exceed the SDK chunk limit; split it
+    // with the shared anchor so every chunk threads under the same message.
+    await sendLongMarkdown(env, chatId, text, options, 'reply send')
   }
 
   return {
@@ -1302,9 +1298,53 @@ function safeOpenStream(env: BridgeEnv, state: BridgeState, binding: ChatBinding
   }
 }
 
+/**
+ * R48: maximum characters per outbound markdown chunk.
+ *
+ * MUST stay below the SDK's own `DEFAULT_CHUNK_LIMIT` (3500). The SDK's
+ * `sendMarkdown`/`sendText` only attach `replyTo` to the **first** chunk of an
+ * over-long message; the rest go through `message.create` and land in the chat
+ * root, dropping the thread anchor. By chunking below that limit ourselves,
+ * the SDK never splits again, so every chunk we hand it keeps its `replyTo`
+ * and `replyInThread` — the reply stays in the topic end to end.
+ */
+const MAX_CHUNK = 3000
+
+/** Send options shared by every chunk of one logical reply. */
+type SendOptions = { replyTo?: string; replyInThread?: boolean }
+
+/** The shared thread anchor for a reply, or `undefined` when unanchored. */
+function anchorOptions(replyTo: string | undefined): SendOptions | undefined {
+  return replyTo === undefined ? undefined : { replyTo, replyInThread: true }
+}
+
+/**
+ * R48: deliver one logical markdown reply, splitting it into thread-anchored
+ * chunks instead of letting the SDK's chunker drop the anchor on every chunk
+ * after the first.
+ *
+ * Each chunk is sent with the **same** options (including `replyTo` and
+ * `replyInThread`), so all of them thread under the same inbound message.
+ * A chunk that fails to send is reported and the remaining chunks are still
+ * attempted — a transient failure must not truncate the user's reply.
+ *
+ * @param label - report prefix used when a chunk fails (e.g. `reply`/`send`).
+ */
+async function sendLongMarkdown(
+  env: BridgeEnv,
+  chatId: string,
+  text: string,
+  options: SendOptions | undefined,
+  label: string,
+): Promise<void> {
+  for (const chunk of splitWithCodeFences(text, MAX_CHUNK)) {
+    await env.port.send(chatId, { markdown: chunk }, options)
+      .catch(error => env.report(`feishu4dsh: ${label} failed: ${describeError(error)}`))
+  }
+}
+
 async function safeSend(env: BridgeEnv, chatId: string, text: string, replyTo?: string): Promise<void> {
-  await env.port.send(chatId, { markdown: text }, replyTo === undefined ? undefined : { replyTo, replyInThread: true })
-    .catch(error => env.report(`feishu4dsh: send failed: ${describeError(error)}`))
+  await sendLongMarkdown(env, chatId, text, anchorOptions(replyTo), 'send')
 }
 
 /* ------------------------------------------------------------------ */

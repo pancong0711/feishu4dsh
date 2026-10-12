@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.0 (2026-10-12)
+
+**R48：长回复分片丢话题锚修复——出站长文本改为「带锚分片」**
+
+- **根因**：feishu4dsh 把超长文本整段交给 SDK（`port.send({ markdown })`），而 `@larksuiteoapi/node-sdk` 的 `sendMarkdown`/`sendText` 自动分片时只给第 0 片传 `replyTo`，第 1..N 片走 `message.create` → 落到聊天根、丢失话题锚。与 `sessionScope`、入站 `thread_id`、批合并、`binding.replyTo` 均无关。
+- **修复**：
+  - `src/util.ts` 新增 `splitWithCodeFences(text, limit)`（移植 SDK 同名列实现并加固）：**硬保证任一 chunk ≤ limit**（含超长单行硬换行；SDK 原版会漏掉这种行导致其再次分片丢锚），代码围栏跨片闭合/重开、每片自洽，优先在标题前断行。
+  - `src/bridge.ts` 新增 `sendLongMarkdown()`：按 `MAX_CHUNK = 3000`（< SDK `DEFAULT_CHUNK_LIMIT` 3500，确保 SDK 不再二次分片）分片，**每一片共用同一 `{ replyTo, replyInThread: true }`**；某片失败逐片上报、不中断后续片。
+  - 全部 5 处 `{ markdown }` 出站点统一改造：`safeSend` / `openReplyStream` 流降级兜底 ×2 / 卡片面 `sendFallback`（含 reasoning panel 兜底）。`replyTo === undefined` 三态语义原样保留（无锚不臆造锚）。
+- **产品形态**：超长回复以「多条带锚回复」承载；卡片溢出 = 卡片头 + 带锚正文分片；思考过程全量输出。
+- **测试**：324/324（新增 14：`splitWithCodeFences` 单测 9 + 确定性 property 测试 1 + R48 端到端 AC1/AC2/AC4/AC5/AC6 5；并修正 R36-13 旧断言「整段一条」为「多条带锚分片」）。
+
 ## 0.12.2 (2026-10-09)
 
 **R47：`/compact` 收口词表修复（completed）——真机取证后的一次单词级止血 + 防再犯门禁 + 摘要卫生**

@@ -95,3 +95,108 @@ export function formatStamp(epochMs: number): string {
   const pad = (n: number): string => String(n).padStart(2, '0')
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
+
+/**
+ * Split a long markdown string into chunks no longer than `limit` characters.
+ *
+ * Ported from `@larksuiteoapi/node-sdk`'s `splitWithCodeFences` so the bridge
+ * can chunk **before** handing text to the SDK. This matters because the SDK's
+ * `sendMarkdown`/`sendText` only pass `replyTo` to the **first** chunk; every
+ * later chunk goes through `message.create` and lands in the chat root instead
+ * of the thread. Chunking ourselves, one chunk < the SDK's chunk limit, means
+ * the SDK never splits again — so every chunk we send keeps its thread anchor
+ * (R48). Keeping our own copy also avoids depending on an internal, unexported
+ * SDK function.
+ *
+ * Guarantees (see `tests/util.spec.ts`):
+ * - **no emitted chunk exceeds `limit`** — including a single over-long line
+ *   with no newline to break on, which the SDK's own version leaves whole (and
+ *   would then re-split, dropping the thread anchor again);
+ * - code-fence integrity: a chunk that begins/ends inside a fenced block opens
+ *   with a ` ```lang ` line and closes with ` ``` `, so every emitted chunk is
+ *   self-contained. A standalone fence line is treated as structure (it flips
+ *   the state), never as duplicated content;
+ * - a heading line is preferred as a break point once the buffer is >75% full.
+ *
+ * @param text - markdown to split.
+ * @param limit - maximum characters per chunk (must stay below the SDK's own
+ *   `DEFAULT_CHUNK_LIMIT` of 3500 so the SDK never re-splits).
+ * @returns one chunk when already short enough, otherwise an ordered list of
+ *   chunks whose concatenation reconstructs the original text (modulo the
+ *   inserted fence markers).
+ */
+export function splitWithCodeFences(text: string, limit: number): string[] {
+  if (text.length <= limit) return [text]
+
+  const CLOSE_MARKER = '```'
+  const openMarker = (lang: string): string => '```' + lang
+  /** Matches a standalone fence line, capturing its language tag. */
+  const FENCE = /^```(\w*)$/
+
+  const out: string[] = []
+  let lines: string[] = [] // content lines (never fence markers)
+  let startFence: string | null = null // fence state when this chunk began
+  let fence: string | null = null // live fence state (before the next line)
+
+  /**
+   * The exact bytes of the chunk if flushed right now. `startFence` governs
+   * the opening marker; the live `fence` governs the closing marker.
+   */
+  const render = (): string => {
+    const head = startFence === null ? '' : openMarker(startFence) + '\n'
+    const tail = fence === null ? '' : '\n' + CLOSE_MARKER
+    return head + lines.join('\n') + tail
+  }
+
+  const flush = (): void => {
+    if (lines.length > 0 || startFence !== null || fence !== null) out.push(render())
+    lines = []
+    startFence = fence
+  }
+
+  for (const raw of text.split('\n')) {
+    const m = raw.match(FENCE)
+    if (m) {
+      // Structural line: it is a chunk boundary, not content. Flush what we
+      // have (with the fence state as it stood for that content), then flip the
+      // fence so the *next* chunk opens with the right marker.
+      flush()
+      fence = fence === null ? (m[1] ?? '') : null
+      startFence = fence // the next chunk opens with this fence
+      continue
+    }
+
+    const isHeading = /^#{1,6}\s/.test(raw)
+    if (isHeading && lines.length > 0 && render().length > limit * 0.75) flush()
+
+    if (raw.length === 0) {
+      // A blank line is content; keep paragraph breaks.
+      if (lines.length > 0 && render().length + 1 > limit) flush()
+      lines.push('')
+      continue
+    }
+
+    let rest = raw
+    while (rest.length > 0) {
+      const trial = lines.concat([rest])
+      const prev = lines
+      lines = trial
+      if (render().length <= limit) break
+      lines = prev
+
+      if (lines.length > 0) {
+        flush()
+        continue
+      }
+      // Empty chunk and the piece still does not fit: hard-wrap it.
+      const room = limit - render().length - 1 // +1 for the newline separator
+      const take = room >= 1 ? room : 1
+      const piece = rest.slice(0, take)
+      lines.push(piece)
+      rest = rest.slice(piece.length)
+      if (rest.length > 0) flush()
+    }
+  }
+  flush()
+  return out
+}

@@ -15,7 +15,7 @@ import type { MutableSelection } from '../src/model-selection.js'
 import type { SessionRecord } from '../src/session-registry.js'
 import { agentKeyOf, sessionIdOf } from '../src/sessions.js'
 import { canonicalPath } from '../src/workspaces.js'
-import { sleep } from '../src/util.js'
+import { sleep, splitWithCodeFences } from '../src/util.js'
 
 /* ------------------------------------------------------------------ */
 /* Fakes                                                               */
@@ -4691,10 +4691,13 @@ describe('bridge: R36-2 reasoning card', () => {
     const cardText = cardBody(lastCard(port))
     expect(cardText).toContain('完整内容见下一条消息')
     expect(cardText.length).toBeLessThan(CARD_STREAM_MAX_CHARS + 200)
-    // Nothing is lost: the full answer follows as one plain message.
-    const markdowns = markdownSends(port)
-    expect(markdowns).toHaveLength(1)
-    expect(markdowns[0]).toHaveLength(body.length)
+    // R48: nothing is lost — the full answer follows as SEVERAL thread-anchored
+    // chunks (no longer one unanchored plain message).
+    const chunks = port.sent
+      .filter(message => typeof message.input.markdown === 'string' && /^x+$/.test(String(message.input.markdown)))
+    expect(chunks.length).toBeGreaterThanOrEqual(2)
+    for (const chunk of chunks) expect(String(chunk.input.markdown).length).toBeLessThanOrEqual(3000)
+    expect(chunks.map(chunk => String(chunk.input.markdown)).join('')).toHaveLength(body.length)
     expect(env.reportLines.some(line => line.includes('exceeds the card budget'))).toBe(true)
   })
 
@@ -5486,5 +5489,142 @@ describe('bridge: R46 channel /compact', () => {
     const texts = second?.followups.map(f => f.content.filter(b => b.type === 'text').map(b => String(b.text)).join('')) ?? []
     expect(texts.some(t => t.includes('上一会话摘要'))).toBe(true)
     expect(texts.some(t => t === '还在吗')).toBe(true)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R48: long replies must not lose their thread anchor when chunked    */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R48 long-reply thread anchoring', () => {
+  /** Local copy of the R32 menu helpers (the originals are describe-scoped). */
+  function menuButtons(port: FakePort) {
+    const cardMessage = [...port.sent].reverse().find(m => 'card' in m.input)
+    expect(cardMessage).toBeDefined()
+    const card = cardMessage?.input.card as { elements: { actions?: { value?: Record<string, unknown>; tag?: string }[] }[] }
+    const flat = card.elements.flatMap(e => e.actions ?? [])
+    return { buttons: flat.filter(b => b.tag === 'button' && b.value !== undefined) as { value: Record<string, unknown> }[] }
+  }
+
+  function clickMenu(port: FakePort, value: unknown, openId = 'ou_user', chatId = 'oc_chat1') {
+    port.emit('cardAction', {
+      messageId: 'om_menu',
+      chatId,
+      operator: { openId, name: openId },
+      action: { value, tag: 'button' },
+    })
+  }
+
+  /** Drive one full turn whose committed assistant text is `text`. */
+  async function runTurn(host: ReturnType<typeof fakeHost>, port: FakePort, text: string): Promise<string> {
+    const messageId = 'om_r48_anchor'
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content: 'hello',
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+    await sleep(20)
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+    host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text }] } },
+    })
+    host.emit('session/event', { id: agent.id }, {
+      type: 'turn/end',
+      data: { turn: 1, reason: { kind: 'completed' } },
+    })
+    await sleep(20)
+    return messageId
+  }
+
+  it('AC1: splits a long reply into chunks, every chunk carrying the same anchor', async () => {
+    const { host, port } = makeEnv({ showProcess: false })
+    const body = 'A'.repeat(7500) // > 2 chunks at MAX_CHUNK=3000
+    const anchor = await runTurn(host, port, body)
+
+    const chunks = port.sent.filter(m => typeof m.input.markdown === 'string' && /^A+$/.test(String(m.input.markdown)))
+    expect(chunks.length).toBeGreaterThanOrEqual(3)
+    // No chunk exceeds the bridge limit (so the SDK never re-splits).
+    for (const chunk of chunks) expect(String(chunk.input.markdown).length).toBeLessThanOrEqual(3000)
+    // Every chunk is threaded under the same inbound message.
+    for (const chunk of chunks) {
+      expect(chunk.options?.replyTo).toBe(anchor)
+      expect(chunk.options?.replyInThread).toBe(true)
+    }
+    // Content is preserved end to end.
+    expect(chunks.map(c => String(c.input.markdown)).join('')).toBe(body)
+  })
+
+  it('AC2: card-budget overflow delivers every fallback chunk with the anchor', async () => {
+    const { host, port } = makeEnv({ output: 'card', showProcess: false })
+    const body = 'B'.repeat(CARD_STREAM_MAX_CHARS + 5000) // overflows the card AND MAX_CHUNK
+    const anchor = await runTurn(host, port, body)
+
+    const chunks = port.sent.filter(m => typeof m.input.markdown === 'string' && /^B+$/.test(String(m.input.markdown)))
+    expect(chunks.length).toBeGreaterThanOrEqual(2)
+    for (const chunk of chunks) {
+      expect(String(chunk.input.markdown).length).toBeLessThanOrEqual(3000)
+      expect(chunk.options?.replyTo).toBe(anchor)
+      expect(chunk.options?.replyInThread).toBe(true)
+    }
+    expect(chunks.map(c => String(c.input.markdown)).join('')).toBe(body)
+  })
+
+  it('AC4: a short reply still goes out as exactly one anchored message', async () => {
+    const { host, port } = makeEnv({ showProcess: false })
+    const anchor = await runTurn(host, port, 'short reply')
+    const marks = port.sent.filter(m => typeof m.input.markdown === 'string' && !String(m.input.markdown).startsWith('> '))
+    expect(marks).toHaveLength(1)
+    expect(marks[0]?.input.markdown).toBe('short reply')
+    expect(marks[0]?.options?.replyTo).toBe(anchor)
+  })
+
+  it('AC5: code fences stay balanced across chunks', async () => {
+    const { host, port } = makeEnv({ showProcess: false })
+    const body = 'intro\n\n```ts\n' + 'const x = 1\n'.repeat(500) + '```\n'
+    const anchor = await runTurn(host, port, body)
+    const chunks = port.sent.filter(m => typeof m.input.markdown === 'string' && String(m.input.markdown).includes('```'))
+    expect(chunks.length).toBeGreaterThanOrEqual(2)
+    for (const chunk of chunks) {
+      const fences = (String(chunk.input.markdown).match(/^```/gm) ?? []).length
+      expect(fences % 2).toBe(0) // balanced inside every chunk
+      expect(chunk.options?.replyTo).toBe(anchor)
+    }
+  })
+
+  it('AC6: an unanchored send stays unanchored (no replyTo invented)', async () => {
+    // A guarded action in the wrong chat replies via `safeSend` WITHOUT a
+    // replyTo (`menuWrongChat`). That send must stay unanchored rather than
+    // inventing an anchor — the `replyTo === undefined` tri-state from the
+    // original code, now shared by every chunk.
+    const { port } = makeEnv({ approvers: ['ou_admin'] })
+    const target = mkdtempSync(join(tmpdir(), 'feishu4dsh-r48-anchor-'))
+    try {
+      await textMessage(port, `/ws add ${target}`, { senderId: 'ou_admin' })
+      await textMessage(port, '/ws', { senderId: 'ou_admin' })
+      const { buttons } = menuButtons(port)
+      const targetButton = buttons.find(b => (b.value as { idx?: number }).idx !== 0)
+      expect(targetButton).toBeDefined()
+      port.sent.length = 0
+      clickMenu(port, targetButton?.value, 'ou_admin', 'oc_other')
+      await sleep(10)
+      const reply = port.sent.find(m => typeof m.input.markdown === 'string'
+        && String(m.input.markdown).includes('此菜单仅可在原会话中操作'))
+      expect(reply).toBeDefined()
+      expect(reply?.options).toBeUndefined()
+    } finally {
+      rmSync(target, { recursive: true, force: true })
+    }
   })
 })
