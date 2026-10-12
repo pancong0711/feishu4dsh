@@ -49,11 +49,28 @@ export function markdownElement(content: string): object {
 export const REASONING_PANEL_MAX_CHARS = 12_000
 
 /**
- * R36-2: total rendered text (reasoning panel + body) one reply card may
- * carry. Past this the body region stops growing and the full text is
- * delivered as one plain message instead (see the bridge's overflow valve).
+ * R36-2 / R49: total rendered text (reasoning panel + body) ONE reply card may
+ * carry. Feishu rejects an oversized markdown element outright (~30k chars);
+ * past this budget the live card **rolls over to a fresh streaming card** that
+ * continues the tail (see the bridge's `openCardReplyStream` rollover), so a
+ * long answer streams across several in-thread cards instead of freezing on the
+ * head and dumping at turn end. Kept below the hard limit with margin.
  */
-export const CARD_STREAM_MAX_CHARS = 24_000
+export const CARD_STREAM_MAX_CHARS = 28_000
+
+/**
+ * R49: minimum characters newly added before a card page is allowed to roll
+ * over again. Bounds how often the heavy "create a new card" round-trip fires
+ * when a turn emits content fast, without visibly truncating any page.
+ */
+export const CARD_ROLLOVER_MIN_CHARS = 2_000
+
+/**
+ * R49: minimum wall-clock spacing between two consecutive card rollovers (ms).
+ * The companion throttle to {@link CARD_ROLLOVER_MIN_CHARS}; together they keep
+ * paging from hammering the Feishu API while still delivering mid-turn.
+ */
+export const CARD_ROLLOVER_MIN_INTERVAL_MS = 1_000
 
 /**
  * R36-2: one collapsible panel (`collapsible_panel`, card JSON 1.0 — the same

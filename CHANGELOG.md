@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.0 (2026-10-12)
+
+**R49：卡片正文溢出改为「多张卡依次流式」——消除中途静默与收口爆发**
+
+- **根因（真机取证 `feishu-755ea2773268-r10`，journalctl --user）**：live reasoning 卡面在正文超单卡预算时走 R36-2「冻结头部 + 收口把全文一次性发」的旧阀；一个持续产出长正文的 turn 里，卡片冻住不再更新（观感"卡住"约 20 分钟），直到 `/stop`→finish 才由 `sendFallback`→R48 `sendLongMarkdown` 把整段切成多条无间隔连发（观感"突然弹一堆"）。真正问题是**延迟投递**，不是连发。
+- **修复**：
+  - `openCardReplyStream` 重写为「卡页序列 + 活动页」状态机：正文超预算即**滚动翻页**——当前卡定格为头 + 「▸ 接下页」提示，另起一张流式卡承接后续正文，全程边生成边可见；每张新卡都带**同一 `{replyTo, replyInThread:true}`**（复用 `anchorOptions`），全部留在话题内。
+  - 分页边界复用 `splitWithCodeFences`（R48），代码围栏跨页闭合/重开、每页自洽。
+  - 建卡动作单独频控：`CARD_ROLLOVER_MIN_CHARS=2000` + `CARD_ROLLOVER_MIN_INTERVAL_MS=1000` 双门，避免快速翻页撞飞书 API 限流。
+  - 建新卡的 `port.send` 加与 R21/R22 同规格的**有界等待**（`replyFinishTimeoutMs`）：挂起的建卡不会 park `append`/turn/end；超时该页文本仍由 finish 兜底送达，内容恰好一次不丢。
+  - `finish()` 只终态渲染活动页，**移除全文群发路径**。
+  - 决策 #1：`CARD_STREAM_MAX_CHARS` 24000→28000（接近硬限、减少翻页）；#6：给降级路径 `sendLongMarkdown` 也加片间最小间隔（`SEND_CHUNK_MIN_INTERVAL_MS=300`，经 timing 旋钮 `sendChunkMinIntervalMs` 可在测试零化）。
+- **测试**：332/332（基线 324 + R49 净增 8：R49-a…g 覆盖即时翻页/同锚/短回复不翻/围栏不破/降级带锚/建卡挂起不 park/节流；AC7 覆盖兜底片间节流；改写 R36-13 与 AC2 断言为滚动语义）。
+
 ## 0.13.0 (2026-10-12)
 
 **R48：长回复分片丢话题锚修复——出站长文本改为「带锚分片」**

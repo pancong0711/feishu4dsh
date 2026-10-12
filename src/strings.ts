@@ -50,10 +50,10 @@ export interface Strings {
    */
   reasoningOmitted: (chars: string) => string
   /**
-   * R36-2: closing note when the BODY alone outgrows the card budget; the card
-   * keeps the head and the full text follows as one plain message.
+   * R49: a card page filled its body budget and rolled over to a fresh card;
+   * this note closes the frozen page pointing at the next one.
    */
-  reasoningBodyOverflowNote: string
+  cardOverflowNextPageNote: string
   usageSummary: (input: string, output: string, cacheRead: string | undefined, cacheWrite: string | undefined, reasoning: string | undefined) => string
   approvalTitle: string
   approvalReasonLabel: string
@@ -308,7 +308,7 @@ const zhCN: Strings = {
   reasoningPanelTitleLive: (chars, elapsedSeconds) => `💭 思考中 · ${chars} 字 · ${elapsedSeconds}s`,
   reasoningPanelTitleDone: (chars, elapsedSeconds) => `💭 思考过程（${chars} 字 · ${elapsedSeconds}s）`,
   reasoningOmitted: chars => `……（已省略 ${chars} 字）……`,
-  reasoningBodyOverflowNote: '（回答较长，完整内容见下一条消息）',
+  cardOverflowNextPageNote: '▸ 接下页……',
   usageSummary: (input, output, cacheRead, cacheWrite, reasoning) =>
     `Token：输入 ${input} · 输出 ${output}${cacheRead === undefined ? '' : ` · 缓存读 ${cacheRead}`}${cacheWrite === undefined ? '' : ` · 缓存写 ${cacheWrite}`}${reasoning === undefined ? '' : ` · 推理 ${reasoning}`}`,
   approvalTitle: '⚠️ 需要确认操作',
@@ -536,7 +536,7 @@ const enUS: Strings = {
   reasoningPanelTitleLive: (chars, elapsedSeconds) => `💭 Thinking · ${chars} chars · ${elapsedSeconds}s`,
   reasoningPanelTitleDone: (chars, elapsedSeconds) => `💭 Reasoning (${chars} chars · ${elapsedSeconds}s)`,
   reasoningOmitted: chars => `…… (${chars} chars omitted) ……`,
-  reasoningBodyOverflowNote: '(long reply; the full text follows in the next message)',
+  cardOverflowNextPageNote: '▸ continued on the next card…',
   usageSummary: (input, output, cacheRead, cacheWrite, reasoning) =>
     `Tokens: ${input} in · ${output} out${cacheRead === undefined ? '' : ` · cache read ${cacheRead}`}${cacheWrite === undefined ? '' : ` · cache write ${cacheWrite}`}${reasoning === undefined ? '' : ` · reasoning ${reasoning}`}`,
   approvalTitle: '⚠️ Approval required',

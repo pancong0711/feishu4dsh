@@ -192,6 +192,9 @@ function makeEnv(
     resolveAuthorization(config),
     report,
     hooks,
+    // R49: zero the fallback chunk pacing so multi-part sends land within the
+    // short sleeps these tests use; production keeps the default interval.
+    { sendChunkMinIntervalMs: 0 },
   )
   return { workspace, config, port, host, dispose }
 }
@@ -4307,7 +4310,7 @@ describe('bridge: R36-2 reasoning card', () => {
       resolveAuthorization(config),
       line => reportLines.push(line),
       hooks ?? {},
-      timing,
+      { sendChunkMinIntervalMs: 0, ...timing },
     )
     return { workspace, config, port, host, reportLines, dispose }
   }
@@ -4676,7 +4679,7 @@ describe('bridge: R36-2 reasoning card', () => {
     expect(cardBody(card)).toBe('answer')
   })
 
-  it('R36-13: an over-long BODY keeps the card head and still delivers the full text', async () => {
+  it('R36-13 / R49: an over-long BODY rolls over to a fresh streaming card (no dump at finish)', async () => {
     const port = new R36Stage2Port()
     const env = makeR36Stage2Env(port, LIVE)
     await textMessage(port, 'hello', { chatType: 'p2p' })
@@ -4688,17 +4691,22 @@ describe('bridge: R36-2 reasoning card', () => {
     env.host.emit('session/event', { id: agent.id }, TURN_END)
     await sleep(30)
 
-    const cardText = cardBody(lastCard(port))
-    expect(cardText).toContain('完整内容见下一条消息')
-    expect(cardText.length).toBeLessThan(CARD_STREAM_MAX_CHARS + 200)
-    // R48: nothing is lost — the full answer follows as SEVERAL thread-anchored
-    // chunks (no longer one unanchored plain message).
-    const chunks = port.sent
-      .filter(message => typeof message.input.markdown === 'string' && /^x+$/.test(String(message.input.markdown)))
-    expect(chunks.length).toBeGreaterThanOrEqual(2)
-    for (const chunk of chunks) expect(String(chunk.input.markdown).length).toBeLessThanOrEqual(3000)
-    expect(chunks.map(chunk => String(chunk.input.markdown)).join('')).toHaveLength(body.length)
-    expect(env.reportLines.some(line => line.includes('exceeds the card budget'))).toBe(true)
+    // R49: the overflow opened a SECOND card (the original placeholder + one
+    // rollover page) instead of freezing the head and dumping the tail as
+    // markdown at turn end.
+    const cards = port.sent.filter(m => m.input.card !== undefined)
+    expect(cards.length).toBeGreaterThanOrEqual(2)
+    // No full-text markdown fallback was sent this turn (that was the old shape).
+    const mdDumps = port.sent.filter(m => typeof m.input.markdown === 'string'
+      && /^x+$/.test(String(m.input.markdown)))
+    expect(mdDumps).toHaveLength(0)
+    // The frozen head page carries the "next page" pointer; the active tail page does not.
+    const patchedHeads = port.cardUpdates.map(u => cardBody(u.card)).filter(t => t.includes('接下页'))
+    expect(patchedHeads.length).toBeGreaterThanOrEqual(1)
+    // Every card (placeholder + rollover) threads under the same inbound anchor.
+    for (const card of cards) {
+      expect(card.options?.replyInThread).toBe(true)
+    }
   })
 
   it('R36-15: a hung live patch never parks turn/end (R22 discipline holds on the card surface)', async () => {
@@ -4755,6 +4763,163 @@ describe('bridge: R36-2 reasoning card', () => {
     // Closed card: no live note, the panel folded, the tool aggregate in the body.
     expect(cardNote(lastCard(port))).toBeUndefined()
     expect(cardBody(lastCard(port))).toContain('调用工具 bash × 1 次')
+  })
+
+  /* -------------------------------------------------------------- */
+  /* R49: card body overflow rolls over to fresh streaming cards     */
+  /* -------------------------------------------------------------- */
+
+  /** Count of `send({card})` calls (each is a card page creation). */
+  function cardSends(port: R36Stage2Port): { input: Record<string, unknown>; options?: { replyTo?: string; replyInThread?: boolean } }[] {
+    return port.sent.filter(m => m.input.card !== undefined) as { input: Record<string, unknown>; options?: { replyTo?: string; replyInThread?: boolean } }[]
+  }
+
+  it('R49-a: an over-budget body opens a second card MID-TURN (not at finish)', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    // A single oversized commit pushes the active page past its budget.
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'x'.repeat(CARD_STREAM_MAX_CHARS + 5_000)))
+    await sleep(40)   // rollover happens during the turn, BEFORE turn/end
+    const midTurnCards = cardSends(port).length
+    expect(midTurnCards).toBeGreaterThanOrEqual(2)
+
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(20)
+    // No full-text markdown dump on the whole turn.
+    expect(port.sent.filter(m => /^x+$/.test(String(m.input.markdown ?? '')))).toHaveLength(0)
+  })
+
+  it('R49-b: every rolled-over card threads under the same anchor', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    const messageId = 'om_r49_anchor'
+    port.emit('message', {
+      messageId, chatId: 'oc_chat1', chatType: 'group', senderId: 'ou_user', senderName: 'User',
+      content: 'hello', rawContentType: 'text', resources: [], mentions: [], mentionAll: false,
+      mentionedBot: true, createTime: Date.now(),
+    })
+    await sleep(20)
+    const agent = firstAgent(env.host)
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'y'.repeat(CARD_STREAM_MAX_CHARS + 8_000)))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(40)
+
+    const cards = cardSends(port)
+    expect(cards.length).toBeGreaterThanOrEqual(2)
+    for (const c of cards) {
+      expect(c.options?.replyTo).toBe(messageId)
+      expect(c.options?.replyInThread).toBe(true)
+    }
+  })
+
+  it('R49-c: a short reply stays on ONE card (no spurious rollover)', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'short answer'))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(30)
+    expect(cardSends(port)).toHaveLength(1)
+    expect(cardBody(lastCard(port))).toBe('short answer')
+  })
+
+  it('R49-d: rollover never splits a code fence across pages', async () => {
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+    const fenced = 'intro\n\n```ts\n' + 'const a = 1\n'.repeat(2600) + '```\n'
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, fenced))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(40)
+
+    // Every card body that contains a fence has them balanced within that card.
+    const bodies = [
+      ...port.sent.filter(m => m.input.card !== undefined).map(m => cardBody(m.input.card as object)),
+      ...port.cardUpdates.map(u => cardBody(u.card)),
+    ].filter(t => t.includes('```'))
+    expect(bodies.length).toBeGreaterThan(0)
+    for (const b of bodies) expect((b.match(/^```/gm) ?? []).length % 2).toBe(0)
+  })
+
+  it('R49-f: rapid double-overflow is throttled to one rollover per interval', async () => {
+    // A single commit far beyond TWO page budgets must NOT spam two cards at
+    // once: the second rollover waits for CARD_ROLLOVER_MIN_INTERVAL_MS. Within
+    // one synchronous burst we expect exactly the first rollover (2 cards).
+    const port = new R36Stage2Port()
+    const env = makeR36Stage2Env(port, LIVE)
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'q'.repeat(CARD_STREAM_MAX_CHARS * 2 + 5_000)))
+    await sleep(40)
+    // First append rolls over once; the pump's time gate blocks an immediate second.
+    expect(cardSends(port).length).toBe(2)
+  })
+
+  it('R49-g: a hung rollover-card create never parks turn/end (R22 discipline)', async () => {
+    // The SECOND card send hangs forever; finish() must still resolve within its
+    // bounded waits and deliver the tail so the turn is not parked by the stall.
+    class HangingRolloverPort extends R36Stage2Port {
+      private cardsSent = 0
+      override async send(to: string, input: Record<string, unknown>, options?: { replyTo?: string; replyInThread?: boolean }) {
+        if (input.card !== undefined) {
+          this.cardsSent += 1
+          if (this.cardsSent >= 2) return new Promise<{ messageId: string }>(() => undefined) // hang the rollover create
+        }
+        return super.send(to, input, options)
+      }
+    }
+    const port = new HangingRolloverPort()
+    // Tight finish cap so the bounded wait releases quickly in-test.
+    const env = makeR36Stage2Env(port, { ...LIVE, replyFinishTimeoutMs: 50 })
+    await textMessage(port, 'hello', { chatType: 'p2p' })
+    const agent = firstAgent(env.host)
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'w'.repeat(CARD_STREAM_MAX_CHARS + 5_000)))
+    const started = Date.now()
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(200)
+    // turn/end was not parked indefinitely by the hung create.
+    expect(Date.now() - started).toBeLessThan(1_500)
+  })
+
+  it('R49-e: card placeholder condemned mid-turn → full body still delivered anchored', async () => {
+    // A card surface whose placeholder never settles (transport rejects the
+    // initial send) must fall back to the R48 anchored markdown send, proving
+    // the rollover feature preserves the "content always arrives exactly once"
+    // red line under degradation.
+    class RejectingCardPort extends R36Stage2Port {
+      override async send(to: string, input: Record<string, unknown>, options?: { replyTo?: string; replyInThread?: boolean }) {
+        if (input.card !== undefined) throw new Error('card create rejected')
+        return super.send(to, input, options)
+      }
+    }
+    const port = new RejectingCardPort()
+    const env = makeR36Stage2Env(port, LIVE)
+    const messageId = 'om_degrade_anchor'
+    port.emit('message', {
+      messageId, chatId: 'oc_chat1', chatType: 'group', senderId: 'ou_user', senderName: 'User',
+      content: 'hello', rawContentType: 'text', resources: [], mentions: [], mentionAll: false,
+      mentionedBot: true, createTime: Date.now(),
+    })
+    await sleep(20)
+    const agent = firstAgent(env.host)
+    env.host.emit('session/event', { id: agent.id }, TURN_START)
+    env.host.emit('session/event', { id: agent.id }, textOf(agent, 'z'.repeat(9_000)))
+    env.host.emit('session/event', { id: agent.id }, TURN_END)
+    await sleep(40)
+    const chunks = port.sent.filter(m => /^z+$/.test(String(m.input.markdown ?? '')))
+    expect(chunks.length).toBeGreaterThanOrEqual(2)
+    for (const ch of chunks) expect(ch.options?.replyTo).toBe(messageId)
   })
 })
 
@@ -5566,19 +5731,22 @@ describe('bridge: R48 long-reply thread anchoring', () => {
     expect(chunks.map(c => String(c.input.markdown)).join('')).toBe(body)
   })
 
-  it('AC2: card-budget overflow delivers every fallback chunk with the anchor', async () => {
+  it('AC2: card-budget overflow rolls over to a fresh anchored card (R49)', async () => {
     const { host, port } = makeEnv({ output: 'card', showProcess: false })
-    const body = 'B'.repeat(CARD_STREAM_MAX_CHARS + 5000) // overflows the card AND MAX_CHUNK
+    const body = 'B'.repeat(CARD_STREAM_MAX_CHARS + 5000) // overflows one card page
     const anchor = await runTurn(host, port, body)
 
-    const chunks = port.sent.filter(m => typeof m.input.markdown === 'string' && /^B+$/.test(String(m.input.markdown)))
-    expect(chunks.length).toBeGreaterThanOrEqual(2)
-    for (const chunk of chunks) {
-      expect(String(chunk.input.markdown).length).toBeLessThanOrEqual(3000)
-      expect(chunk.options?.replyTo).toBe(anchor)
-      expect(chunk.options?.replyInThread).toBe(true)
+    // R49: the tail continues on a SECOND streaming card rather than being
+    // dumped as markdown at finish; both cards share the same thread anchor.
+    const cards = port.sent.filter(m => m.input.card !== undefined)
+    expect(cards.length).toBeGreaterThanOrEqual(2)
+    for (const card of cards) {
+      expect(card.options?.replyTo).toBe(anchor)
+      expect(card.options?.replyInThread).toBe(true)
     }
-    expect(chunks.map(c => String(c.input.markdown)).join('')).toBe(body)
+    // No full-text markdown dump this turn.
+    const mdDumps = port.sent.filter(m => typeof m.input.markdown === 'string' && /^B+$/.test(String(m.input.markdown)))
+    expect(mdDumps).toHaveLength(0)
   })
 
   it('AC4: a short reply still goes out as exactly one anchored message', async () => {
@@ -5601,6 +5769,43 @@ describe('bridge: R48 long-reply thread anchoring', () => {
       expect(fences % 2).toBe(0) // balanced inside every chunk
       expect(chunk.options?.replyTo).toBe(anchor)
     }
+  })
+
+  it('AC7: fallback chunks are paced when the chunk interval is non-zero', async () => {
+    // Decision #6: a degraded multi-part reply must not land as one instant
+    // burst. With a positive sendChunkMinIntervalMs the Nth chunk arrives at
+    // least (N-1)*interval after the first. Uses the real sendLongMarkdown path
+    // (FakePort.stream throws → buffer → anchored markdown chunks).
+    const workspace = mkdtempSync(join(tmpdir(), 'feishu4dsh-ac7-'))
+    const config = resolveConfig({ appId: 'cli_test', appSecret: 'secret', workspace })
+    const port = new FakePort()
+    const host = fakeHost()
+    installBridge(host, config, port, resolveAuthorization(config), () => undefined, {}, { sendChunkMinIntervalMs: 60 })
+    const messageId = 'om_ac7'
+    port.emit('message', {
+      messageId, chatId: 'oc_chat1', chatType: 'group', senderId: 'ou_user', senderName: 'User',
+      content: 'hello', rawContentType: 'text', resources: [], mentions: [], mentionAll: false,
+      mentionedBot: true, createTime: Date.now(),
+    })
+    await sleep(20)
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+    const stamps: number[] = []
+    const origSend = port.send.bind(port)
+    port.send = (async (to: string, input: Record<string, unknown>, options?: { replyTo?: string; replyInThread?: boolean }) => {
+      if (typeof input.markdown === 'string' && /^A+$/.test(input.markdown)) stamps.push(Date.now())
+      return origSend(to, input, options)
+    }) as typeof port.send
+    host.emit('session/event', { id: agent.id }, { type: 'turn/start', data: { turn: 1 } })
+    host.emit('session/event', { id: agent.id }, {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: 'A'.repeat(7000) }] } },
+    })
+    host.emit('session/event', { id: agent.id }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await sleep(400)
+    expect(stamps.length).toBeGreaterThanOrEqual(3)
+    // First→last spans at least (n-1) intervals minus slack.
+    expect(stamps[stamps.length - 1]! - stamps[0]!).toBeGreaterThanOrEqual((stamps.length - 1) * 60 - 20)
   })
 
   it('AC6: an unanchored send stays unanchored (no replyTo invented)', async () => {

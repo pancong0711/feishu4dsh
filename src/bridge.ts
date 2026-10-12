@@ -19,7 +19,7 @@ import { resolveScopeKey, agentKeyOf, isAgentKey, sessionIdOf, AgentLedger, type
 import { buildCatalog, listSubdirectories, listWorkspaces, resolveCdTarget, registeredPathsOf, resolveWorkspaceDirectory, normalizeWorkspacePath, type WorkspaceCatalog } from './workspaces.js'
 import {
   approvalCard, collapsiblePanel, decodeActionValue, markdownElement, noteElement, settledApprovalCard, truncateMiddle,
-  CARD_STREAM_MAX_CHARS, REASONING_PANEL_MAX_CHARS,
+  CARD_STREAM_MAX_CHARS, CARD_ROLLOVER_MIN_CHARS, CARD_ROLLOVER_MIN_INTERVAL_MS, REASONING_PANEL_MAX_CHARS,
   type CardActionPayload, type MenuActionPayload,
 } from './cards.js'
 import type { HostAgentHandle, HostAgentOptions, HostAgentPresets, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostLlm, HostModelSelection, HostSession, HostSessionEvent, HostSessionObservation, HostSessionQuery, HostTools, HostWorkspace, HostWorkspaceRegistry, AssistantMessageData, TokenUsageData } from './host.js'
@@ -37,7 +37,7 @@ import {
   type MenuOption, type MenuState,
 } from './card-menu.js'
 import { resolveLocale, strings, type Locale, type Strings } from './strings.js'
-import { formatBytes, formatNumber, formatStamp, shortHash, splitWithCodeFences } from './util.js'
+import { formatBytes, formatNumber, formatStamp, shortHash, sleep, splitWithCodeFences } from './util.js'
 
 /* ------------------------------------------------------------------ */
 /* Host surface the bridge needs (structurally satisfied by cordis ctx) */
@@ -298,6 +298,8 @@ export interface BridgeTimingOptions {
   cardPatchMinIntervalMs?: number
   /** Overrides {@link CARD_PATCH_MIN_CHARS} (R36-2 whole-card patch). */
   cardPatchMinChars?: number
+  /** Overrides {@link SEND_CHUNK_MIN_INTERVAL_MS} (R49 fallback chunk pacing). */
+  sendChunkMinIntervalMs?: number
 }
 
 /** The resolved timing knobs carried on {@link BridgeEnv}. */
@@ -308,6 +310,7 @@ export interface BridgeTiming {
   readonly processStatusMinChars: number
   readonly cardPatchMinIntervalMs: number
   readonly cardPatchMinChars: number
+  readonly sendChunkMinIntervalMs: number
 }
 
 /**
@@ -368,6 +371,7 @@ export function installBridge(
       processStatusMinChars: timing.processStatusMinChars ?? PROCESS_STATUS_MIN_CHARS,
       cardPatchMinIntervalMs: timing.cardPatchMinIntervalMs ?? CARD_PATCH_MIN_INTERVAL_MS,
       cardPatchMinChars: timing.cardPatchMinChars ?? CARD_PATCH_MIN_CHARS,
+      sendChunkMinIntervalMs: timing.sendChunkMinIntervalMs ?? SEND_CHUNK_MIN_INTERVAL_MS,
     },
   }
   const state = createBridgeState()
@@ -783,11 +787,11 @@ function openCardReplyStream(
   shape: { live: boolean; expanded: boolean; placeholder: string },
 ): ReplyStream {
   const { port } = env
-  // The body buffer == the reply body. The reasoning text lives in the caller's
+  // R49: the reply body is spread across a sequence of card pages; `buffer`
+  // (declared with the page state below) holds the full accumulated body for
+  // payload truth + degraded fallback. The reasoning text lives in the caller's
   // per-turn status, reaches this surface only through `setReasoning`, and is
   // never appended here (R36 red line).
-  let buffer = ''
-  let cardMessageId: string | undefined
   // R22 §2.1: the placeholder round-trip is raced against the same
   // time-to-ready window as stream mode. A placeholder that neither settles
   // nor fails within the window (hung request, throttling, reconnect) used
@@ -823,12 +827,28 @@ function openCardReplyStream(
   /** R36-2: `turn/end` closed the live phase; nothing may patch afterwards. */
   let closed = false
   /**
-   * R36-2 overflow valve: the body alone outgrew the card's budget. The card
-   * keeps the head (plus a note) and `finish` delivers the full text as one
-   * plain message, so a long answer is never truncated on the wire.
+   * R49: one logical reply is now a SEQUENCE of card pages. Page 0 carries the
+   * reasoning panel + the head of the body; when its body budget fills, the page
+   * freezes with a "next page" note and a fresh streaming card continues the
+   * tail — all under the same thread anchor. This replaces the old
+   * freeze-the-head-and-dump-at-finish valve, so content arrives mid-turn
+   * instead of after `turn/end`.
    */
-  let overflowed = false
-  let overflowHead = ''
+  interface CardPage {
+    messageId: string | undefined
+    /** Body text this page renders (page 0 excludes the panel). */
+    text: string
+    /** A frozen (rolled-over) page stops accepting patches. */
+    frozen: boolean
+  }
+  const pages: CardPage[] = [{ messageId: undefined, text: '', frozen: false }]
+  /** Index of the page currently receiving appends + patches. */
+  let activeIdx = 0
+  /** The full accumulated body across every page (fallback + payload truth). */
+  let buffer = ''
+  /** R49: throttle bookkeeping for the heavy "create a new card" round-trip. */
+  let lastRolloverAt = 0
+  let charsSinceRollover = 0
   let fallbackSent = false
 
   /** Reasoning text as it will be rendered (budget applied, head+tail kept). */
@@ -837,28 +857,42 @@ function openCardReplyStream(
     return truncateMiddle(reasoning.content, REASONING_PANEL_MAX_CHARS, omitted => copy.reasoningOmitted(formatNumber(omitted))).text
   }
   const panelVisible = (): boolean => reasoning !== undefined && reasoning.content !== ''
-  /** Rendered characters of the reasoning region — half of the card's budget. */
+  /** Rendered characters of the reasoning region — charged to page 0's budget. */
   const panelChars = (): number => panelContent().length
 
-  const buildCard = (): object => {
-    const panel = reasoning
+  /** Body budget for a given page: page 0 shares it with the reasoning panel. */
+  const pageBudget = (idx: number): number =>
+    idx === 0 ? Math.max(0, CARD_STREAM_MAX_CHARS - panelChars()) : CARD_STREAM_MAX_CHARS
+
+  /**
+   * Build a page's card object. Only page 0 carries the reasoning panel / live
+   * process line; later pages are pure body continuation. A frozen page that
+   * rolled over shows the "next page" note so the reader knows to keep reading.
+   */
+  const buildCardFor = (idx: number): object => {
+    const page = pages[idx] ?? { messageId: undefined, text: '', frozen: false }
     const elements: unknown[] = []
-    if (panel !== undefined && panel.content !== '') {
-      elements.push(collapsiblePanel({
-        // While the turn runs the header carries the live progress line (the
-        // panel's own live title until one was pushed); `finish` folds the
-        // panel onto the closing header the bridge handed over.
-        title: closed ? panel.title : statusLine ?? panel.title,
-        content: panelContent(),
-        expanded: closed ? false : shape.expanded,
-      }))
-    } else if (!closed && statusLine !== undefined && buffer.trim() === '') {
-      // R36 stage one's live process line, carried as a note on the card
-      // surface. Only until the panel or the body takes over — never residue.
-      elements.push(noteElement(statusLine))
+    if (idx === 0) {
+      const panel = reasoning
+      if (panel !== undefined && panel.content !== '') {
+        elements.push(collapsiblePanel({
+          // While the turn runs the header carries the live progress line (the
+          // panel's own live title until one was pushed); `finish` folds the
+          // panel onto the closing header the bridge handed over.
+          title: closed ? panel.title : statusLine ?? panel.title,
+          content: panelContent(),
+          expanded: closed ? false : shape.expanded,
+        }))
+      } else if (!closed && statusLine !== undefined && page.text.trim() === '') {
+        // R36 stage one's live process line, carried as a note on the card
+        // surface. Only until the panel or the body takes over — never residue.
+        elements.push(noteElement(statusLine))
+      }
     }
-    if (buffer.trim() !== '') {
-      elements.push(markdownElement(overflowed ? `${overflowHead}\n\n${copy.reasoningBodyOverflowNote}` : buffer))
+    if (page.text.trim() !== '') {
+      // A frozen page ends on the "next page" pointer; the live page does not.
+      const suffix = page.frozen ? `\n\n${copy.cardOverflowNextPageNote}` : ''
+      elements.push(markdownElement(page.text + suffix))
     } else if (elements.length === 0) {
       // Nothing to show yet (or nothing at all): the localized placeholder this
       // surface opened with.
@@ -867,25 +901,32 @@ function openCardReplyStream(
     return { elements }
   }
 
-  /** Rendered characters of the whole card — the throttle's character gate. */
-  const renderedChars = (): number => panelChars() + buffer.length + (statusLine?.length ?? 0)
+  /** Back-compat alias: page 0 render used by the initial placeholder send. */
+  const buildCard = (): object => buildCardFor(0)
 
-  const patch = (card: object): void => {
-    const messageId = cardMessageId
-    if (messageId === undefined) return
+  /** Rendered characters of the whole card — the throttle's character gate. */
+  const renderedChars = (): number => panelChars() + (pages[activeIdx]?.text.length ?? 0) + (statusLine?.length ?? 0)
+
+  /** Patch one page's card in place (fire-and-forget, serialized via chain). */
+  const patchPage = (idx: number): void => {
+    const page = pages[idx]
+    const messageId = page?.messageId
+    if (messageId === undefined || page === undefined) return
     patchChain = patchChain
       .then(() => {
         // A link still queued when `turn/end` closed the card is dropped: the
         // closing render below is authoritative, and replaying an older
         // snapshot after it would leave the card on a stale live frame.
-        if (closed) return
-        return env.port.updateCard(messageId, card)
+        if (closed || page.frozen) return
+        return env.port.updateCard(messageId, buildCardFor(idx))
       })
       .catch(error => env.report(`feishu4dsh: live card update failed: ${describeError(error)}`))
   }
 
   const maybePush = (): void => {
-    if (!shape.live || closed || !dirty || cardMessageId === undefined) return
+    if (!shape.live || closed || !dirty) return
+    const active = pages[activeIdx]
+    if (active?.messageId === undefined) return
     const now = Date.now()
     const chars = renderedChars()
     if (pushed
@@ -902,7 +943,7 @@ function openCardReplyStream(
           dirty = false
           lastPushAt = Date.now()
           lastPushChars = renderedChars()
-          patch(buildCard())
+          patchPage(activeIdx)
         }, Math.max(0, env.timing.cardPatchMinIntervalMs - (now - lastPushAt)))
       }
       return
@@ -911,13 +952,83 @@ function openCardReplyStream(
     dirty = false
     lastPushAt = now
     lastPushChars = chars
-    patch(buildCard())
+    patchPage(activeIdx)
+  }
+
+  /**
+   * R49: split the active page at a structural boundary (code fences intact),
+   * freeze it on the head, and open a fresh streaming card for the tail. The
+   * new card is sent under the SAME options, so it threads to the same inbound
+   * message. Throttled by both a minimum char delta and a minimum interval so
+   * fast turns cannot spam card creation.
+   */
+  const rolloverActivePage = async (): Promise<void> => {
+    const active = pages[activeIdx]
+    if (active === undefined) return
+    const budget = pageBudget(activeIdx)
+    const chunks = splitWithCodeFences(active.text, budget)
+    if (chunks.length < 2) return                    // nothing safely splittable
+    const head = chunks[0] ?? ''
+    const tail = chunks.slice(1).join('\n')
+    // 1. Freeze the current page on its head (+ "next page" note) and stop
+    //    patching it.
+    active.text = head
+    active.frozen = true
+    if (active.messageId !== undefined) {
+      await tryUpdateCard(env, active.messageId, buildCardFor(activeIdx))
+    }
+    // 2. Open a fresh streaming card seeded with the tail, under the same anchor.
+    const nextPage: CardPage = { messageId: undefined, text: tail, frozen: false }
+    pages.push(nextPage)
+    activeIdx = pages.length - 1
+    charsSinceRollover = 0
+    lastRolloverAt = Date.now()
+    // Bound the new-card round-trip like every other transport wait here
+    // (R21/R22 discipline): a hung create must never park `append`, and through
+    // it the whole turn's rendering or turn/end. On timeout the page keeps no
+    // messageId, its patches no-op, and its text is still carried by the tail
+    // into finish's fallback — content arrives exactly once either way.
+    const createPromise = port.send(chatId, { card: buildCardFor(activeIdx) }, options)
+    createPromise.catch(() => undefined) // never surface a late rejection unhandled
+    let timedOut = false
+    let releaseCap: (() => void) | undefined
+    const cap = new Promise<void>(resolve => { releaseCap = resolve })
+    const capTimer = setTimeout(() => {
+      timedOut = true
+      releaseCap?.()
+    }, env.timing.replyFinishTimeoutMs)
+    try {
+      const raced = await Promise.race([createPromise, cap.then(() => undefined)])
+      if (!timedOut && raced !== undefined) nextPage.messageId = raced.messageId
+    } catch (error) {
+      env.report(`feishu4dsh: rollover card failed: ${describeError(error)}`)
+    } finally {
+      clearTimeout(capTimer)
+    }
+  }
+
+  /**
+   * R49: roll the active page over while it exceeds budget, respecting the
+   * pacing gates. Returns when the active page fits or cannot grow further.
+   */
+  const pumpRollovers = async (): Promise<void> => {
+    while (!closed) {
+      const active = pages[activeIdx]
+      if (active === undefined) return
+      const budget = pageBudget(activeIdx)
+      if (active.text.length <= budget) return
+      const now = Date.now()
+      const timeOk = now - lastRolloverAt >= CARD_ROLLOVER_MIN_INTERVAL_MS
+      const sizeOk = charsSinceRollover >= CARD_ROLLOVER_MIN_CHARS || lastRolloverAt === 0
+      if (!(timeOk && sizeOk)) return                // throttled; retry next append
+      await rolloverActivePage()
+    }
   }
 
   void (async () => {
     try {
       const result = await port.send(chatId, { card: buildCard() }, options)
-      cardMessageId = result.messageId
+      pages[0]!.messageId = result.messageId
     } catch (error) {
       env.report(`feishu4dsh: placeholder card failed: ${describeError(error)}`)
     } finally {
@@ -950,20 +1061,13 @@ function openCardReplyStream(
   return {
     async append(text: string): Promise<void> {
       buffer += text
-      // R36-2 overflow valve: once the body no longer fits beside the panel,
-      // freeze the card's body at the head and leave the rest to `finish`.
-      if (!overflowed) {
-        const budget = CARD_STREAM_MAX_CHARS - panelChars()
-        if (buffer.length > budget) {
-          overflowed = true
-          overflowHead = buffer.slice(0, Math.max(0, budget))
-          env.report(
-            `feishu4dsh: reply body exceeds the card budget (${CARD_STREAM_MAX_CHARS} chars);`
-            + ` the card keeps the head and the full text follows as one message`,
-          )
-        }
-      }
+      charsSinceRollover += text.length
+      const active = pages[activeIdx]
+      if (active !== undefined) active.text += text
       dirty = true
+      // R49: if the active page overflowed its budget, roll over NOW (mid-turn)
+      // rather than freezing and deferring the rest to finish.
+      await pumpRollovers()
       maybePush()
     },
     async setStatus(line: string): Promise<void> {
@@ -989,24 +1093,38 @@ function openCardReplyStream(
       // still delivered through exactly one path.
       await placeholderGate
       const condemned = !placeholderSettled
+      if (condemned) {
+        closed = true
+        if (pushTimer !== undefined) {
+          clearTimeout(pushTimer)
+          pushTimer = undefined
+        }
+        await sendFallback(fallbackText())
+        return
+      }
+      // Drain any remaining rollovers so no tail is stranded on an unshown page,
+      // then close out every live page. Earlier (frozen) pages are already final.
+      await pumpRollovers()
       closed = true
       if (pushTimer !== undefined) {
         clearTimeout(pushTimer)
         pushTimer = undefined
       }
-      if (!condemned && cardMessageId !== undefined) {
-        // Live patches are fire-and-forget; let the ones already in flight land
-        // before the closing render so the card does not end on an older
-        // snapshot — but BOUNDED, like every other transport wait in this
-        // module (R21 §3.2): a hung patch must never park turn/end. Links still
-        // queued past this point see `closed` and drop themselves.
-        await settleWithin(patchChain, env.timing.replyFinishTimeoutMs)
-        if (await tryUpdateCard(env, cardMessageId, buildCard())) {
-          if (overflowed) await sendFallback(buffer)
+      await settleWithin(patchChain, env.timing.replyFinishTimeoutMs)
+      // Final render of the active page (folds the panel onto its closing
+      // header, drops the live cursor). No full-text re-send: the body already
+      // reached the user across the page sequence.
+      const active = pages[activeIdx]
+      if (active !== undefined && active.messageId !== undefined) {
+        if (await tryUpdateCard(env, active.messageId, buildCardFor(activeIdx))) {
           return
         }
       }
-      await sendFallback(fallbackText())
+      // Active page could not be finalized (hung/absent card id): degrade to a
+      // single anchored markdown send of whatever that page still owed.
+      if (active !== undefined && !active.frozen && active.text.trim() !== '') {
+        await sendFallback(active.text)
+      }
     },
   }
 }
@@ -1310,6 +1428,15 @@ function safeOpenStream(env: BridgeEnv, state: BridgeState, binding: ChatBinding
  */
 const MAX_CHUNK = 3000
 
+/**
+ * R49: minimum spacing between two consecutive fallback chunks sent by
+ * {@link sendLongMarkdown}. A degraded multi-part reply should read as a short
+ * stream rather than an instant wall of text, and this keeps well clear of
+ * Feishu's per-sender rate limits. Only applies between chunks (never delays
+ * the first), so single-message replies are unaffected.
+ */
+const SEND_CHUNK_MIN_INTERVAL_MS = 300
+
 /** Send options shared by every chunk of one logical reply. */
 type SendOptions = { replyTo?: string; replyInThread?: boolean }
 
@@ -1337,8 +1464,13 @@ async function sendLongMarkdown(
   options: SendOptions | undefined,
   label: string,
 ): Promise<void> {
-  for (const chunk of splitWithCodeFences(text, MAX_CHUNK)) {
-    await env.port.send(chatId, { markdown: chunk }, options)
+  const chunks = splitWithCodeFences(text, MAX_CHUNK)
+  for (let i = 0; i < chunks.length; i++) {
+    // R49: pace consecutive chunks so a degraded multi-part reply reads as a
+    // stream of messages rather than one instant wall of text, and stays clear
+    // of Feishu's per-sender rate limits. No delay before the first chunk.
+    if (i > 0) await sleep(env.timing.sendChunkMinIntervalMs)
+    await env.port.send(chatId, { markdown: chunks[i] ?? '' }, options)
       .catch(error => env.report(`feishu4dsh: ${label} failed: ${describeError(error)}`))
   }
 }
