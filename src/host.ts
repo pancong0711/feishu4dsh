@@ -27,8 +27,18 @@ export interface HostSessionEvent {
 export interface HostSession {
   /** The session id shared by the agent registry and session log. */
   readonly id: string
-  /** The session log; read-only here. */
+  /**
+   * The session log as a plain property. Hosts up to `0.2.0` expose it this
+   * way; `0.2.1` removed the getter and kept only
+   * {@link HostSession.snapshotEvents}.
+   */
   readonly events?: readonly HostSessionEvent[]
+  /**
+   * The session log accessor of `0.2.1+`: a frozen detached array of every
+   * committed event (from `@deepseek-ai/dsh-session` `Session.snapshotEvents`).
+   * Read through {@link sessionEvents} so both host generations work.
+   */
+  snapshotEvents?(): readonly HostSessionEvent[]
   /**
    * The routing header of the session's most recent model request, as the
    * web/headless hosts log it; absent on older hosts or before any turn.
@@ -104,7 +114,22 @@ export interface StepStartData {
  * `null` reason for materialized interrupted closes). Comparing against any
  * string outside this set is a bug; the `host-contract` spec enforces it.
  */
-export const TURN_END_KINDS = ['completed', 'aborted', 'blocked', 'error', 'max-tokens'] as const
+export const TURN_END_KINDS = [
+  'completed',
+  'aborted',
+  'blocked',
+  'error',
+  'max-tokens',
+  /**
+   * `0.2.1` additions. `interrupted` is the crash-orphaned closer the host
+   * appends when a stored log's last turn never ended (or that session-query
+   * synthesizes on cold reads); `forked` closes a turn left open at a fork
+   * boundary. Neither is ever produced live by the loop, and both must fail
+   * closed for compaction exactly like any other non-`completed` close.
+   */
+  'interrupted',
+  'forked',
+] as const
 /** A clean successful close — the ONLY one compaction may archive under (R47 F1). */
 export const TURN_END_COMPLETED: (typeof TURN_END_KINDS)[number] = 'completed'
 
@@ -195,6 +220,20 @@ export function turnErrorDetail(data: TurnEndData): string {
   return error === undefined ? '' : `${error.code ?? 'error'}: ${error.message ?? ''}`.trimEnd()
 }
 
+/** Read the session log through either host generation (`events` ⇄ `snapshotEvents`). */
+export function sessionEvents(session: HostSession | undefined): readonly HostSessionEvent[] | undefined {
+  if (session === undefined) return undefined
+  if (typeof session.snapshotEvents === 'function') {
+    try {
+      return session.snapshotEvents()
+    } catch {
+      // A disposed/detached session is "no log available", not a reason to
+      // fail the whole status render — fall through to the legacy property.
+    }
+  }
+  return session.events
+}
+
 /* ------------------------------------------------------------------ */
 /* Agents                                                              */
 /* ------------------------------------------------------------------ */
@@ -238,14 +277,45 @@ export interface HostAttachments {
   saveImage(input: { data: Uint8Array; mediaType: string; name?: string }): Promise<HostImageRef>
 }
 
+/**
+ * Why an agent driver was cancelled, mirroring the host `AgentCancelCause`
+ * union (`@deepseek-ai/dsh-session`): `user` | `parent` | `hook` | `disposed`.
+ * The host switches on `kind` and `assertNever`s anything else, so it is a
+ * closed set — never pass a bare string.
+ */
+export type HostAgentCancelCause =
+  | { readonly kind: 'user' }
+  | { readonly kind: 'parent' }
+  | { readonly kind: 'hook'; readonly reason: string }
+  | { readonly kind: 'disposed' }
+
+/**
+ * The cause every channel-initiated stop uses (`/stop`, `/new`, `/mode`,
+ * `/session` switch): the host writes `reason` verbatim into the durable
+ * `turn/end.reason`, so the operator keeps the human-readable "why" while the
+ * variant stays one the host understands.
+ * @param reason - one-line operator-readable cause.
+ * @returns the cancel cause to hand to `agent.cancel`.
+ */
+export function hookCancel(reason: string): HostAgentCancelCause {
+  return { kind: 'hook', reason }
+}
+
 /** Public live-agent handle (subset of the host `Agent` interface). */
 export interface HostAgent {
   readonly id: string
   readonly session: HostSession
   /** Queue an ordinary follow-up turn and wake the driver. */
   followup(message: HostUserMessage): void
-  /** Clear queued work and abort the active turn; a no-op when idle. */
-  cancel(cause: string): void
+  /**
+   * Clear queued work and abort the active turn; a no-op when idle.
+   * `0.2.1` typed the argument: the host switches on `cause.kind` and an
+   * unknown variant trips its `assertNever`, leaving the turn unclosed (the
+   * R50 P0-1 incident). Channel-initiated stops therefore answer with
+   * {@link HOOK_CANCEL} so the operator-readable reason survives in
+   * `turn/end.reason.reason` while the kind stays inside the host union.
+   */
+  cancel(cause: HostAgentCancelCause): void
   /** Resolve once the agent has no running task; absent on older hosts. */
   whenIdle?(): Promise<void>
   /**
@@ -313,7 +383,16 @@ export interface HostCommands {
    * syntax or name does not resolve, which distinguishes an unknown command
    * from one that ran and failed.
    */
-  execute(agent: HostAgent, line: string, signal: AbortSignal): Promise<HostCommandExecution | undefined>
+  execute(
+    agent: HostAgent,
+    line: string,
+    /**
+     * Attachments submitted alongside the command (`0.2.1+`); this channel
+     * never forwards chat attachments into a host command, so it passes `[]`.
+     */
+    submittedAttachments: readonly unknown[],
+    signal: AbortSignal,
+  ): Promise<HostCommandExecution | undefined>
 }
 
 /** The `tools` registry as per-agent composition uses it. */
@@ -397,6 +476,30 @@ export interface HostSessionObservation {
    * mounts no projection registry or observation options exclude projections.
    */
   readonly projections?: { readonly values: HostSessionPresetValues }
+  /**
+   * `0.2.1` hands out a *lease*: the observation holds one reference into the
+   * query engine's prepared-session cache and the cache only evicts when the
+   * count returns to zero (`@deepseek-ai/dsh-session-query` `SessionObservation
+   * extends Disposable`). Callers MUST release it; this channel's
+   * {@link releaseObservation} does that for both host generations.
+   */
+  retain?(): HostSessionObservation
+  readonly [Symbol.dispose]?: () => void
+}
+
+/**
+ * Release one observation lease, tolerating both host generations (the
+ * pre-`0.2.1` observation has no disposer and needs none).
+ * @param observation - the lease returned by `sessionQuery.observeSession`.
+ */
+export function releaseObservation(observation: HostSessionObservation | undefined): void {
+  if (observation === undefined) return
+  try {
+    observation[Symbol.dispose]?.()
+  } catch {
+    // A lease that refuses disposal (already released, engine gone) must not
+    // take the caller's command down with it.
+  }
 }
 
 /**
@@ -442,8 +545,14 @@ export interface HostWorkspaceRegistry {
    * The registry-global archive set (R29; dsh ≥ 0.1.1-rc.2): session ids the
    * web UI hides everywhere. Sessions themselves are untouched on disk.
    * Absent on older hosts — archive commands then degrade to "unsupported".
+   *
+   * A **property**, not a method: dsh `0.2.1` replaced the method with
+   * `get archivedSessionIds()` (`@deepseek-ai/dsh-workspace`). Calling it as a
+   * function throws, and a swallowed throw used to masquerade as "this host
+   * has no archiving" (the R50 P1-3 incident) — read it as a value and let
+   * genuine failures surface.
    */
-  archivedSessionIds?(): readonly string[]
+  readonly archivedSessionIds?: readonly string[]
   /**
    * Durably add one session id to the archive set. Idempotent for already
    * archived ids; throws for ids that are neither live nor in persistence.
@@ -547,6 +656,66 @@ export interface HostApprovalRequest {
 }
 
 /* ------------------------------------------------------------------ */
+/* User questions (ask_user)                                           */
+/* ------------------------------------------------------------------ */
+
+/** One selectable answer the model offered for a question. */
+export interface HostQuestionOption {
+  readonly label: string
+  readonly description?: string
+}
+
+/**
+ * One question of an `ask_user` request (subset of
+ * `@deepseek-ai/dsh-user-questions` `AskUserQuestionItem`).
+ */
+export interface HostQuestionItem {
+  /** Stable caller-provided id, echoed back in the answer. */
+  readonly id: string
+  readonly question: string
+  /** Supporting detail rendered with the question but kept out of labels. */
+  readonly detail?: string
+  /** Short heading/group label. */
+  readonly header?: string
+  /** Choices a UI can render as a menu; absent asks for free text only. */
+  readonly options?: readonly HostQuestionOption[]
+  /** Whether more than one option may be selected. Defaults to single-select. */
+  readonly multiSelect?: boolean
+}
+
+/** One question's answer: selected option labels plus optional free text. */
+export interface HostQuestionAnswerItem {
+  readonly id: string
+  readonly selected: readonly string[]
+  readonly custom?: string
+}
+
+/** The human's answer batch; the host requires one item per question. */
+export interface HostQuestionAnswer {
+  readonly answers: readonly HostQuestionAnswerItem[]
+}
+
+/**
+ * The `user-questions/request` payload (subset of
+ * `@deepseek-ai/dsh-user-questions` `AskUserQuestionRequestEvent`). Note the
+ * *separate* waterfall: `ask_user` never travels over `approval/request`, so a
+ * channel that only answers approvals leaves every question to the host's
+ * `NO_PROVIDER` fallback (the R51 gap this contract closes).
+ */
+export interface HostQuestionRequest {
+  readonly questions: readonly HostQuestionItem[]
+  /** The asking agent; absent only for agentless host callers. */
+  readonly agent?: HostAgent
+  /** Aborting withdraws the question; the answer is then discarded. */
+  readonly signal?: AbortSignal
+  /**
+   * Timed-wait identity: a foreground ask claims its card under `callId` and
+   * the host's own countdown decides when the request goes pending.
+   */
+  readonly wait?: { readonly callId: string; readonly timed?: boolean }
+}
+
+/* ------------------------------------------------------------------ */
 /* Cordis declaration merging                                          */
 /* ------------------------------------------------------------------ */
 
@@ -563,5 +732,14 @@ declare module '@deepseek-ai/cordis' {
       request: HostApprovalRequest,
       next: () => Promise<HostApprovalOutcome>,
     ): Promise<HostApprovalOutcome>
+    /**
+     * Waterfall structured-question channel (`ask_user`, dsh ≥ 0.1.x): the
+     * channel renders the questions as one Feishu form card and returns the
+     * batch; `next()` delegates to the next answerer (host `NO_PROVIDER`).
+     */
+    'user-questions/request'(
+      request: HostQuestionRequest,
+      next: () => Promise<HostQuestionAnswer>,
+    ): Promise<HostQuestionAnswer>
   }
 }

@@ -150,8 +150,9 @@
 - id: tool-workflow
   disabled: true
 
-- id: tool-ralph
-  disabled: true
+# R50: dsh 0.2.1 dropped the host-plane `tool-ralph` row (the package still
+# exists and the `standard` preset below composes it per agent), so a disable
+# entry for it only produced `patch: entry "tool-ralph" not found` on boot.
 
 - id: agent-instructions
   disabled: true

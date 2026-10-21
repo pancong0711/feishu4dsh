@@ -1,28 +1,72 @@
 import { describe, expect, it } from 'vitest'
-import { readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
 import { TURN_END_KINDS } from '../src/host.js'
 
 /**
- * R47 (F2): the turn-close vocabulary is a HOST contract — `TurnEndReasonMap`
- * in @deepseek-ai/dsh-session types ships exactly
- * `completed | aborted | blocked | error | max-tokens` (+ null since 0.2.0).
- * The v0.12.1 incident: fixtures invented `'complete'`, the A1 hardening
- * anchored on it, and every real successful close fell into the failure
- * branch. This scan makes that class of drift CI-red instead of review-luck.
+ * R47 (F2) + R50: the host contract is the plugin's ONE upgrade surface, so it
+ * is checked twice over —
+ *
+ * 1. **Internally**: the shipped vocabulary constant and the source files that
+ *    compare against it must agree, and fixtures may not invent words. This
+ *    runs everywhere (no host needed).
+ * 2. **Against the installed host**: when a dsh installation is reachable, the
+ *    `.d.ts` shapes this plugin mirrors are parsed and compared, so a host
+ *    upgrade turns CI red instead of turning `/stop`, `/compact`, or
+ *    `/session archive` silently dead at runtime.
+ *
+ * The 2026-10-21 (dsh 0.2.1-rc.2) incident is why layer 2 exists: 332 green
+ * unit tests all ran against hand-written fakes that had frozen the OLD
+ * signatures, so four real breaks shipped green.
  */
-describe('host contract: turn/end reason vocabulary', () => {
+
+const SRC = join(import.meta.dirname, '..', 'src')
+
+/** Every source file's text, keyed by file name. */
+function srcFiles(): { name: string; source: string }[] {
+  return readdirSync(SRC)
+    .filter(name => name.endsWith('.ts'))
+    .map(name => ({ name, source: readFileSync(join(SRC, name), 'utf8') }))
+}
+
+/**
+ * Locate an installed dsh's `@deepseek-ai/*` package directory.
+ * @returns the directory holding `dsh-session/`, or undefined when this
+ *   checkout has no host installed (standalone build/test).
+ */
+function hostPackagesDir(): string | undefined {
+  const candidates = [
+    process.env.FEISHU4DSH_DSH_PACKAGES,
+    join(dirname(process.execPath), '..', 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
+    join(homedir(), '.npm-global', 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
+    '/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai',
+    '/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai',
+  ].filter((entry): entry is string => entry !== undefined && entry !== '')
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, 'dsh-session', 'lib', 'types', 'types.d.ts'))) return candidate
+  }
+  return undefined
+}
+
+/** Read one host type file, or undefined when this host does not ship it. */
+function hostTypeFile(root: string, pkg: string, ...rest: string[]): string | undefined {
+  const path = join(root, pkg, 'lib', 'types', ...rest)
+  return existsSync(path) ? readFileSync(path, 'utf8') : undefined
+}
+
+describe('host contract: turn/end reason vocabulary (internal)', () => {
   const ALLOWED = new Set<string>([...TURN_END_KINDS])
 
-  it('the shipped constant matches the host TurnEndReasonMap keys', () => {
-    expect([...TURN_END_KINDS].sort()).toEqual(['aborted', 'blocked', 'completed', 'error', 'max-tokens'])
+  it('the shipped constant matches the 0.2.1 host TurnEndReasonMap keys', () => {
+    expect([...TURN_END_KINDS].sort()).toEqual(
+      ['aborted', 'blocked', 'completed', 'error', 'forked', 'interrupted', 'max-tokens'],
+    )
   })
 
   it('no src file compares reason.kind against a string outside the host vocabulary', () => {
     const offenders: string[] = []
-    for (const name of readdirSync(join(import.meta.dirname, '..', 'src'))) {
-      if (!name.endsWith('.ts')) continue
-      const source = readFileSync(join(import.meta.dirname, '..', 'src', name), 'utf8')
+    for (const { name, source } of srcFiles()) {
       // Matches: reason.kind === 'x' / !== 'x' and kind: 'x' literal comparisons.
       for (const match of source.matchAll(/reason\.kind\s*[!=]==\s*'([a-z-]+)'/g)) {
         const literal = String(match[1])
@@ -40,5 +84,118 @@ describe('host contract: turn/end reason vocabulary', () => {
     const found = [...source.matchAll(/reason:\s*\{[^{}]*?kind:\s*'([a-z-]+)'/g)].map(m => String(m[1]))
     const fake = found.filter(kind => !ALLOWED.has(kind))
     expect([...new Set(fake)]).toEqual([])
+  })
+})
+
+describe('host contract: cancel causes (internal)', () => {
+  it('every agent.cancel() call passes the structured cause, never a bare string', () => {
+    const offenders: string[] = []
+    for (const { name, source } of srcFiles()) {
+      // `.cancel('…')` / `.cancel(`…`)` — the 0.2.1 host `assertNever`s a string.
+      for (const match of source.matchAll(/\.cancel\(\s*['"`]/g)) {
+        offenders.push(`${name}: agent.cancel called with a string literal`)
+      }
+      // Any non-literal argument must go through the typed helper.
+      for (const match of source.matchAll(/\.cancel\(\s*([A-Za-z_$][\w$]*)/g)) {
+        const arg = String(match[1])
+        if (arg !== 'hookCancel') offenders.push(`${name}: agent.cancel argument '${arg}' is not hookCancel(...)`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+})
+
+describe('host contract: command dispatch (internal)', () => {
+  it('commands.execute is called with the attachment batch before the signal', () => {
+    const bridge = readFileSync(join(SRC, 'bridge.ts'), 'utf8')
+    const calls = [...bridge.matchAll(/commands\.execute\(([^)]*)\)/g)].map(m => String(m[1]))
+    expect(calls.length).toBeGreaterThan(0)
+    for (const args of calls) {
+      // agent, line, submittedAttachments, signal
+      expect(args.split(',').length).toBe(4)
+      expect(args).toMatch(/\[\]\s*,\s*[\w.]+$/)
+    }
+  })
+})
+
+describe('host contract: archive set is a value (internal)', () => {
+  it('archivedSessionIds is read as a property, never invoked', () => {
+    const offenders: string[] = []
+    for (const { name, source } of srcFiles()) {
+      // Ignore doc comments: the R50 note quotes the host's getter by name.
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+      if (/archivedSessionIds\s*\(/.test(code)) offenders.push(`${name}: archivedSessionIds invoked as a function`)
+    }
+    expect(offenders).toEqual([])
+  })
+})
+
+describe('host contract: session log accessor (internal)', () => {
+  it('only the host adapter reads the legacy `session.events` property', () => {
+    const offenders: string[] = []
+    for (const { name, source } of srcFiles()) {
+      if (name === 'host.ts') continue
+      if (/\bsession\.events\b/.test(source)) offenders.push(`${name}: reads session.events directly`)
+      if (/\?\.events\b/.test(source)) offenders.push(`${name}: reads ?.events directly`)
+    }
+    expect(offenders).toEqual([])
+  })
+})
+
+const hostRoot = hostPackagesDir()
+
+describe.skipIf(hostRoot === undefined)('host contract: installed dsh types', () => {
+  it('TURN_END_KINDS matches the installed TurnEndReasonMap', () => {
+    const source = hostTypeFile(hostRoot as string, 'dsh-session', 'types.d.ts')
+    expect(source).toBeDefined()
+    const block = /interface TurnEndReasonMap \{([\s\S]*?)\n\}/.exec(source as string)?.[1] ?? ''
+    const keys = [...block.matchAll(/^\s{4}'?([a-z][a-z-]*)'?: \{/gm)].map(m => String(m[1]))
+    expect(keys.length).toBeGreaterThan(0)
+    expect([...TURN_END_KINDS].sort()).toEqual([...keys].sort())
+  })
+
+  it('AgentCancelCause is the closed union the plugin mirrors', () => {
+    const source = hostTypeFile(hostRoot as string, 'dsh-session', 'types.d.ts') as string
+    // The union's members each carry `;` inside, so bound it by the NEXT
+    // declaration rather than by the first semicolon.
+    const block = /export type AgentCancelCause =([\s\S]*?)export type TurnEndCancelCause/.exec(source)?.[1] ?? ''
+    const kinds = [...block.matchAll(/kind: '([a-z]+)'/g)].map(m => String(m[1]))
+    expect(kinds.sort()).toEqual(['disposed', 'hook', 'parent', 'user'])
+  })
+
+  it('commands.execute takes (agent, line, submittedAttachments, signal)', () => {
+    const source = hostTypeFile(hostRoot as string, 'dsh-commands', 'index.d.ts')
+    expect(source).toBeDefined()
+    const signature = /execute\(([^)]*)\)/.exec(source as string)?.[1] ?? ''
+    expect(signature).toContain('submittedAttachments')
+    expect(signature.indexOf('submittedAttachments')).toBeLessThan(signature.indexOf('signal'))
+  })
+
+  it('workspaceRegistry exposes archivedSessionIds as a getter', () => {
+    const source = hostTypeFile(hostRoot as string, 'dsh-workspace', 'index.d.ts')
+    expect(source).toBeDefined()
+    expect(source as string).toMatch(/get archivedSessionIds\(\)/)
+  })
+
+  it('Session exposes snapshotEvents() and no `events` property', () => {
+    const source = hostTypeFile(hostRoot as string, 'dsh-session', 'index.d.ts')
+    expect(source).toBeDefined()
+    expect(source as string).toContain('snapshotEvents(')
+    expect(source as string).not.toMatch(/get events\(\)/)
+  })
+
+  it('sessionQuery observations are disposable leases', () => {
+    const source = hostTypeFile(hostRoot as string, 'dsh-session-query', 'observation.d.ts')
+    expect(source).toBeDefined()
+    // Declared as a lease: disposable + retainable. The concrete disposer is a
+    // `[Symbol.dispose]` method in the implementation (lib/index.js).
+    expect(source as string).toMatch(/interface SessionObservation extends Disposable/)
+    expect(source as string).toContain('retain()')
+  })
+
+  it('the ask_user waterfall is a separate event from approvals', () => {
+    const source = hostTypeFile(hostRoot as string, 'dsh-user-questions', 'types.d.ts')
+    expect(source).toBeDefined()
+    expect(source as string).toContain("'user-questions/request'")
   })
 })

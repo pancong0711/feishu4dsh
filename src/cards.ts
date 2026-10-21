@@ -150,7 +150,7 @@ export function actionRow(buttons: CardButton[]): object {
 }
 
 /** Action kinds the channel binds to card buttons. */
-export type CardActionKind = 'approval' | 'file-send' | 'menu'
+export type CardActionKind = 'approval' | 'file-send' | 'menu' | 'question'
 
 /** Actions a menu card supports (`R32`). */
 export type MenuAct = 'sel' | 'page' | 'up' | 'ok' | 'addcur'
@@ -182,8 +182,21 @@ export interface MenuActionPayload {
   readonly chatId: string
 }
 
+/**
+ * The decoded payload behind one `ask_user` form submit (R51). The form's
+ * field values ride on `action.form_value` of the raw callback and are read
+ * by the bridge, so this payload only needs the identity of the pending ask.
+ */
+export interface QuestionActionPayload {
+  readonly kind: 'question'
+  /** Ties the submit to the pending question batch it settles. */
+  readonly token: string
+  /** Chat the card was created in; a forward to another chat must not act. */
+  readonly chatId: string
+}
+
 /** The decoded payload behind one card click. */
-export type CardActionPayload = ApprovalActionPayload | MenuActionPayload
+export type CardActionPayload = ApprovalActionPayload | MenuActionPayload | QuestionActionPayload
 
 /**
  * The compact string form of one menu action, for components whose option
@@ -249,6 +262,11 @@ export function decodeActionValue(value: unknown): CardActionPayload | null {
   const token = record.token
   const decision = record.decision
   const chatId = record.chatId
+  if (kind === 'question') {
+    if (typeof token !== 'string' || token === ''
+      || typeof chatId !== 'string' || chatId === '') return null
+    return { kind: 'question', token, chatId }
+  }
   if ((kind !== 'approval' && kind !== 'file-send')
     || typeof token !== 'string' || token === ''
     || (decision !== 'approve' && decision !== 'deny')
@@ -304,6 +322,139 @@ export function settledApprovalCard(title: string, status: string, outcome: 'app
   const icon = outcome === 'approved' ? '✅' : outcome === 'denied' ? '❌' : '⏱️'
   return card(
     { title, template: SETTLED_TEMPLATES[outcome] },
+    [markdownElement(`${icon} ${status}`)],
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* ask_user question form (R51)                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One question as the card renderer consumes it (structural mirror of the
+ * host `AskUserQuestionItem`, kept local so this module stays host-free).
+ */
+export interface QuestionCardItem {
+  readonly id: string
+  readonly question: string
+  readonly detail?: string
+  readonly header?: string
+  readonly options?: readonly { readonly label: string; readonly description?: string }[]
+  readonly multiSelect?: boolean
+}
+
+/** Copy the question card needs; supplied by the caller's string table. */
+export interface QuestionCardCopy {
+  readonly title: string
+  readonly submit: string
+  readonly selectPlaceholder: string
+  readonly customPlaceholder: string
+  readonly noOptionsHint: string
+}
+
+/** Element-name prefixes for the form fields, keyed by question index. */
+export const QUESTION_FIELD_PREFIX = 'q'
+export const QUESTION_CUSTOM_PREFIX = 'c'
+
+/**
+ * Field name of question `index`'s option control.
+ * @param index - zero-based question position.
+ * @returns the form field name.
+ */
+export function questionFieldName(index: number): string {
+  return `${QUESTION_FIELD_PREFIX}${String(index)}`
+}
+
+/**
+ * Field name of question `index`'s free-text control.
+ * @param index - zero-based question position.
+ * @returns the form field name.
+ */
+export function questionCustomName(index: number): string {
+  return `${QUESTION_CUSTOM_PREFIX}${String(index)}`
+}
+
+/**
+ * Normalize one `form_value` entry into the selected-label list the host
+ * answer batch wants: a `select_static` field echoes one string, a `checker`
+ * field echoes an array, and an untouched field echoes nothing.
+ * @param value - raw form value for one question's option control.
+ * @returns selected labels, in the order the form reported them.
+ */
+export function selectedLabelsOf(value: unknown): string[] {
+  if (typeof value === 'string') return value === '' ? [] : [value]
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
+}
+
+/**
+ * Build the interactive form card for one `ask_user` request: per question a
+ * heading block plus a native option control (`select_static` single-select /
+ * `checker` multi-select) and a free-text `input`, all inside ONE form whose
+ * submit button carries the pending-ask identity. Native form controls are
+ * what make "Other…" answers and multi-select possible on Feishu at all.
+ * @param items - the questions to render.
+ * @param options - copy table and the action payload to bind.
+ * @returns the card object for `send({card})`.
+ */
+export function questionCard(
+  items: readonly QuestionCardItem[],
+  options: { copy: QuestionCardCopy; payload: { token: string; chatId: string } },
+): object {
+  const fields: object[] = []
+  items.forEach((item, index) => {
+    const heading = item.header === undefined || item.header === ''
+      ? `**${String(index + 1)}. ${item.question}**`
+      : `**${String(index + 1)}. ${item.header}**\n${item.question}`
+    const detail = item.detail === undefined || item.detail === '' ? '' : `\n\n${item.detail}`
+    fields.push({ tag: 'div', text: { tag: 'lark_md', content: `${heading}${detail}` } })
+    const choices = item.options ?? []
+    if (choices.length > 0) {
+      const control = {
+        tag: item.multiSelect === true ? 'checker' : 'select_static',
+        name: questionFieldName(index),
+        placeholder: { tag: 'plain_text', content: options.copy.selectPlaceholder },
+        options: choices.map(choice => ({
+          text: { tag: 'plain_text', content: choice.description === undefined || choice.description === '' ? choice.label : `${choice.label} — ${choice.description}` },
+          value: choice.label,
+        })),
+      }
+      fields.push(control)
+    } else {
+      fields.push(markdownElement(options.copy.noOptionsHint))
+    }
+    fields.push({
+      tag: 'input',
+      name: questionCustomName(index),
+      placeholder: { tag: 'plain_text', content: options.copy.customPlaceholder },
+    })
+  })
+  fields.push({
+    tag: 'button',
+    name: 'submit',
+    text: { tag: 'plain_text', content: options.copy.submit },
+    type: 'primary',
+    action_type: 'form_submit',
+    value: { kind: 'question', token: options.payload.token, chatId: options.payload.chatId },
+  })
+  return card(
+    { title: options.copy.title, template: 'blue' },
+    [{ tag: 'form', name: 'askuser', elements: fields }],
+  )
+}
+
+/**
+ * Render the settled state of a question card: what was answered, or that the
+ * ask expired un-answered.
+ * @param title - card header.
+ * @param status - one-line operator-readable outcome.
+ * @param outcome - drives the icon and header tone.
+ * @returns the replacement card for `updateCard`.
+ */
+export function settledQuestionCard(title: string, status: string, outcome: 'answered' | 'timedOut'): object {
+  const icon = outcome === 'answered' ? '✅' : '⏱️'
+  return card(
+    { title, template: outcome === 'answered' ? 'green' : 'grey' },
     [markdownElement(`${icon} ${status}`)],
   )
 }

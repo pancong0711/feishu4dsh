@@ -10,7 +10,7 @@ import { resolveAuthorization } from '../src/acl.js'
 import { channelOptions } from '../src/adapter.js'
 import type { ChannelPort, ResourceType } from '../src/adapter.js'
 import { resolveLocale, strings } from '../src/strings.js'
-import type { HostAgent, HostAgentHandle, HostAgentOptions, HostRequestHeaderConfig, HostSession, HostSessionEvent, HostUserMessage } from '../src/host.js'
+import type { HostAgent, HostAgentCancelCause, HostAgentHandle, HostAgentOptions, HostRequestHeaderConfig, HostSession, HostSessionEvent, HostUserMessage } from '../src/host.js'
 import type { MutableSelection } from '../src/model-selection.js'
 import type { SessionRecord } from '../src/session-registry.js'
 import { agentKeyOf, sessionIdOf } from '../src/sessions.js'
@@ -23,7 +23,13 @@ import { sleep, splitWithCodeFences } from '../src/util.js'
 
 class FakeAgent implements HostAgent {
   readonly followups: HostUserMessage[] = []
-  readonly cancels: string[] = []
+  /**
+   * Every cancel cause the bridge handed over. R50: the host types this as
+   * `AgentCancelCause` and `assertNever`s anything else, so the fake records
+   * the STRUCTURE — a regression back to a bare string turns these assertions
+   * red instead of silently passing.
+   */
+  readonly cancels: HostAgentCancelCause[] = []
   /** The cwd the agent was created under (undefined when resumed). */
   cwd?: string
   /** The provider/model the agent was created with. */
@@ -38,14 +44,27 @@ class FakeAgent implements HostAgent {
   /** When set, the fake session exposes the dsh session log (R26). */
   sessionEvents?: readonly HostSessionEvent[]
   constructor(readonly id: string) {}
+  /**
+   * `logStyle` models which host generation this agent impersonates:
+   * `'events'` is the pre-0.2.1 property, `'snapshot'` the 0.2.1 accessor.
+   */
+  logStyle: 'events' | 'snapshot' = 'snapshot'
   get session(): HostSession {
     const base: HostSession = this.headerReader === undefined
       ? { id: this.id }
       : { id: this.id, requestHeader: this.headerReader }
-    return this.sessionEvents === undefined ? base : { ...base, events: this.sessionEvents }
+    if (this.sessionEvents === undefined) return base
+    return this.logStyle === 'events'
+      ? { ...base, events: this.sessionEvents }
+      : { ...base, snapshotEvents: () => this.sessionEvents ?? [] }
   }
   followup(message: HostUserMessage): void { this.followups.push(message) }
-  cancel(cause: string): void { this.cancels.push(cause) }
+  cancel(cause: HostAgentCancelCause): void { this.cancels.push(cause) }
+}
+
+/** The operator-readable reason of one recorded cancel (or its bare kind). */
+function cancelReason(cause: HostAgentCancelCause): string {
+  return cause.kind === 'hook' ? cause.reason : cause.kind
 }
 
 interface SentMessage {
@@ -749,7 +768,7 @@ describe('bridge: commands', () => {
     expect(first).toBeDefined()
 
     await textMessage(port, '/new')
-    expect(first?.cancels).toContain('session reset')
+    expect(first?.cancels.map(cancelReason)).toContain('session reset')
     expect(port.sent.some(m => String(m.input.markdown ?? '').includes('新会话'))).toBe(true)
 
     await textMessage(port, 'hello again')
@@ -782,7 +801,37 @@ describe('bridge: commands', () => {
     const { host, port } = makeEnv()
     await textMessage(port, 'long task')
     await textMessage(port, '/stop')
-    expect(host.created[0]?.cancels).toContain('stopped from chat')
+    expect(host.created[0]?.cancels.map(cancelReason)).toContain('stopped from chat')
+  })
+
+  it('R50-a: /stop hands the host a structured cancel cause, not a string', async () => {
+    // dsh 0.2.1 switches on `cause.kind` and assertNever()s the rest; a bare
+    // string left the turn unclosed and the reply card stuck "generating".
+    const { host, port } = makeEnv()
+    await textMessage(port, 'long task')
+    await textMessage(port, '/stop')
+    expect(host.created[0]?.cancels[0]).toEqual({ kind: 'hook', reason: 'stopped from chat' })
+  })
+
+  it('R50-b: host command dispatch passes the attachment batch and the signal', async () => {
+    const { host, port } = makeEnv()
+    await textMessage(port, 'hello')
+    const calls: unknown[][] = []
+    host.services.set('commands', {
+      list: () => [{ name: 'goal', description: 'goal' }],
+      execute: (...args: unknown[]) => {
+        calls.push(args)
+        return Promise.resolve({ result: { kind: 'success', text: 'host ran it' } })
+      },
+    })
+    await textMessage(port, '/goal ship it')
+    expect(calls).toHaveLength(1)
+    // (agent, line, submittedAttachments, signal) — 0.2.1 added the third.
+    expect(calls[0]).toHaveLength(4)
+    expect(calls[0]?.[1]).toBe('/goal ship it')
+    expect(calls[0]?.[2]).toEqual([])
+    expect(calls[0]?.[3]).toBeInstanceOf(AbortSignal)
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('host ran it'))).toBe(true)
   })
 
   it('/status reports the session and workspace', async () => {
@@ -3113,7 +3162,8 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     host.services.set('workspaceRegistry', {
       resolveByPath: async () => undefined,
       create: async () => undefined,
-      archivedSessionIds: () => [...archived],
+      // R50: a property in dsh 0.2.1 (`get archivedSessionIds()`), not a method.
+      get archivedSessionIds(): readonly string[] { return [...archived] },
       archiveSession: async (sessionId: string) => {
         archived.add(sessionId)
         archivedCalls.push(sessionId)
@@ -3173,7 +3223,7 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     await textMessage(port, '/session 2')
     expect(lastText(port)).toContain(`已停止当前任务，并切换到「${stamp} 第一个会话」`)
     // D1: the superseded agent was cancelled with the switch cause.
-    expect(secondAgent?.cancels).toContain('session switch')
+    expect(secondAgent?.cancels.map(cancelReason)).toContain('session switch')
 
     emitInbound(port, 'm3', '回到旧会话')
     await sleep(20)
@@ -3649,7 +3699,7 @@ describe('bridge: R29 /session registry, switch, rename, archive', () => {
     await sleep(10)
 
     // D1 semantics on the click path: the running task was stopped…
-    expect(secondAgent?.cancels).toContain('session switch')
+    expect(secondAgent?.cancels.map(cancelReason)).toContain('session switch')
     expect(port.sent.some(m => String(m.input.markdown ?? '').includes('已停止当前任务'))).toBe(true)
     // …and the next message resumes the restored session.
     emitInbound(port, 'm3', '回到旧会话')
@@ -5090,7 +5140,10 @@ describe('bridge: R38 agent preset mounting', () => {
     'command-goal', 'tool-goal', 'plan-mode',
     'compaction-basic', 'command-compact', 'tool-result-pruner',
     'tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork',
-    'workflow-ptc', 'tool-workflow', 'tool-ralph',
+    // R50: `tool-ralph` is NOT here — dsh 0.2.1 dropped that host-plane row
+    // (the package survives and the `standard` preset composes it per agent),
+    // so disabling it only produced `patch: entry "tool-ralph" not found`.
+    'workflow-ptc', 'tool-workflow',
     'agent-instructions', 'tool-todo', 'tool-plugin-manager', 'tool-web',
   ]
 
@@ -5289,6 +5342,10 @@ describe('bridge: R38 agent preset mounting', () => {
     expect(patch).not.toContain('- id: workflow-worker-thread')
     // The channel's own row survives the freeze.
     expect(patch).toContain('- id: feishu4dsh')
+    // R50: no host-plane disable for a row the host no longer ships.
+    expect([...disabledPresetRows]).not.toContain('tool-ralph')
+    // …while the preset still composes the package per agent.
+    expect(patch).toContain("name: '@deepseek-ai/dsh-tool-ralph'")
   })
 })
 
@@ -5831,5 +5888,198 @@ describe('bridge: R48 long-reply thread anchoring', () => {
     } finally {
       rmSync(target, { recursive: true, force: true })
     }
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* R50: dsh 0.2.1 contract adaptation / R51: ask_user questions        */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R50 host-contract adaptation and R51 ask_user', () => {
+  /** Send one chat line through the shared fixture and let the bridge settle. */
+  async function inbound(port: FakePort, _id: string, content: string): Promise<void> {
+    await textMessage(port, content)
+    await sleep(20)
+  }
+
+  /** The question card's submit button value (the last form element). */
+  function questionSubmitValue(port: FakePort): Record<string, unknown> | undefined {
+    const cardMessage = [...port.sent].reverse().find(m => 'card' in m.input)
+    const card = cardMessage?.input.card as { elements?: { elements?: { tag?: string; name?: string; action_type?: string; value?: Record<string, unknown> }[] }[] }
+    const fields = (card.elements ?? []).flatMap(element => element.elements ?? [])
+    return fields.find(field => field.action_type === 'form_submit')?.value
+  }
+
+  it('R50-c: a broken archive-set read is reported, not disguised as "unsupported"', async () => {
+    const reports: string[] = []
+    const { host, port } = makeEnv({}, undefined, undefined, line => reports.push(line))
+    await inbound(port, 'm1', 'hello')
+    host.services.set('workspaceRegistry', {
+      resolveByPath: async () => undefined,
+      create: async () => undefined,
+      // 0.2.1 shape that a stale plugin would call as a function: a getter
+      // whose read throws is the "host contract broke" signal.
+      get archivedSessionIds(): readonly string[] { throw new TypeError('archivedSessionIds is not a function') },
+      archiveSession: async () => undefined,
+    })
+    await inbound(port, 'm2', '/session archive 1')
+    const reply = port.sent.map(m => String(m.input.markdown ?? '')).join('\n')
+    expect(reply).toContain('读取宿主归档集合失败')
+    expect(reply).not.toContain('当前部署不支持会话归档')
+    expect(reports.some(line => line.includes('archivedSessionIds'))).toBe(true)
+  })
+
+  it('R50-d: the session log is read through snapshotEvents() on a 0.2.1 host', async () => {
+    const { host, port } = makeEnv()
+    await inbound(port, 'm1', 'hello')
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+    agent.logStyle = 'snapshot'
+    agent.sessionEvents = [
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'step/start', data: { turn: 1, step: 1 } },
+      { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: 'hi' }] }, usage: { inputTokens: 7, outputTokens: 3 } } },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+    ]
+    await inbound(port, 'm2', '/status')
+    const status = [...port.sent].reverse().map(m => String(m.input.markdown ?? '')).find(text => text.includes('状态'))
+    expect(status).toBeDefined()
+    // Turn/step counters come from the log, not from the "—" fallback.
+    expect(status).toContain('轮次：1')
+  })
+
+  it('R50-d2: a legacy host that still exposes `events` keeps working', async () => {
+    const { host, port } = makeEnv()
+    await inbound(port, 'm1', 'hello')
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+    agent.logStyle = 'events'
+    agent.sessionEvents = [{ type: 'turn/start', data: { turn: 1 } }]
+    await inbound(port, 'm2', '/status')
+    const status = [...port.sent].reverse().map(m => String(m.input.markdown ?? '')).find(text => text.includes('状态'))
+    expect(status).toContain('轮次：1')
+  })
+
+  it('R51-a: ask_user renders a form card and returns the submitted batch', async () => {
+    const { host, port } = makeEnv()
+    await inbound(port, 'm1', 'hello')
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    const results = host.emit('user-questions/request', {
+      agent,
+      questions: [
+        { id: 'framework', question: '用哪个框架？', options: [{ label: 'Vue' }, { label: 'React' }] },
+        { id: 'note', question: '还有什么要补充？' },
+      ],
+    }, async () => ({ answers: [] }))
+    await sleep(10)
+
+    const value = questionSubmitValue(port)
+    expect(value?.kind).toBe('question')
+    // The form carries one control per question: a select for the option
+    // question and an input for the free-text one.
+    const cardMessage = [...port.sent].reverse().find(m => 'card' in m.input)
+    const card = cardMessage?.input.card as { elements: { elements?: { tag?: string; name?: string }[] }[] }
+    const fields = (card.elements ?? []).flatMap(element => element.elements ?? [])
+    expect(fields.some(field => field.tag === 'select_static' && field.name === 'q0')).toBe(true)
+    expect(fields.some(field => field.tag === 'input' && field.name === 'c1')).toBe(true)
+
+    port.emit('cardAction', {
+      messageId: cardMessage?.messageId,
+      chatId: 'oc_chat1',
+      operator: { openId: 'ou_user', name: 'User' },
+      action: { value, tag: 'button' },
+      raw: { action: { form_value: { q0: 'React', c0: '', c1: '尽量简单' } } },
+    })
+    await sleep(10)
+
+    expect(await results[0]).toEqual({
+      answers: [
+        { id: 'framework', selected: ['React'] },
+        { id: 'note', selected: [], custom: '尽量简单' },
+      ],
+    })
+    // The card is frozen with the answering human's name.
+    expect(JSON.stringify(port.cardUpdates.at(-1)?.card)).toContain('已由 User 回答')
+  })
+
+  it('R51-b: a multi-select question returns every checked label', async () => {
+    const { host, port } = makeEnv()
+    await inbound(port, 'm1', 'hello')
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    const results = host.emit('user-questions/request', {
+      agent,
+      questions: [{ id: 'deps', question: '装哪些依赖？', multiSelect: true, options: [{ label: 'eslint' }, { label: 'vitest' }] }],
+    }, async () => ({ answers: [] }))
+    await sleep(10)
+    const cardMessage = [...port.sent].reverse().find(m => 'card' in m.input)
+    const card = cardMessage?.input.card as { elements: { elements?: { tag?: string; name?: string }[] }[] }
+    const fields = (card.elements ?? []).flatMap(element => element.elements ?? [])
+    expect(fields.some(field => field.tag === 'checker' && field.name === 'q0')).toBe(true)
+
+    port.emit('cardAction', {
+      messageId: cardMessage?.messageId,
+      chatId: 'oc_chat1',
+      operator: { openId: 'ou_user', name: 'User' },
+      action: { value: questionSubmitValue(port), tag: 'button' },
+      raw: { action: { form_value: { q0: ['eslint', 'vitest'], c0: '' } } },
+    })
+    await sleep(10)
+    expect(await results[0]).toEqual({ answers: [{ id: 'deps', selected: ['eslint', 'vitest'] }] })
+  })
+
+  it('R51-c: a foreign chat cannot answer; the ask stays pending', async () => {
+    const { host, port } = makeEnv()
+    await inbound(port, 'm1', 'hello')
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+    const results = host.emit('user-questions/request', {
+      agent,
+      questions: [{ id: 'q', question: '继续吗？', options: [{ label: '是' }, { label: '否' }] }],
+    }, async () => ({ answers: [] }))
+    await sleep(10)
+    const cardMessage = [...port.sent].reverse().find(m => 'card' in m.input)
+    const value = questionSubmitValue(port)
+
+    port.emit('cardAction', {
+      messageId: cardMessage?.messageId,
+      chatId: 'oc_other_chat',
+      operator: { openId: 'ou_user', name: 'User' },
+      action: { value, tag: 'button' },
+      raw: { action: { form_value: { q0: '是' } } },
+    })
+    await sleep(10)
+    const outcome = await Promise.race([results[0] as Promise<unknown>, sleep(100).then(() => 'still-pending')])
+    expect(outcome).toBe('still-pending')
+    expect(port.sent.some(m => String(m.input.markdown ?? '').includes('原会话'))).toBe(true)
+  })
+
+  it('R51-d: an unanswered ask times out and delegates to the next answerer', async () => {
+    const { host, port } = makeEnv({ approvalTimeoutMs: 30 })
+    await inbound(port, 'm1', 'hello')
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+    const results = host.emit('user-questions/request', {
+      agent,
+      questions: [{ id: 'q', question: '还在吗？', options: [{ label: '在' }] }],
+    }, async () => ({ answers: [{ id: 'q', selected: ['delegated'] }] }))
+    await sleep(60)
+    expect(await results[0]).toEqual({ answers: [{ id: 'q', selected: ['delegated'] }] })
+    expect(JSON.stringify(port.cardUpdates.at(-1)?.card)).toContain('超时')
+  })
+
+  it('R51-e: a foreign session is delegated untouched', async () => {
+    const { host, port } = makeEnv()
+    await inbound(port, 'm1', 'hello')
+    const foreign = new FakeAgent('feishu-foreign-session')
+    const results = host.emit('user-questions/request', {
+      agent: foreign,
+      questions: [{ id: 'q', question: '?' }],
+    }, async () => ({ answers: [] }))
+    expect(await results[0]).toEqual({ answers: [] })
+    expect(port.sent.some(m => 'card' in m.input)).toBe(false)
   })
 })

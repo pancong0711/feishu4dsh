@@ -63,6 +63,20 @@ export interface Strings {
   approvalDeniedBy: (name: string) => string
   approvalTimedOut: string
   approvalWrongChat: string
+  /** R51: heading of an `ask_user` form card. */
+  questionTitle: string
+  /** R51: submit button of an `ask_user` form card. */
+  questionSubmit: string
+  /** R51: placeholder of a `select_static` option control. */
+  questionSelectPlaceholder: string
+  /** R51: placeholder of the free-text "other" input. */
+  questionCustomPlaceholder: string
+  /** R51: shown when a question offers no options (free text only). */
+  questionNoOptionsHint: string
+  /** R51: settled-card status when a human answered. */
+  questionAnsweredBy: (name: string) => string
+  /** R51: settled-card status when the ask expired or was withdrawn. */
+  questionTimedOut: string
   fileReceivedNote: (pathInWorkspace: string, size: string) => string
   imageReceivedNote: string
   unsupportedMediaNote: (kind: string) => string
@@ -206,6 +220,7 @@ export interface Strings {
   sessionNothingToRename: string
   sessionNoPermission: string
   sessionArchiveUnsupported: string
+  sessionArchiveUnavailable: (detail: string) => string
   sessionArchiveUsage: string
   sessionArchivedOne: (title: string) => string
   sessionArchivedMany: (count: number, titles: string) => string
@@ -319,6 +334,13 @@ const zhCN: Strings = {
   approvalDeniedBy: name => `已由 ${name} 拒绝`,
   approvalTimedOut: '超时未确认，已按拒绝处理',
   approvalWrongChat: '此卡片仅可在原会话中操作',
+  questionTitle: '💬 需要你的回答',
+  questionSubmit: '提交',
+  questionSelectPlaceholder: '请选择（也可在下方填写其他答案）',
+  questionCustomPlaceholder: '其他答案（可留空）',
+  questionNoOptionsHint: '_本题可直接在下方输入回答_',
+  questionAnsweredBy: name => `已由 ${name} 回答`,
+  questionTimedOut: '未在规定时间内作答，提问已超时',
   fileReceivedNote: (path, size) => `[已收到文件 ${path}（${size}），可用工具读取]`,
   imageReceivedNote: '[已收到图片，但当前未开启视觉能力，未交给模型]',
   unsupportedMediaNote: kind => `[收到暂不支持处理的消息类型：${kind}]`,
@@ -446,6 +468,7 @@ const zhCN: Strings = {
   sessionNothingToRename: '当前会话尚未登记（先发一条消息），无标题可改。',
   sessionNoPermission: '无权切换/重命名/归档会话',
   sessionArchiveUnsupported: '当前部署不支持会话归档（宿主缺 workspaceRegistry.archiveSession）。',
+  sessionArchiveUnavailable: detail => `读取宿主归档集合失败：${detail}（未按「不支持」静默降级，请查日志）`,
   sessionArchiveUsage: '用法：/session archive <序号> · /session archive old [天数，默认2]',
   sessionArchivedOne: title => `已归档「${title}」`,
   sessionArchivedMany: (count, titles) => `已归档 ${count} 个陈旧会话：${titles}`,
@@ -547,6 +570,13 @@ const enUS: Strings = {
   approvalDeniedBy: name => `Denied by ${name}`,
   approvalTimedOut: 'No response in time; treated as denied',
   approvalWrongChat: 'This card only works in its original chat',
+  questionTitle: '💬 Your answer is needed',
+  questionSubmit: 'Submit',
+  questionSelectPlaceholder: 'Pick one (or type another answer below)',
+  questionCustomPlaceholder: 'Other answer (optional)',
+  questionNoOptionsHint: '_Answer this one in the field below_',
+  questionAnsweredBy: name => `Answered by ${name}`,
+  questionTimedOut: 'No answer in time; the question expired',
   fileReceivedNote: (path, size) => `[received file ${path} (${size}); read it with your tools]`,
   imageReceivedNote: '[received an image, but vision is disabled; not passed to the model]',
   unsupportedMediaNote: kind => `[received an unsupported message type: ${kind}]`,
@@ -651,6 +681,7 @@ const enUS: Strings = {
   sessionNothingToRename: 'The current session is not registered yet (send a message first).',
   sessionNoPermission: 'Not allowed to switch/rename/archive sessions',
   sessionArchiveUnsupported: 'Archiving is not supported by this deployment (workspaceRegistry.archiveSession missing).',
+  sessionArchiveUnavailable: detail => `Reading the host's archive set failed: ${detail} (not silently downgraded to \"unsupported\"; see the log)`,
   sessionArchiveUsage: 'Usage: /session archive <n> · /session archive old [days, default 2]',
   sessionArchivedOne: title => `Archived "${title}"`,
   sessionArchivedMany: (count, titles) => `Archived ${count} stale session(s): ${titles}`,

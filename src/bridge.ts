@@ -18,12 +18,13 @@ import type { ChannelPort, CardActionEvent, NormalizedMessage, RejectEvent } fro
 import { resolveScopeKey, agentKeyOf, isAgentKey, sessionIdOf, AgentLedger, type SessionScopeInput } from './sessions.js'
 import { buildCatalog, listSubdirectories, listWorkspaces, resolveCdTarget, registeredPathsOf, resolveWorkspaceDirectory, normalizeWorkspacePath, type WorkspaceCatalog } from './workspaces.js'
 import {
-  approvalCard, collapsiblePanel, decodeActionValue, markdownElement, noteElement, settledApprovalCard, truncateMiddle,
+  approvalCard, collapsiblePanel, decodeActionValue, markdownElement, noteElement, questionCard, questionCustomName,
+  questionFieldName, selectedLabelsOf, settledApprovalCard, settledQuestionCard, truncateMiddle,
   CARD_STREAM_MAX_CHARS, CARD_ROLLOVER_MIN_CHARS, CARD_ROLLOVER_MIN_INTERVAL_MS, REASONING_PANEL_MAX_CHARS,
-  type CardActionPayload, type MenuActionPayload,
+  type CardActionPayload, type MenuActionPayload, type QuestionActionPayload,
 } from './cards.js'
-import type { HostAgentHandle, HostAgentOptions, HostAgentPresets, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostLlm, HostModelSelection, HostSession, HostSessionEvent, HostSessionObservation, HostSessionQuery, HostTools, HostWorkspace, HostWorkspaceRegistry, AssistantMessageData, TokenUsageData } from './host.js'
-import { assistantText, TURN_END_COMPLETED, isAssistantChunkEvent, isAssistantMessageEvent, isStepStartEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
+import type { HostAgentCancelCause, HostAgentHandle, HostAgentOptions, HostAgentPresets, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostLlm, HostModelSelection, HostQuestionAnswer, HostQuestionAnswerItem, HostQuestionItem, HostQuestionRequest, HostSession, HostSessionEvent, HostSessionObservation, HostSessionQuery, HostTools, HostWorkspace, HostWorkspaceRegistry, AssistantMessageData, TokenUsageData } from './host.js'
+import { assistantText, hookCancel, releaseObservation, sessionEvents, TURN_END_COMPLETED, isAssistantChunkEvent, isAssistantMessageEvent, isStepStartEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
 import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedSelection, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
 import { readOutboundFile, sendFileTool, storeInboundFile, type OutboundFile, type SendFilePorts } from './files.js'
 import { accumulateSessionUsage, emptySessionUsage, hasSessionUsage, statsOfEvents, type SessionUsage } from './session-stats.js'
@@ -205,6 +206,22 @@ interface PendingApproval {
   timer: ReturnType<typeof setTimeout>
   /** The file awaiting delivery, for file-send cards. */
   file?: OutboundFile
+  settled: boolean
+}
+
+/** One pending `ask_user` form card (R51). */
+interface PendingQuestion {
+  readonly token: string
+  readonly chatId: string
+  readonly sessionId: string
+  readonly scopeKey: string
+  /** The questions this batch must answer, one item each (host contract). */
+  readonly questions: readonly HostQuestionItem[]
+  /** Set once the card is sent; absent while the send is in flight. */
+  messageId?: string
+  /** Resolves the waterfall: the answer batch, or undefined to delegate. */
+  finish(answer: HostQuestionAnswer | undefined): void
+  readonly timer: ReturnType<typeof setTimeout>
   settled: boolean
 }
 
@@ -421,6 +438,8 @@ export interface BridgeState {
   readonly sessionScopes: Map<string, string>
   /** approval token -> pending card. */
   readonly approvals: Map<string, PendingApproval>
+  /** question token -> pending `ask_user` form card (R51). */
+  readonly questions: Map<string, PendingQuestion>
   /** agent key -> per-agent mutable model selection (R7/R8). */
   readonly selections: Map<string, AgentModelSelection>
   /** agent key -> in-flight creation promise, so bursts share one agent (R11). */
@@ -486,6 +505,7 @@ function createBridgeState(): BridgeState {
     chats: new Map(),
     sessionScopes: new Map(),
     approvals: new Map(),
+    questions: new Map(),
     selections: new Map(),
     pendingAgents: new Map(),
     streamedTurns: new Set(),
@@ -1862,7 +1882,10 @@ async function tryRunHostCommand(env: BridgeEnv, state: BridgeState, binding: Ch
   const commands = env.host.get('commands') as HostCommands | undefined
   if (entry === undefined || commands === undefined) return false
   const controller = new AbortController()
-  const execution = await commands.execute(entry.handle.agent, line, controller.signal)
+  // R50: dsh 0.2.1 added a third `submittedAttachments` parameter; the
+  // signal moved to fourth. Chat attachments are never forwarded into a host
+  // command here, so the batch is empty.
+  const execution = await commands.execute(entry.handle.agent, line, [], controller.signal)
   if (execution === undefined) return false
   const text = execution.result.kind === 'error'
     ? execution.result.text
@@ -2004,7 +2027,7 @@ function writeCompactArchive(workspacePath: string, state: BridgeState, binding:
  * Returns oldest-first; empty when the host exposes no log.
  */
 function extractRecentTurnTexts(session: HostSession, keep: number, copy: Strings): string[] {
-  const events = session.events
+  const events = sessionEvents(session)
   if (events === undefined || keep <= 0) return []
   const turns: string[] = []
   let current: { user: string[]; assistant: string[] } | undefined
@@ -2331,7 +2354,13 @@ async function observePresetOf(env: BridgeEnv, sessionId: string): Promise<strin
   }
   try {
     const observation = await query.observeSession(sessionId)
-    return observedPresetOf(observation)
+    // R50: dsh 0.2.1 returns a reference-counted lease; not releasing it keeps
+    // the prepared-session snapshot pinned in the query cache forever.
+    try {
+      return observedPresetOf(observation)
+    } finally {
+      releaseObservation(observation)
+    }
   } catch (error) {
     if (!presetObservationReported) {
       presetObservationReported = true
@@ -2702,6 +2731,234 @@ function waitForCardDecision(
       if (signal.aborted) onAbort()
       else signal.addEventListener('abort', onAbort, { once: true })
     }
+  })
+}
+
+/* ------------------------------------------------------------------ */
+/* User questions (ask_user, R51)                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Read one form-submit callback's field values. The SDK's normalized event
+ * keeps only `value/tag/name/option`, so the form payload is read from the raw
+ * event (`includeRawEvent: true` in the channel options) — a submit without it
+ * means some other card, never a silent "all skipped".
+ * @param event - the card callback as normalized by the transport.
+ * @returns the field map, or undefined when this was not a form submit.
+ */
+function formValueOf(event: CardActionEvent): Record<string, unknown> | undefined {
+  const raw = event.raw
+  if (raw === null || typeof raw !== 'object') return undefined
+  const action = (raw as { action?: unknown }).action
+  if (action === null || typeof action !== 'object') return undefined
+  const value = (action as { form_value?: unknown }).form_value
+  if (value === null || typeof value !== 'object') return undefined
+  return value as Record<string, unknown>
+}
+
+/** Cap one rendered question block so a verbose ask cannot overflow the card. */
+const QUESTION_TEXT_MAX_CHARS = 2_000
+
+/**
+ * Shorten one question block to {@link QUESTION_TEXT_MAX_CHARS}.
+ * @param text - the model-supplied question or detail text.
+ * @returns text safe for one card element.
+ */
+function clipQuestionText(text: string): string {
+  return truncateMiddle(text, QUESTION_TEXT_MAX_CHARS, omitted => `…（省略 ${String(omitted)} 字）`).text
+}
+
+/**
+ * Answer one `ask_user` waterfall request with a Feishu form card. Only
+ * sessions this channel drives are answered; everything else (and every
+ * failure to send) delegates with `next()`, which is the host's documented
+ * "no capable answerer" path rather than a fabricated empty answer.
+ * @param env - bridge environment (host + transport + operator reporting).
+ * @param state - live bridge state.
+ * @param request - the host's question batch.
+ * @param next - the next answerer in the waterfall.
+ * @returns the human's answer batch, or the delegated result.
+ */
+async function answerUserQuestion(
+  env: BridgeEnv,
+  state: BridgeState,
+  request: HostQuestionRequest,
+  next: () => Promise<HostQuestionAnswer>,
+): Promise<HostQuestionAnswer> {
+  const agent = request.agent
+  const sessionId = agent?.session.id
+  const scopeKey = sessionId === undefined ? undefined : state.sessionScopes.get(sessionId)
+  const binding = scopeKey === undefined ? undefined : state.chats.get(scopeKey)
+  if (sessionId === undefined || scopeKey === undefined || binding === undefined || request.questions.length === 0) {
+    return next()
+  }
+
+  const token = randomUUID()
+  const copy = state.copy
+  const payload = questionCard(
+    request.questions.map(question => ({
+      id: question.id,
+      question: clipQuestionText(question.question),
+      ...question.detail === undefined ? {} : { detail: clipQuestionText(question.detail) },
+      ...question.header === undefined ? {} : { header: question.header },
+      ...question.options === undefined ? {} : { options: question.options },
+      ...question.multiSelect === undefined ? {} : { multiSelect: question.multiSelect },
+    })),
+    {
+      copy: {
+        title: copy.questionTitle,
+        submit: copy.questionSubmit,
+        selectPlaceholder: copy.questionSelectPlaceholder,
+        customPlaceholder: copy.questionCustomPlaceholder,
+        noOptionsHint: copy.questionNoOptionsHint,
+      },
+      payload: { token, chatId: binding.chatId },
+    },
+  )
+
+  let messageId: string
+  try {
+    const anchor = replyAnchorFor(state, binding, sessionId)
+    const options = anchor === undefined ? undefined : { replyTo: anchor, replyInThread: true }
+    messageId = (await env.port.send(binding.chatId, { card: payload }, options)).messageId
+  } catch (error) {
+    env.report(`feishu4dsh: ask_user card failed (${describeError(error)}); delegating to the next answerer`)
+    return next()
+  }
+
+  const answer = await waitForQuestionAnswer(env, state, {
+    token,
+    chatId: binding.chatId,
+    sessionId,
+    scopeKey,
+    questions: request.questions,
+    messageId,
+  }, request.signal)
+  return answer ?? next()
+}
+
+/**
+ * Park one question card and wait for its submit, its timeout, or the host
+ * withdrawing the ask. Resolves `undefined` in the latter two cases so the
+ * caller can delegate instead of inventing an answer.
+ * @param env - bridge environment.
+ * @param state - live bridge state.
+ * @param base - the pending-card identity and questions.
+ * @param signal - the host's withdrawal signal.
+ * @returns the answer batch, or undefined when nothing was submitted in time.
+ */
+function waitForQuestionAnswer(
+  env: BridgeEnv,
+  state: BridgeState,
+  base: Omit<PendingQuestion, 'finish' | 'timer' | 'settled'>,
+  signal?: AbortSignal,
+): Promise<HostQuestionAnswer | undefined> {
+  return new Promise<HostQuestionAnswer | undefined>(resolve => {
+    let done = false
+    const finish = (answer?: HostQuestionAnswer): void => {
+      if (done) return
+      done = true
+      clearTimeout(pending.timer)
+      if (state.questions.get(base.token) === pending) state.questions.delete(base.token)
+      resolve(answer)
+    }
+
+    const timer = setTimeout(() => {
+      void settleQuestion(env, state, base.token, { kind: 'timedOut' })
+    }, env.config.approvalTimeoutMs)
+
+    const pending: PendingQuestion = {
+      ...base,
+      timer,
+      settled: false,
+      finish,
+    }
+    state.questions.set(base.token, pending)
+
+    if (signal !== undefined) {
+      const onAbort = (): void => {
+        void settleQuestion(env, state, base.token, { kind: 'timedOut' })
+      }
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+  })
+}
+
+/** How one pending question card ended. */
+type QuestionSettlement =
+  | { readonly kind: 'answered'; readonly answers: readonly HostQuestionAnswerItem[]; readonly by: string }
+  | { readonly kind: 'timedOut' }
+
+/**
+ * Settle one pending question card: freeze its visuals, resolve the waterfall,
+ * and retire the registry entry so a late click cannot answer twice.
+ * @param env - bridge environment.
+ * @param state - live bridge state.
+ * @param token - the pending ask's token.
+ * @param settlement - what happened.
+ */
+async function settleQuestion(
+  env: BridgeEnv,
+  state: BridgeState,
+  token: string,
+  settlement: QuestionSettlement,
+): Promise<void> {
+  const pending = state.questions.get(token)
+  if (pending === undefined || pending.settled) return
+  pending.settled = true
+  clearTimeout(pending.timer)
+
+  const outcome = settlement.kind === 'answered' ? 'answered' : 'timedOut'
+  const status = settlement.kind === 'answered'
+    ? state.copy.questionAnsweredBy(settlement.by)
+    : state.copy.questionTimedOut
+  if (pending.messageId !== undefined) {
+    await env.port.updateCard(pending.messageId, settledQuestionCard(state.copy.questionTitle, status, outcome))
+      .catch(error => env.report(`feishu4dsh: question card settle failed: ${describeError(error)}`))
+  }
+  pending.finish(settlement.kind === 'answered' ? { answers: settlement.answers } : undefined)
+}
+
+/**
+ * Handle one submitted question card: collect every field value and hand the
+ * host a complete batch. A question the human left untouched is an explicit
+ * empty selection — the host accepts that as a skip, but an omitted item would
+ * be a `BAD_ANSWER` rejection.
+ * @param env - bridge environment.
+ * @param state - live bridge state.
+ * @param event - the card callback.
+ * @param payload - the decoded question identity.
+ */
+async function handleQuestionSubmit(
+  env: BridgeEnv,
+  state: BridgeState,
+  event: CardActionEvent,
+  payload: QuestionActionPayload,
+): Promise<void> {
+  const pending = state.questions.get(payload.token)
+  if (pending === undefined || pending.settled) return
+
+  // A card forwarded to another chat must not answer the original session.
+  if (payload.chatId !== event.chatId) {
+    await safeSend(env, event.chatId, state.copy.approvalWrongChat)
+    return
+  }
+  const driver = state.chats.get(pending.scopeKey)
+  const isDriver = driver !== undefined && driver.chatId === event.chatId
+  if (!mayApprove(env.authorization, event.operator.openId, isDriver)) return
+
+  const form = formValueOf(event) ?? {}
+  const answers: HostQuestionAnswerItem[] = pending.questions.map((question, index) => {
+    const selected = selectedLabelsOf(form[questionFieldName(index)])
+    const rawCustom = form[questionCustomName(index)]
+    const custom = typeof rawCustom === 'string' && rawCustom.trim() !== '' ? rawCustom.trim() : undefined
+    return custom === undefined ? { id: question.id, selected } : { id: question.id, selected, custom }
+  })
+  await settleQuestion(env, state, payload.token, {
+    kind: 'answered',
+    answers,
+    by: event.operator.name ?? event.operator.openId,
   })
 }
 
@@ -3146,6 +3403,10 @@ async function handleCardAction(env: BridgeEnv, state: BridgeState, event: CardA
     await handleMenuAction(env, state, event, payload)
     return
   }
+  if (payload.kind === 'question') {
+    await handleQuestionSubmit(env, state, event, payload)
+    return
+  }
   const pending = state.approvals.get(payload.token)
   if (pending === undefined || pending.settled) return
 
@@ -3535,6 +3796,16 @@ function wireApprovals(env: BridgeEnv, state: BridgeState): void {
       args[1] as () => Promise<HostApprovalOutcome>,
     )
   })
+  // R51: `ask_user` rides its own waterfall — a channel that only answers
+  // `approval/request` leaves every question to the host's NO_PROVIDER.
+  env.host.on('user-questions/request', (...args: unknown[]) => {
+    return answerUserQuestion(
+      env,
+      state,
+      args[0] as HostQuestionRequest,
+      args[1] as () => Promise<HostQuestionAnswer>,
+    )
+  })
 }
 
 /**
@@ -3672,7 +3943,7 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
       // synchronously inside cancel() and publishes the event inline, so a
       // later registration would race the receipt check and lose.
       quietNextQueueDrop(state, binding)
-      entry.handle.agent.cancel('stopped from chat')
+      entry.handle.agent.cancel(hookCancel('stopped from chat'))
       await safeSend(env, chatId, state.copy.stopped, replyTo)
       return
     }
@@ -3727,7 +3998,7 @@ async function resetSessionScope(env: BridgeEnv, state: BridgeState, binding: Ch
   if (entry !== undefined) {
     // R45 (P3): register BEFORE cancel — see the /stop note on the race.
     quietNextQueueDrop(state, binding)
-    entry.handle.agent.cancel(cause)
+    entry.handle.agent.cancel(hookCancel(cause))
     await entry.handle.dispose().catch(() => undefined)
     // R45 (P3): the dead session id can never splice again — retire its
     // unconsumed suppression marker so the Set cannot grow unbounded.
@@ -3746,12 +4017,15 @@ async function resetSessionScope(env: BridgeEnv, state: BridgeState, binding: Ch
   const query = env.host.get('sessionQuery') as HostSessionQuery | undefined
   if (query !== undefined && typeof query.observeSession === 'function') {
     for (let attempt = 0; attempt < GENERATION_FRESHNESS_CHECKS; attempt += 1) {
+      let observation: HostSessionObservation | undefined
       try {
-        await query.observeSession(sessionIdOf(binding.scopeKey, binding.workspacePath, nextGen))
+        observation = await query.observeSession(sessionIdOf(binding.scopeKey, binding.workspacePath, nextGen))
         // The id exists — step past it and re-check.
         nextGen += 1
       } catch {
         break // not found → fresh
+      } finally {
+        releaseObservation(observation)
       }
     }
   }
@@ -3828,14 +4102,46 @@ function removeModelCatalogEntry(state: BridgeState, entry: string): 'ok' | 'mis
  * deployment does not support archiving — the single fact source for which
  * sessions `/session` hides; the channel never stores archived flags itself.
  */
-function archivedSetOf(env: BridgeEnv): Set<string> | undefined {
+type ArchiveSetRead =
+  | { readonly kind: 'ok'; readonly ids: ReadonlySet<string> }
+  | { readonly kind: 'unsupported' }
+  | { readonly kind: 'failed'; readonly detail: string }
+
+/** One-shot operator line: a broken archive read must not spam every `/session`. */
+let archiveReadFailureReported = false
+
+/**
+ * Read the host's registry-global archive set, keeping the three outcomes
+ * apart. R50 P1-3: `0.2.1` turned `archivedSessionIds` into a getter; the old
+ * `try { return new Set(fn()) } catch { return undefined }` shape turned that
+ * TypeError into "this deployment does not support archiving", which is how
+ * `/session archive` went silently dead instead of reporting a host-contract
+ * break.
+ */
+function readArchivedSet(env: BridgeEnv): ArchiveSetRead {
   const registryService = env.host.get('workspaceRegistry') as HostWorkspaceRegistry | undefined
-  if (registryService?.archivedSessionIds === undefined) return undefined
+  if (registryService === undefined) return { kind: 'unsupported' }
+  // EVERY read of the getter happens inside the try: 0.2.1 exposes it as a
+  // property, and a host whose accessor throws must surface as `failed`, never
+  // as "this host has no archiving" (nor as an uncaught command rejection).
+  let ids: readonly string[] | undefined
   try {
-    return new Set(registryService.archivedSessionIds())
-  } catch {
-    return undefined
+    ids = registryService.archivedSessionIds
+  } catch (error) {
+    if (!archiveReadFailureReported) {
+      archiveReadFailureReported = true
+      env.report(`feishu4dsh: reading workspaceRegistry.archivedSessionIds failed (${describeError(error)}); archiving stays unavailable until the host contract is fixed`)
+    }
+    return { kind: 'failed', detail: describeError(error) }
   }
+  if (ids === undefined) return { kind: 'unsupported' }
+  return { kind: 'ok', ids: new Set(ids) }
+}
+
+/** The archive set when readable, else `undefined` (list rendering only). */
+function archivedSetOf(env: BridgeEnv): Set<string> | undefined {
+  const read = readArchivedSet(env)
+  return read.kind === 'ok' ? new Set(read.ids) : undefined
 }
 
 /** `/session`'s default view: everything except archived, PLUS the current. */
@@ -3870,8 +4176,9 @@ async function cmdSession(
   const copy = state.copy
   const agentKey = currentAgentKey(binding)
   const activeGen = state.ledger.generationOf(agentKey)
-  const archived = archivedSetOf(env)
-  const archiveSupported = archived !== undefined
+  const archiveRead = readArchivedSet(env)
+  const archived = archiveRead.kind === 'ok' ? archiveRead.ids : undefined
+  const archiveSupported = archiveRead.kind === 'ok'
 
   if (rest === '' || rest === 'all') {
     // Numbering is GLOBAL and stable (full registry, newest gen first, like
@@ -3924,10 +4231,16 @@ async function cmdSession(
       return
     }
     const registryService = env.host.get('workspaceRegistry') as HostWorkspaceRegistry | undefined
+    if (archiveRead.kind === 'failed') {
+      await safeSend(env, chatId, copy.sessionArchiveUnavailable(archiveRead.detail), replyTo)
+      return
+    }
     if (!archiveSupported || registryService?.archiveSession === undefined) {
       await safeSend(env, chatId, copy.sessionArchiveUnsupported, replyTo)
       return
     }
+    // Narrowed by the checks above: `ok` read + writable registry.
+    const archivedNow = archiveRead.ids as ReadonlySet<string>
     const arg = rest.slice('archive'.length).trim()
     const staleMatch = /^old(?:\s+(\d+))?$/.exec(arg)
     if (arg === '' || staleMatch !== null) {
@@ -3936,7 +4249,7 @@ async function cmdSession(
         return
       }
       const days = Math.max(1, Number(staleMatch?.[1] ?? 2))
-      const stale = staleSessionsOf(state.chatSessions, agentKey, activeGen, Date.now(), days, id => archived.has(id))
+      const stale = staleSessionsOf(state.chatSessions, agentKey, activeGen, Date.now(), days, id => archivedNow.has(id))
         .filter(record => record.sessionId.startsWith('feishu-'))
       if (stale.length === 0) {
         await safeSend(env, chatId, copy.sessionArchiveNone(days), replyTo)
@@ -3975,7 +4288,7 @@ async function cmdSession(
       await safeSend(env, chatId, copy.sessionArchiveForeign, replyTo)
       return
     }
-    if (archived.has(record.sessionId)) {
+    if (archivedNow.has(record.sessionId)) {
       await safeSend(env, chatId, copy.sessionArchivedAlready(record.title), replyTo)
       return
     }
@@ -4028,7 +4341,7 @@ async function switchSessionToRecord(env: BridgeEnv, state: BridgeState, binding
   if (entry !== undefined) {
     // R45 (P3): register BEFORE cancel — see the /stop note on the race.
     quietNextQueueDrop(state, binding)
-    entry.handle.agent.cancel('session switch')
+    entry.handle.agent.cancel(hookCancel('session switch'))
     await entry.handle.dispose().catch(() => undefined)
     // R45 (P3): retire the dead session's unconsumed suppression marker.
     state.quietQueueDrops.delete(entry.handle.agent.session.id)
@@ -4188,7 +4501,7 @@ async function cmdStatus(env: BridgeEnv, state: BridgeState, binding: ChatBindin
   const session = entry?.handle.agent.session
   // R26 statistics come from the dsh session log when the host exposes it;
   // an old host without the log renders “—” instead of misleading zeros.
-  const stats = statsOfEvents(session?.events)
+  const stats = statsOfEvents(sessionEvents(session))
   const turns = stats === undefined ? copy.statusStatsUnavailable : String(stats.turns)
   const steps = stats === undefined ? copy.statusStatsUnavailable : String(stats.steps)
   const effort = displayEffortOf(env, state, binding)
@@ -4843,6 +5156,12 @@ async function dispose(env: BridgeEnv, state: BridgeState): Promise<void> {
     clearTimeout(pending.timer)
   }
   state.approvals.clear()
+  // R51: a disposed bridge must not leave an ask_user waterfall hanging.
+  for (const pending of state.questions.values()) {
+    clearTimeout(pending.timer)
+    pending.finish(undefined)
+  }
+  state.questions.clear()
   for (const entry of state.ledger.values()) {
     await entry.handle.dispose().catch(() => undefined)
   }

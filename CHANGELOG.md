@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.15.0 (2026-10-21)
+
+**R50：适配 dsh `0.2.1-rc.2`——四处宿主契约硬伤 + 三处能力退化 + 补上 `ask_user` 提问通道（R51）**
+
+- **背景**：dsh 升级到 `0.2.1-rc.2` 后服务仍能启动并连上飞书，`typecheck`/`332` 单测也全绿——但**全部测试跑在手写宿主桩上**，桩把旧签名复制了一遍，真机四处契约漂移一条都没测出来。本版按「先对账、再修、再把对账钉进 CI」的顺序处理。
+- **P0-1 `agent.cancel(cause: string)` → `cancel(cause: AgentCancelCause)`**：0.2.1 按 `cause.kind` 分支并对未知变体 `assertNever`。裸字符串让 `abortedCancelCause` 抛 `unreachable variant: undefined`，`turn/end` 的 `reason` 保持 `undefined` → 宿主 `Session.append` 判非 JSON 再次抛错 → **`turn/end` 永不落盘**，飞书侧流式卡停在"生成中"，会话日志留下未闭合 turn。三处调用（`/stop`、`/new`+`/mode`、`/session` 切换）统一改走 `hookCancel(reason)`（`{kind:'hook', reason}`）：宿主认识该变体，且原因原样写入 `turn/end.reason.reason`，审计不丢。
+- **P0-2 `commands.execute` 新增第三参 `submittedAttachments`**：插件仍传三参 → `signal` 为 `undefined` → 实现首句 `signal.aborted` 抛 `TypeError`。standard 模式的 `/compact` 与 `/goal` 等宿主命令兜底全挂。改为 `(agent, line, [], signal)`。
+- **P1-3 `archivedSessionIds` 方法 → 取值器**：`registryService.archivedSessionIds()` 抛 `TypeError`，被旧 `try/catch` 吞成 `undefined` → `archiveSupported=false` → **`/session archive` 一律回"当前部署不支持"**。改为按属性读取，并把读取结果拆成 `ok | unsupported | failed` 三态：读失败**响亮报错**（operator 日志 + 用户可见文案），不再伪装成"宿主不支持"。
+- **P1-4 `observeSession()` 变成引用计数租约**：不 dispose 会让 prepared 观察缓存永不回收。两处调用（会话预设观测、代次新鲜度自检）改为 `try/finally` 调 `releaseObservation()`（`[Symbol.dispose]`，旧宿主无该符号时安全跳过）。
+- **P1-5 `Session.events` 移除，只剩 `snapshotEvents()`**：`/status` 的轮次·步·Token 退化显示 `—`；R46 `/compact` 的"最近 N 轮原文"尾巴**静默变空**。新增 `sessionEvents(session)` 适配层（优先 `snapshotEvents()`，回退旧属性 `events`），两处读取统一走它。
+- **P2-6 `turn/end` 词表 5→7**：补 `interrupted`（崩溃遗留 turn 的补收口）与 `forked`（fork 边界收口）。功能上压缩仍只认 `completed`（fail-closed 不变），但 R47 立的"词表漂移即红"门禁本身必须同步。
+- **P2-7 patch 空指向**：`dsh-base` 0.2.1 已无 `tool-ralph` 宿主行，`disabled: true` 只剩启动告警 → 删除该 disable 行（preset `standard` 内的 `@deepseek-ai/dsh-tool-ralph` 保留）。
+- **R51 `ask_user` 提问通道（原为缺口）**：`ask_user` 走**独立瀑布** `user-questions/request`，而插件此前只注册 `approval/request`——模型一提问就只能等宿主超时。现补齐：一张飞书**表单卡**（每题一个原生控件：单选 `select_static` / 多选 `checker`，外加"其他"文本输入）→ 提交按钮携带待答 token；`action.form_value` 从原始回调读取（SDK 归一化事件只留 `value/tag/name/option`，故通道开启 `includeRawEvent: true`）。答案批**每题恰好一条**（未答 = 空选择，宿主接受为跳过）；越权（非审批人/非原会话）拒答；超时或宿主撤回 → 卡片定格为超时并 `next()` 委托，绝不编造空答案。
+- **门禁升级（本轮最重要的工程改动）**：`tests/host-contract.spec.ts` 从"只断言自家常量"扩成**双层对账**——(1) 内部：常量/比较字面量/fixture 词表/cancel 必须走 `hookCancel`/`execute` 必须四参/`archivedSessionIds` 不得调用/业务代码不得直读 `session.events`；(2) **对已安装宿主**：定位真实 `@deepseek-ai/dsh-*` 的 `.d.ts`，解析 `TurnEndReasonMap`、`AgentCancelCause`、`execute` 签名、`archivedSessionIds` getter、`snapshotEvents`、`SessionObservation extends Disposable`、`user-questions/request` 逐条比对；宿主不可达时自动 skip（保持独立构建）。
+- **测试**：353/353（基线 332 + 21：host-contract 新增真实宿主 7 项 + 内部 4 项，bridge 新增 R50-a/b/c/d/d2 与 R51-a…e）。
+
 ## 0.14.0 (2026-10-12)
 
 **R49：卡片正文溢出改为「多张卡依次流式」——消除中途静默与收口爆发**

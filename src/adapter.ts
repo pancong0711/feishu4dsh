@@ -106,6 +106,10 @@ export function channelOptions(
     policy,
     domain: config.domain === 'lark' ? Domain.Lark : Domain.Feishu,
     source: 'feishu4dsh',
+    // R51: form-submit callbacks carry their field values on
+    // `action.form_value`, which the SDK's normalized CardActionEvent drops
+    // unless raw events are kept. `ask_user` answers need exactly that field.
+    includeRawEvent: true,
     // Messages arriving within one chat are processed strictly in order; the
     // agent's inbox already drains queued messages into a single turn.
     // The batching window MUST stay closed: with the default 600 ms text
