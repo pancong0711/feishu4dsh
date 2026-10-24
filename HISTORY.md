@@ -48,6 +48,7 @@
 | 0.14.0 | 2026-10-12 | **R49 卡片溢出多卡依次流式**：live reasoning 卡正文超预算不再"冻结头部+收口一次性群发全文"（导致中途静默、`/stop` 时集中爆发），改为滚动翻页续写、每张新卡带同一话题锚、建卡频控、收口只终态渲染 |
 | 0.15.0 | 2026-10-21 | **R50 适配 dsh 0.2.1-rc.2**：四处宿主契约硬伤（cancel 结构化原因、`execute` 四参、归档集变取值器、观察租约）+ 三处退化（`session.events` 移除、`turn/end` 词表 5→7、patch 空指向）；R51 补 `ask_user` 表单卡通道；`host-contract` 升级为真实宿主 `.d.ts` 双层对账 |
 | 0.15.1 | 2026-10-21 | **R52 子代理恢复可用**：preset `standard` 的 `subagent` 行开了 `modelSelectionSettings` 却漏抄提供该服务的宿主行，导致飞书侧一调子代理就报 `… requires @deepseek-ai/dsh-tool-subagent/model-selection-settings in the Host scope`（组合期不报、运行期才炸）；补齐宿主行并加配对回归门禁，保留子代理选模型能力 |
+| 0.15.2 | 2026-10-24 | **R53 修复每轮直接失败**：preset persona 残留 0.2.0 时代的 `suffix: Your working directory is {{cwd}}.`，而 dsh 0.2.1 的提示词插值器只注册 `provider`/`model` 且对未知变量严格抛错（组装期、任何模型请求之前），删该行并加变量白名单门禁 |
 
 ## 三、当前方向
 

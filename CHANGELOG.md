@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.2 (2026-10-24)
+
+**R53：修复每轮直接失败——persona 里的 `{{cwd}}` 变量在 dsh 0.2.1 已失效**
+
+- **现象**：新会话第一轮就失败，报 `unknown prompt variable "{{cwd}}" in section "deployment:persona-suffix"; registered variables: provider, model`。用户真机反馈。
+- **根因**：dsh 0.2.1 的提示词插值器是 **strict** 的——遇到未注册的 `{{name}}` 直接抛错，而它只注册 `provider` 与 `model`。当前目录已改由工作目录服务以 user 上下文提供，`cwd` 不再是提示词变量（上游 `dsh-system-prompt` README 已明确要求从 preset 的 `suffix` 字段移除该语句）。我们 preset `standard` 的 `persona` 里仍留着 0.2.0 时代的 `suffix: Your working directory is {{cwd}}.`，R41 迁移时整体照搬未复核；上游 0.2.1 的 `presets/standard.patch.yml` 只有 `prefix`，对照即知多了一行。
+- **为什么表现为"整轮失败"**：插值发生在**提示词组装期**，即任何模型请求发出之前，所以跟模型、网络、额度都无关，换模型也不会好。
+- **修复**：删掉该 `suffix` 行，保留 `prefix` 里的 `{{model}}`（合法变量）。工作目录信息不丢——由 `dsh-working-directory` 继续提供。
+- **门禁**：`tests/bridge.spec.ts` 新增 R53——扫描 patch 的**生效值**（剔除 YAML 注释）里出现的全部 `{{var}}` 引用，只允许宿主真实注册的集合；已实测该断言在修复前红、修复后绿。
+- **排障**：`docs/TROUBLESHOOTING.md` 新增章节，含不必等发版就地的热修步骤。
+- **测试**：355/355（基线 354 + 1）。
+
 ## 0.15.1 (2026-10-21)
 
 **R52：修复调 `subagent` 直接失败——`modelSelectionSettings` 缺少配套宿主行**

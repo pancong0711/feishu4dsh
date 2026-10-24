@@ -5370,6 +5370,27 @@ describe('bridge: R38 agent preset mounting', () => {
       expect(settingsRow).toBeLessThan(presetStandardRow)
     }
   })
+
+  it('R53: the patch only references prompt variables the host actually registers', () => {
+    const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    // `dsh-system-prompt` interpolates strict `{{name}}` references and throws
+    // `unknown prompt variable "{{name}}" … registered variables: provider, model`
+    // when a section names one the loop never registered — before any model
+    // request, so every turn of a fresh session fails. dsh 0.2.1 dropped the
+    // `cwd` variable (the working-directory service supplies it as user
+    // context), so a leftover `suffix: Your working directory is {{cwd}}.`
+    // from the 0.2.0 era broke prompt assembly outright.
+    // Scan live YAML values only: comments may legitimately quote the broken
+    // clause while explaining why it is gone.
+    const liveLines = patch
+      .split('\n')
+      .map(line => line.replace(/(^|\s)#.*$/, ''))
+      .join('\n')
+    const refs = new Set([...liveLines.matchAll(/\{\{([A-Za-z0-9_]+)\}\}/g)].map(m => m[1] ?? ''))
+    // The loop registers exactly `provider` and `model`; plugins may add their
+    // own, so this pins the known-good set for the patch as it ships.
+    expect(refs).toEqual(new Set(['model']))
+  })
 })
 
 /* ------------------------------------------------------------------ */

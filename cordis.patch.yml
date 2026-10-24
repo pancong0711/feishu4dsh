@@ -205,7 +205,13 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              suffix: Your working directory is {{cwd}}.
+              # R53: only `provider` and `model` exist as prompt variables since
+              # dsh 0.2.1 — the loop does not register `cwd`, so a
+              # `suffix: Your working directory is {{cwd}}.` makes prompt
+              # assembly throw `unknown prompt variable "{{cwd}}"` BEFORE any
+              # model request (every turn fails on a fresh session). The
+              # working-directory service supplies cwd as user context instead;
+              # upstream presets carry the prefix line only.
               prefix: You are a coding agent powered by the {{model}} model.
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'

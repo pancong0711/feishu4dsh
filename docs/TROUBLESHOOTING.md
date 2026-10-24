@@ -269,3 +269,30 @@ composition 分支，所以 `dsh --dump-config` 全绿、服务也能正常 `con
 然后 `dsh --profile <profile> --dump-config | grep subagent-model-selection-settings`
 确认该行出现在 `preset-standard` **之前**（宿主层），再重启服务。该设置默认
 `enabled: false`，所以补上后子代理行为与之前一致，不会擅自放开选模型。
+
+## 8. 每轮直接失败：`unknown prompt variable "{{cwd}}"`（升级 dsh 后）
+
+**现象**：新会话第一轮就失败，日志/回复里是：
+
+```
+unknown prompt variable "{{cwd}}" in section "deployment:persona-suffix";
+registered variables: provider, model
+```
+
+**原因**：dsh 0.2.1 的提示词插值器只注册 `provider` 和 `model` 两个变量，
+`cwd` **不再提供**（当前目录改由工作目录服务以 user 上下文注入）。persona 里残留
+`Your working directory is {{cwd}}.` 这类写法时，**提示词组装阶段**就抛错——
+发生在任何模型请求之前，所以是"整轮直接失败"，跟模型、网络都无关。
+
+**处置**：升级 feishu4dsh 到 v0.15.2+（已删除该行）。急用可就地热修——打开部署副本
+`~/.dsh/profiles/<profile>/cordis.patch.yml`，找到 `preset-standard` 里的 `persona`，
+**删掉 `suffix:` 那一行**，只保留 `prefix`（`{{model}}` 是合法变量，不要删）：
+
+```yaml
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are a coding agent powered by the {{model}} model.
+```
+
+重启服务即可。删掉这行不会丢失工作目录信息：dsh 的工作目录服务会另外提供当前目录。
