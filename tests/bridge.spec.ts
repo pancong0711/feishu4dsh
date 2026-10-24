@@ -5347,6 +5347,29 @@ describe('bridge: R38 agent preset mounting', () => {
     // …while the preset still composes the package per agent.
     expect(patch).toContain("name: '@deepseek-ai/dsh-tool-ralph'")
   })
+
+  it('R52: `modelSelectionSettings` ships with its host-scope settings row', () => {
+    const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    // The preset's `subagent` tool opts into per-child model selection (copied
+    // from dsh-web-app's presets/standard.patch.yml). That option makes
+    // dsh-tool-subagent read the host-scope `subagentModelSelection` service on
+    // every `agent/created` and throw
+    //   tool-subagent: `modelSelectionSettings` requires
+    //   @deepseek-ai/dsh-tool-subagent/model-selection-settings in the Host scope
+    // when it is absent — which killed the delegation tool at runtime while the
+    // composition itself still booted fine. The two must travel together.
+    if (patch.includes('modelSelectionSettings: true')) {
+      expect(patch).toContain(
+        "- id: subagent-model-selection-settings\n      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'",
+      )
+      // Host row, not a preset row: the value is sampled when a Session is
+      // composed, so it must sit on the host plane alongside the registry.
+      const settingsRow = patch.indexOf('- id: subagent-model-selection-settings')
+      const presetStandardRow = patch.indexOf('- id: preset-standard')
+      expect(settingsRow).toBeGreaterThan(-1)
+      expect(settingsRow).toBeLessThan(presetStandardRow)
+    }
+  })
 })
 
 /* ------------------------------------------------------------------ */

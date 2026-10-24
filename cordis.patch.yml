@@ -179,6 +179,20 @@
       config:
         default: standard
 
+# R52: the `subagent` delegation tool below runs with `modelSelectionSettings:
+# true` (copied from dsh-web-app's `presets/standard.patch.yml`). That option
+# makes the plugin read the host-scope `subagentModelSelection` service on every
+# `agent/created`; without this row the standing composition throws
+#   tool-subagent: `modelSelectionSettings` requires
+#   @deepseek-ai/dsh-tool-subagent/model-selection-settings in the Host scope
+# and the delegation tool never installs. The row is a HOST row on purpose:
+# web-app keeps it in `cordis.patch.yml` (not in a preset) because the value is
+# sampled for each newly composed Session. It ships disabled by default, so
+# `subagent` behaves exactly as before until settings enable it.
+- insert:
+    - id: subagent-model-selection-settings
+      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
+
 # preset `standard` — the full coding-agent composition (factory default;
 # a profile-layer row with id `preset-standard` overrides this one).
 - insert:

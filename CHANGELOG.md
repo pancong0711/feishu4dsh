@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.1 (2026-10-21)
+
+**R52：修复调 `subagent` 直接失败——`modelSelectionSettings` 缺少配套宿主行**
+
+- **现象**：飞书侧让模型派子代理时本轮直接失败，报 `tool-subagent (@deepseek-ai/dsh-tool-subagent): tool-subagent: modelSelectionSettings requires @deepseek-ai/dsh-tool-subagent/model-selection-settings in the Host scope`。其他用户真机反馈。
+- **根因**：preset `standard` 的 `subagent` 行照抄了 `dsh-web-app/cordis.patch.yml` 对应 preset 里的 `modelSelectionSettings: true`，但**漏抄了提供 `subagentModelSelection` 服务的宿主行**——dsh-web-app 把它放在自己的 `cordis.patch.yml`（不在 preset 内）。该项让 `dsh-tool-subagent` 在每个 `agent/created` 去宿主作用域取该服务，取不到就抛错，**整个子代理工具装不上**。
+- **为什么长期没被发现**：校验点在 standing composition（`agent/created`）分支，所以 `dsh --dump-config` 组合全绿、服务启动也正常，只有第一次真正派子代理才炸；且宿主自带（`dsh-base`）的 `tool-subagent` 行并没开这个选项，问题自 R41（v0.10.0）preset 层接管宿主行之后才随版本上线。
+- **修复**：`cordis.patch.yml` 补上宿主行 `- id: subagent-model-selection-settings / name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'`，位置与 dsh-web-app 一致（`agent-preset-registry` 之后、`preset-standard` 之前）。**保留子代理按设置限定可选模型的能力**：该设置默认 `enabled: false`，因此修复后子代理行为与之前完全一致，不会擅自放开选模型。
+- **门禁**：`tests/bridge.spec.ts` 新增 R52——只要 patch 里出现 `modelSelectionSettings: true`，就必须同时存在该宿主行、且必须排在 `preset-standard` 之前（宿主层而非 preset 层）。已实测该断言在修复前红、修复后绿，避免"抄一半"再次漏网。
+- **排障**：`docs/TROUBLESHOOTING.md` 新增 §9，含判定依据与**不必等发版**的就地热修步骤（往部署副本的 `cordis.patch.yml` 补同一行后重启）。
+- **测试**：354/354（基线 353 + 1）。
+
 ## 0.15.0 (2026-10-21)
 
 **R50：适配 dsh `0.2.1-rc.2`——四处宿主契约硬伤 + 三处能力退化 + 补上 `ask_user` 提问通道（R51）**

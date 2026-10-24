@@ -240,3 +240,32 @@ R11 起 `/cd` 与 `/ws add`、`/model` 共用审批 ACL：配置了 `approvers` 
 **处置**：在该模型上执行 `/model effort default` 清除偏好（请求不再携带参数），即可
 恢复；需要更强推理请改用网关原生支持的模型/通道（如 `zai-coding-cn/glm-5.3-flash`
 或 `deepseek-official/*`，这些已实测生效）。
+
+## 7. 调 `subagent` 报 `modelSelectionSettings requires … in the Host scope`
+
+**现象**：让模型派子代理（`subagent` / `subagent_fork`）时本轮直接失败，报：
+
+```
+tool-subagent (@deepseek-ai/dsh-tool-subagent): tool-subagent: modelSelectionSettings
+requires @deepseek-ai/dsh-tool-subagent/model-selection-settings in the Host scope
+```
+
+**判定**：这是**插件 bundle patch 缺行**，不是宿主 bug。preset `standard` 的 `subagent`
+行开了 `modelSelectionSettings`，但提供 `subagentModelSelection` 服务的**宿主行**
+（`@deepseek-ai/dsh-tool-subagent/model-selection-settings`）没有一起挂上。
+
+坑点在于**组合期不报、运行期才炸**：该校验发生在每个 `agent/created` 的 standing
+composition 分支，所以 `dsh --dump-config` 全绿、服务也能正常 `connected as …`，
+只有真正派子代理那一次才失败。
+
+**处置**：升级 feishu4dsh 到含本修复的版本（v0.15.1+）。急用可就地热修——在部署副本
+`~/.dsh/profiles/<profile>/cordis.patch.yml` 的 `- insert:` 段里补：
+
+```yaml
+    - id: subagent-model-selection-settings
+      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
+```
+
+然后 `dsh --profile <profile> --dump-config | grep subagent-model-selection-settings`
+确认该行出现在 `preset-standard` **之前**（宿主层），再重启服务。该设置默认
+`enabled: false`，所以补上后子代理行为与之前一致，不会擅自放开选模型。

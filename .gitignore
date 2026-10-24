@@ -23,3 +23,6 @@ publish/
 
 # 后台 subagent 工作痕迹（日志/报告），不提交
 .subagent/
+
+# 运行时审计痕迹（含会话 id / 真实路径，永不入库）
+.tmp-audit.jsonl

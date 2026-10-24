@@ -46,6 +46,8 @@
 | 0.12.2 | 2026-10-09 | **R47 收口词表修复**：宿主真实键集是 `completed` 而 fixture 用了不存在的 `complete`，v0.12.1 收紧判定误锚假词表致 /compact 真机从未成功；修复+契约对账门禁（词表漂移 CI 红）+摘要卫生（meta 前缀剥离） |
 | 0.13.0 | 2026-10-12 | **R48 长回复分片丢话题锚修复**：dsh 出站长文本整段交 SDK，而 SDK 分片只给首片带 `replyTo`，后续片落到聊天根；改为桥接层「带锚分片」（每片共用同一 `replyTo`）并移植加固分片器，确保任一片不超 SDK 阈值 |
 | 0.14.0 | 2026-10-12 | **R49 卡片溢出多卡依次流式**：live reasoning 卡正文超预算不再"冻结头部+收口一次性群发全文"（导致中途静默、`/stop` 时集中爆发），改为滚动翻页续写、每张新卡带同一话题锚、建卡频控、收口只终态渲染 |
+| 0.15.0 | 2026-10-21 | **R50 适配 dsh 0.2.1-rc.2**：四处宿主契约硬伤（cancel 结构化原因、`execute` 四参、归档集变取值器、观察租约）+ 三处退化（`session.events` 移除、`turn/end` 词表 5→7、patch 空指向）；R51 补 `ask_user` 表单卡通道；`host-contract` 升级为真实宿主 `.d.ts` 双层对账 |
+| 0.15.1 | 2026-10-21 | **R52 子代理恢复可用**：preset `standard` 的 `subagent` 行开了 `modelSelectionSettings` 却漏抄提供该服务的宿主行，导致飞书侧一调子代理就报 `… requires @deepseek-ai/dsh-tool-subagent/model-selection-settings in the Host scope`（组合期不报、运行期才炸）；补齐宿主行并加配对回归门禁，保留子代理选模型能力 |
 
 ## 三、当前方向
 
