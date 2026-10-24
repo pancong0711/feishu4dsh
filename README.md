@@ -97,7 +97,7 @@ pnpm build        # tsc 产出 lib/
 
 ## 版本与兼容性
 
-要求 **dsh `>= 0.2.1-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.2.1-rc.2` 上验证（v0.15.2）。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。
+要求 **dsh `>= 0.2.1-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.2.1-rc.2` 上验证（v0.15.3）。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。
 
 **升级前先跑契约门禁**：`pnpm test` 里的 `tests/host-contract.spec.ts` 会直接读取本机已安装 dsh 的 `.d.ts`，把 `TurnEndReasonMap`、`AgentCancelCause`、`commands.execute` 签名、`archivedSessionIds` getter、`snapshotEvents()`、观察租约、`user-questions/request` 逐条对账；宿主不可达时自动 skip。0.2.1 的四处漂移（`cancel` 结构化原因、`execute` 四参、归档集变取值器、`Session.events` 移除）都不会让插件启动失败，只会让 `/stop`、`/compact`、`/session archive`、`/status` 在真机上静默哑掉——这正是该门禁要提前拦住的。兼容底线说明：0.2.0 起 Agent 预设由 `@deepseek-ai/dsh-agent-preset-registry`（注册表服务）+ 每预设一条 `@deepseek-ai/dsh-agent-preset` 声明行提供（dsh 不再内置预设），插件 bundle patch 出厂声明 `standard` / `minimal` 并把宿主模型面工具行让位给 preset 层；dsh `0.1.5-rc.1` 及以下使用已废弃的 `@deepseek-ai/dsh-agent-presets` 包与 `settings.yaml` 载体，**本版本不可用**（需配套 v0.9.x）。
 

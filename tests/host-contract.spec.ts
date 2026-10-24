@@ -199,3 +199,105 @@ describe.skipIf(hostRoot === undefined)('host contract: installed dsh types', ()
     expect(source as string).toContain("'user-questions/request'")
   })
 })
+
+/* ------------------------------------------------------------------ */
+/* R54: shipped presets must actually assemble on the installed host    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * R52 and R53 were the same class of defect: a preset row copied from the
+ * dsh-web-app reference drifted away from what the installed host accepts —
+ * R52 omitted the host-scope service a `modelSelectionSettings: true` row
+ * requires, R53 kept a `{{cwd}}` persona variable the 0.2.1 prompt loop no
+ * longer registers. Neither broke composition (`--dump-config` stayed green)
+ * and neither showed up on this machine, which runs `minimal` by default —
+ * both only fired at runtime, on `standard`, for other users.
+ *
+ * Layer 1 here is host-free: every `{{name}}` the shipped patch interpolates
+ * must be a variable the prompt loop actually provides. Layer 2 (host
+ * reachable) renders both presets' persona text through the REAL host
+ * interpolator, so a future variable rename fails here instead of in
+ * someone's chat.
+ */
+
+/** Prompt variables the dsh prompt loop provides to every assembly. */
+const HOST_PROMPT_VARIABLES = new Set(['provider', 'model'])
+
+/** The persona prefix/suffix the shipped patch declares for one preset. */
+function shippedPersona(preset: string): { prefix: string; suffix: string } {
+  const patch = readFileSync(join(import.meta.dirname, '..', 'cordis.patch.yml'), 'utf8')
+  const start = patch.indexOf(`- id: preset-${preset}`)
+  expect(start).toBeGreaterThan(-1)
+  // The preset block ends at the next top-level `- insert:` or `- id:`.
+  const rest = patch.slice(start)
+  const end = rest.search(/\n- (insert|id):/)
+  const block = end < 0 ? rest : rest.slice(0, end)
+  const read = (key: string): string => {
+    const match = block.match(new RegExp(`^\\s+${key}:\\s*(.+)$`, 'm'))
+    return match?.[1]?.trim() ?? ''
+  }
+  return { prefix: read('prefix'), suffix: read('suffix') }
+}
+
+/** Strip YAML comments so documentation of a removed clause is not mistaken for it. */
+function livePatchText(): string {
+  return readFileSync(join(import.meta.dirname, '..', 'cordis.patch.yml'), 'utf8')
+    .split('\n')
+    .map(line => line.replace(/(^|\s)#.*$/, ''))
+    .join('\n')
+}
+
+describe('host contract: shipped presets assemble (internal)', () => {
+  it('every interpolated name is a variable the prompt loop provides', () => {
+    const refs = [...livePatchText().matchAll(/\{\{([A-Za-z0-9_]+)\}\}/g)].map(match => String(match[1]))
+    const unknown = [...new Set(refs)].filter(name => !HOST_PROMPT_VARIABLES.has(name))
+    // R53: `cwd` used to be here and threw `unknown prompt variable` on every
+    // turn of a fresh `standard` session.
+    expect(unknown).toEqual([])
+  })
+
+  it('both shipped presets declare a persona the loop can render', () => {
+    for (const preset of ['standard', 'minimal']) {
+      const { prefix, suffix } = shippedPersona(preset)
+      expect(prefix.length, `preset ${preset} must declare a persona prefix`).toBeGreaterThan(0)
+      for (const text of [prefix, suffix]) {
+        for (const match of text.matchAll(/\{\{([A-Za-z0-9_]+)\}\}/g)) {
+          expect(HOST_PROMPT_VARIABLES.has(String(match[1])), `preset ${preset}: {{${String(match[1])}}}`).toBe(true)
+        }
+      }
+    }
+  })
+
+  it('no preset declares an empty persona suffix (the R53 shape)', () => {
+    // An empty-after-removal `suffix:` key is legal but pointless; the R53 fix
+    // removed the key entirely, and dsh-persona defaults it to ''.
+    for (const preset of ['standard', 'minimal']) {
+      const { suffix } = shippedPersona(preset)
+      if (suffix !== '') expect(suffix.length).toBeGreaterThan(0)
+    }
+  })
+})
+
+describe('host contract: shipped presets assemble (installed host)', () => {
+  const hostRoot = hostPackagesDir()
+
+  it.skipIf(hostRoot === undefined)('both presets render through the real host interpolator', async () => {
+    // Load the real dsh-system-prompt and render each preset's persona exactly
+    // as the host does: strict `{{name}}` interpolation over the loop's
+    // variables. R53 failed here with `unknown prompt variable "{{cwd}}"`.
+    const entry = join(hostRoot as string, 'dsh-system-prompt', 'lib', 'index.js')
+    expect(existsSync(entry)).toBe(true)
+    const mod = (await import(entry)) as { renderPrompt?: (assembly: unknown) => string }
+    expect(typeof mod.renderPrompt).toBe('function')
+    const variables = { provider: 'deepseek', model: 'deepseek-v4' }
+    for (const preset of ['standard', 'minimal']) {
+      const { prefix, suffix } = shippedPersona(preset)
+      const sections = [
+        { name: `test:${preset}:prefix`, text: prefix },
+        ...(suffix === '' ? [] : [{ name: `test:${preset}:suffix`, text: suffix }]),
+      ]
+      // Throws on any unregistered variable — the exact 0.2.1 failure mode.
+      expect(() => mod.renderPrompt?.({ variables, sections, contexts: [] }), `preset ${preset}`).not.toThrow()
+    }
+  })
+})

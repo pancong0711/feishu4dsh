@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.15.3 (2026-10-24)
+
+**R54：给两个出厂 preset 补上真实性门禁——`standard` 与 `minimal` 必须真的能组装**
+
+- **背景**：R52（`subagent` 缺宿主行）与 R53（`{{cwd}}` 变量失效）是同一类缺陷——**preset 行照抄上游但漂移**，而且两个在本机都复现不了。复盘发现三道防线同时失守：本机 77 个通道会话里 70 个跑 `minimal`（`standard` 路径几乎零流量，最后 7 个 `standard` 会话都在 `{{cwd}}` 引入之前）；两个缺陷都发生在运行时（`agent/created` 与提示词组装期），`--dump-config` 组合期全绿；单测跑在手写桩上，既不加载真实 preset 也不调真实插值器。
+- **新增门禁（无宿主，永远运行）**：patch 生效值（**剔除 YAML 注释**，否则说明里引用的坏写法会误伤）中出现的每个 `{{name}}` 必须是提示词循环真实提供的变量；`standard`/`minimal` 都必须声明非空 `persona.prefix` 且变量合法；`suffix` 一旦存在必须非空。
+- **新增门禁（真实宿主可达时，否则自动 skip）**：把两个 preset 的 persona 交给真实 `dsh-system-prompt` 的 `renderPrompt` 渲染一遍——未注册变量当场抛错，与真机同一失败路径。
+- **实测有效**：注入 R53 缺陷后 3 条新门禁全红（含真实宿主那条），恢复后全绿。
+- **顺带核清的差异**：逐 id 对照上游 `presets/*.patch.yml` —— 我们 `standard` 缺的 `time-context`/`tool-schedule`/`tool-plugin-market` 是 web 控制台与定时能力（本项目未宣称），`minimal` 缺的 `tool-fs`/`compaction*` 是 R42 定稿的**有意设计**（省 token、README 已声明）；删除 `{{cwd}}` 也不丢工作目录信息——`dsh-working-directory` 是宿主层行，以 `interpolate: false` 的 user 上下文提供 cwd。故本轮**无需改动任何 preset 组合**。
+- **测试**：359/359（基线 355 + 4）。
+
 ## 0.15.2 (2026-10-24)
 
 **R53：修复每轮直接失败——persona 里的 `{{cwd}}` 变量在 dsh 0.2.1 已失效**

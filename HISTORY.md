@@ -49,6 +49,7 @@
 | 0.15.0 | 2026-10-21 | **R50 适配 dsh 0.2.1-rc.2**：四处宿主契约硬伤（cancel 结构化原因、`execute` 四参、归档集变取值器、观察租约）+ 三处退化（`session.events` 移除、`turn/end` 词表 5→7、patch 空指向）；R51 补 `ask_user` 表单卡通道；`host-contract` 升级为真实宿主 `.d.ts` 双层对账 |
 | 0.15.1 | 2026-10-21 | **R52 子代理恢复可用**：preset `standard` 的 `subagent` 行开了 `modelSelectionSettings` 却漏抄提供该服务的宿主行，导致飞书侧一调子代理就报 `… requires @deepseek-ai/dsh-tool-subagent/model-selection-settings in the Host scope`（组合期不报、运行期才炸）；补齐宿主行并加配对回归门禁，保留子代理选模型能力 |
 | 0.15.2 | 2026-10-24 | **R53 修复每轮直接失败**：preset persona 残留 0.2.0 时代的 `suffix: Your working directory is {{cwd}}.`，而 dsh 0.2.1 的提示词插值器只注册 `provider`/`model` 且对未知变量严格抛错（组装期、任何模型请求之前），删该行并加变量白名单门禁 |
+| 0.15.3 | 2026-10-24 | **R54 preset 真实性门禁**：R52/R53 同类缺陷本机均复现不了（70/77 会话跑 minimal、`standard` 路径零流量，且缺陷在运行时非组合期、单测跑手写桩）；补两条防线——patch 生效值里的 `{{var}}` 必须在宿主注册集合内、两个 preset 的 persona 交给真实 `renderPrompt` 渲染（宿主不可达自动 skip）；逐 id 对账上游 preset 确认其余差异均为有意设计 |
 
 ## 三、当前方向
 
