@@ -228,18 +228,33 @@ R11 起 `/cd` 与 `/ws add`、`/model` 共用审批 ACL：配置了 `approvers` 
 
 **处置**：①③都在插件 bundle patch（`cordis.patch.yml`，R38 起；R41 迁 0.2.0 口径）内——确认部署副本的该文件已同步（对照 `@deepseek-ai/dsh-web-app/cordis.patch.yml` 的 disabled 清单，0.2.0 为 24 条）；②升级插件 ≥ v0.10.0（dsh 0.2.0 线）/ v0.9.0（dsh 0.1.5 线，二者不可混装）。dsh `0.2.0-rc.2` 起预设不再内置，缺声明即报 `Unknown agent preset`。
 
-## 6. `/model effort` 设置后请求 400：provider 拒绝 `reasoning_effort`
+## 6. `/model effort` 设置后不生效，或请求 400
 
-**现象**：某模型设置推理强度后，下一轮 `本轮执行失败`，会话日志 `turn/end.reason.error.message`
-含 `native reasoning control reasoning_effort is not allowed`（或同类 400）。
+**先分清三层，不要直接归因于 provider：**
 
-**原因**：模型目录声明"支持 effort"与**网关是否接受该参数**是两件事。已知
-`opencode-go`（OpenCode Zen 网关）会拒绝 `reasoning_effort` 参数——即使其目录条目
-声明支持。dsh 的能力校验只看目录声明，拦不住这类网关侧拒绝。
+1. **偏好层**：`/model effort` 是否显示了完整 `provider/model` 精确键，journal 是否有
+   `reasoning effort for <provider>/<model> set to <level> ... (persisted=yes)`；
+2. **请求层**：该会话下一次 `request/header.config.reasoningEffort` 是否等于目标档位；
+3. **wire/provider 层**：请求带 effort 后是否报
+   `native reasoning control reasoning_effort is not allowed`（或同类 400）。
 
-**处置**：在该模型上执行 `/model effort default` 清除偏好（请求不再携带参数），即可
-恢复；需要更强推理请改用网关原生支持的模型/通道（如 `zai-coding-cn/glm-5.3-flash`
-或 `deepseek-official/*`，这些已实测生效）。
+`/model effort` 无参查看现在会同时显示偏好、最近请求实测值、宿主支持档位，可先据此
+判断断在哪一层。若 journal 显示 `persisted=no`，说明只改了内存，重启会丢失。
+
+**关于 `opencode-go` 的旧结论已修正（R55，2026-11-19 真机）**：
+`opencode-go/deepseek-v4.1-flash` 在请求头携带 `reasoningEffort: high` 时成功完成并
+产生 reasoning；历史 62 次该路由请求头缺席的主因是精确键缺失，而不是整个 provider
+拒绝参数。不要再按“opencode-go 一定拒绝”统一清除偏好。
+
+**处置**：
+
+- 精确键缺失：确认当前模型用 `/model` 显示为 `provider/model`，再执行
+  `/model effort <level>`；查看反馈与 journal 的 `persisted=yes`；
+- 设置成功但下轮 header 不改：升级到包含 R55 修复的版本（历史 header effort 粘滞、
+  `default` 清键 deep-merge 复活两个缺陷已修）；旧版可临时切模型/开新会话解除粘滞；
+- 确实出现 400：这是**具体模型/具体网关时点**问题。执行 `/model effort default`
+  清除该精确键（R55 起会持久化 unset），并记录 provider、model、请求时间与错误原文；
+  换模型/通道验证，不要泛化为整个 provider。
 
 ## 7. 调 `subagent` 报 `modelSelectionSettings requires … in the Host scope`
 

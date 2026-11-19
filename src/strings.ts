@@ -160,11 +160,20 @@ export interface Strings {
   modelUnknown: string
   modelNoPermission: string
   modelUsage: string
-  /* Reasoning effort (/model effort, R28). */
+  /* Reasoning effort (/model effort, R28/R55). */
   modelEffortLine: (effort: string, source: string) => string
   effortSourcePreferred: string
   effortUnknown: string
   effortUsage: string
+  /** R55-D4: host-advertised effort ids for the current route. */
+  effortSupportedLine: (supported: string) => string
+  /** R55-D6: last request-header state, separate from the preference table. */
+  effortMeasuredUnavailable: string
+  effortMeasuredNone: string
+  effortMeasuredAbsent: string
+  effortMeasuredValue: (level: string) => string
+  /** R55-D3: shown when the in-memory change could not be persisted. */
+  effortPersistenceWarning: string
   /**
    * R39: rejection when the model HAS a reasoning capability but not the
    * requested level. `supported` is the capability's effort-id list joined
@@ -427,9 +436,15 @@ const zhCN: Strings = {
   modelEffortLine: (effort, source) => `推理强度：${effort}${source}`,
   effortSourcePreferred: '（模型偏好）',
   effortUnknown: '尚未确定模型：先发起一轮对话，或用 /model <provider>/<model> 指定。',
-  effortUsage: '用法：/model effort（查看） · /model effort <default|low|high|max>（设置当前模型的推理强度，下一轮生效并全局记住） · /model effort default（恢复默认）',
-  effortSet: (level, model) => `已将 ${model} 的推理强度设为 ${level}，下一轮生效（该模型的偏好已全局记住；按 provider/model 精确记住）。`,
+  effortUsage: '用法：/model effort（查看） · /model effort <default|low|high|max 或宿主支持的档位>（设置当前模型的推理强度，下一轮生效；按 provider/model 持久化） · /model effort default（恢复默认）',
+  effortSet: (level, model) => `已将 ${model} 的推理强度设为 ${level}，下一轮生效（按 provider/model 精确记住）。`,
   effortCleared: model => `已恢复 ${model} 的推理强度为默认（请求不再携带 reasoning_effort 参数；按 provider/model 精确记住）。`,
+  effortSupportedLine: supported => `宿主支持档位：${supported}`,
+  effortMeasuredUnavailable: '最近请求：不可用（宿主不提供 requestHeader）',
+  effortMeasuredNone: '最近请求：尚无记录',
+  effortMeasuredAbsent: '最近请求：未携带 reasoning_effort',
+  effortMeasuredValue: level => `最近请求：${level}（请求头实测）`,
+  effortPersistenceWarning: '⚠️ 持久化不可用：本设置仅在当前进程内生效，重启后会丢失。',
   // R39: the capability truth comes from the host llm service; `supported`
   // arrives pre-joined as "low / medium / xhigh"-style.
   effortUnsupported: (level, model, supported) =>
@@ -704,9 +719,15 @@ const enUS: Strings = {
   modelEffortLine: (effort, source) => `Reasoning effort: ${effort}${source}`,
   effortSourcePreferred: ' (model preference)',
   effortUnknown: 'No model is known yet: run a turn first, or pin one with /model <provider>/<model>.',
-  effortUsage: 'Usage: /model effort (view) · /model effort <default|low|high|max> (set for the current model; takes effect next turn and is remembered globally) · /model effort default (reset)',
-  effortSet: (level, model) => `Set ${model} reasoning effort to ${level}; takes effect next turn and is remembered for this model (per provider/model).`,
+  effortUsage: 'Usage: /model effort (view) · /model effort <default|low|high|max or a host-advertised level> (set for the current model; takes effect next turn; persisted per provider/model) · /model effort default (reset)',
+  effortSet: (level, model) => `Set ${model} reasoning effort to ${level}; takes effect next turn (remembered per provider/model).`,
   effortCleared: model => `Reset ${model} reasoning effort to default (requests carry no reasoning_effort; remembered per provider/model).`,
+  effortSupportedLine: supported => `Host-supported levels: ${supported}`,
+  effortMeasuredUnavailable: 'Last request: unavailable (host exposes no requestHeader)',
+  effortMeasuredNone: 'Last request: no record yet',
+  effortMeasuredAbsent: 'Last request: no reasoning_effort attached',
+  effortMeasuredValue: level => `Last request: ${level} (measured from request header)`,
+  effortPersistenceWarning: '⚠️ Persistence unavailable: this setting applies only to the current process and will be lost after restart.',
   // R39: capability truth comes from the host llm service.
   effortUnsupported: (level, model, supported) =>
     `Unsupported effort ${level}: ${model} supports ${supported}.`,

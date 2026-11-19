@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.15.4 (2026-11-19)
+
+**R55：`/model effort` 状态机、持久化语义与能力/观测链加固**
+
+- **真机结论**：精确键存在时 `/model effort high` 对 `opencode-go/deepseek-v4.1-flash` 已真实生效——journal 11:14:33 设置成功，11:14:41 / 11:20:30 两次 Feishu 请求头均为 `reasoningEffort: high`，assistant 含 reasoning；历史 62 次缺席主因是精确键缺失 + 旧排障文档把单次 provider 400 泛化。TROUBLESHOOTING §6 已重写为三层判定。
+- **D1 历史 header 粘滞**：此前 selection fallback 会继承上一轮 `requestHeader.reasoningEffort`，而 `AgentModelSelection.current` 遇到 base 已有 effort 就跳过 `modelEfforts` → 同一会话 high 后改 low/default 永远不生效。修复为 fallback 只读路由身份（`readLoggedRoute` 剥离 effort），偏好表始终是 `/model effort` 的唯一来源。
+- **D2 清档不持久化**：`/model effort default` 从内存 map 删除后，旧实现走 `settings.update({modelEfforts})`；宿主对 map 是 deep-merge，缺席 key 不会删除磁盘值，重启回魂。新增 settings `mutate/unset` 持久化路径（`writeModelEfforts`），删除 key 发显式 `unset`，其余键用 set 操作原子写入。
+- **D3 持久化失败不再谎报**：hook 缺失或抛错时，回复追加「持久化不可用，仅当前进程生效」，journal 记录 `persisted=no`；成功才显示“按 provider/model 精确记住”。
+- **D4 能力驱动档位**：宿主 `llm` 可达时接受其真实公布的任意档位（如 `medium`/`xhigh`），设置前预校验；`max` 不再跳过硬校验。`/model effort` 查看附带宿主支持档位。
+- **D6 可观测性**：`/model`、`/status`、`/model effort` 分开显示“配置偏好”和“最近请求 header 实测”（value / 未携带 / 尚无记录 / 宿主不可用），避免“显示已设置、请求却没带”。
+- **D7 安装器对齐**：本地 clone 的 `installAgentModelSelection` 补上 dsh 0.2.1 同款 `agent/pre-step` 模型切换 notice。
+- **测试**：369/369（基线 359 + 10：R55-D1/D2/D3/D4/D6 五条 bridge 回归 + `readLoggedRoute`、真实 waterfall 注入、pre-step notice 三条模型选择单测 + settings mutate/unset 包装/写入两条持久化回归）。
+
 ## 0.15.3 (2026-10-24)
 
 **R54：给两个出厂 preset 补上真实性门禁——`standard` 与 `minimal` 必须真的能组装**

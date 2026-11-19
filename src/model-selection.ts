@@ -9,6 +9,7 @@
  * @module feishu4dsh/model-selection
  */
 
+import { randomUUID } from 'node:crypto'
 import type { HostAgentOptions, HostModelSelection, HostRequestHeaderConfig, HostSession } from './host.js'
 
 /** A mutable per-agent selection handed to the host's installer. */
@@ -19,10 +20,11 @@ export interface MutableSelection {
 }
 
 /**
- * Reasoning-effort levels `/model effort` accepts (R28). `default` is the
- * RESET value, not a wire value: it means the request carries NO explicit
- * `reasoning_effort` and the model's built-in behaviour applies. Align with
- * dsh when its enumeration grows (owner enumeration: default/low/high/max).
+ * Historical owner fallback levels `/model effort` accepts when the host
+ * cannot report capabilities (R28). `default` is the RESET value, not a wire
+ * value: it means the request carries NO explicit `reasoning_effort` and the
+ * model's built-in behaviour applies. When the host `llm` service is
+ * reachable, R55-D4 additionally accepts any wire id it advertises.
  */
 export const EFFORT_LEVELS = ['default', 'low', 'high', 'max'] as const
 export type EffortLevel = (typeof EFFORT_LEVELS)[number]
@@ -60,6 +62,19 @@ export function readLoggedSelection(
     // A broken host hook must never break /status; fall through to defaults.
     return undefined
   }
+}
+
+/**
+ * What routing identity the session ran last, with any inherited effort
+ * deliberately stripped. The per-model preference table is the ONLY source
+ * of `/model effort`; treating a previous request header as an explicit pin
+ * made high→low/default changes impossible after the first high request.
+ */
+export function readLoggedRoute(
+  session: Pick<HostSession, 'requestHeader'> | undefined,
+): HostModelSelection | undefined {
+  const logged = readLoggedSelection(session)
+  return logged === undefined ? undefined : { provider: logged.provider, model: logged.model }
 }
 
 /** Render one selection as `provider/model` (bare `model` without a provider). */
@@ -137,16 +152,24 @@ export function createAgentModelSelection(fallback: SelectionFallback, effortOf?
  * entry points, but WITHOUT depending on a host-provided `installModelSelection`
  * service (which dsh does not expose as a Cordis service).
  *
- * It registers two waterfall listeners on the agent's scoped Cordis context:
+ * It registers three waterfall listeners on the agent's scoped Cordis context:
  * 1. `system-prompt/assemble` — snapshot the selected model and inject
  *    provider/model variables into the assembled prompt;
- * 2. `agent/request` — force the next request to route to the selected model.
+ * 2. `agent/request` — force the next request to route to the selected model;
+ * 3. `agent/pre-step` — append the same durable model-switch notice dsh's
+ *    native installer writes (R55-D7).
  *
  * Returns a disposer; when the agent context is disposed, its listeners die
  * with it, so callers may ignore the disposer.
  */
 export function installAgentModelSelection(
-  agentCtx: { on(event: string, listener: (...args: never[]) => unknown): () => void },
+  agentCtx: {
+    on(
+      event: string,
+      listener: (...args: never[]) => unknown,
+      options?: { readonly prepend?: boolean },
+    ): () => void
+  },
   selection: AgentModelSelection,
 ): () => void {
   const disposeAssembly = agentCtx.on('system-prompt/assemble', async (...args: never[]) => {
@@ -177,9 +200,50 @@ export function installAgentModelSelection(
       ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),
     }
   })
+  // R55-D7: keep the local installer in step with dsh's installModelSelection:
+  // a provider/model change appends the same durable user-role notice. The
+  // notice is intentionally route-only; an effort-only change adds no notice.
+  const disposeNotice = agentCtx.on('agent/pre-step', async (...args: never[]) => {
+    const payload = args[0] as unknown as {
+      readonly agent: { readonly session: Pick<HostSession, 'requestHeader'> }
+      readonly messages: readonly unknown[]
+      readonly signal?: { readonly aborted?: boolean }
+      readonly step: number
+    }
+    const next = args[1] as unknown as () => Promise<{
+      readonly kind?: string
+      readonly messages?: readonly unknown[]
+    }>
+    const decision = await next()
+    if (decision?.kind === 'reject' || payload.signal?.aborted === true) return decision
+    const messages = decision?.messages ?? []
+    // The host skips an empty first step and an emptied offered continuation.
+    if (messages.length === 0 && (payload.step === 1 || payload.messages.length > 0)) return decision
+    const selected = selection.assembled as HostModelSelection | undefined
+    const previous = payload.agent.session.requestHeader?.()?.config
+    if (selected === undefined || previous === undefined) return decision
+    if (previous.provider === selected.provider && previous.model === selected.model) return decision
+    const from = previous.provider === selected.provider ? previous.model : `${previous.provider}/${previous.model}`
+    const to = selected.provider === previous.provider ? selected.model : `${selected.provider}/${selected.model}`
+    const notice = {
+      id: randomUUID(),
+      role: 'user',
+      content: [{
+        type: 'text',
+        text: `[model changed: assistant turns above this point were generated by ${from}; the session continues with ${to}]`,
+      }],
+      source: {
+        kind: 'model-selection',
+        form: 'notice',
+        summary: `${from} → ${to}`,
+      },
+    }
+    return { ...decision, messages: [...messages, notice] }
+  }, { prepend: true })
   return () => {
     disposeAssembly()
     disposeRequest()
+    disposeNotice()
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSettingsScope } from '../src/runtime.js'
+import { buildSettingsScope, writeModelEfforts } from '../src/runtime.js'
 import { Config } from '../src/config.js'
 
 describe('runtime: buildSettingsScope (R44, dsh 0.2.0 API)', () => {
@@ -11,6 +11,43 @@ describe('runtime: buildSettingsScope (R44, dsh 0.2.0 API)', () => {
     )
     await scope!.update({ chatPresets: { s: 'standard' } })
     expect(updates).toEqual([['feishu4dsh', { chatPresets: { s: 'standard' } }]])
+  })
+
+  it('wraps mutate with the entry-id namespace (R55-D2)', async () => {
+    const mutations: Array<[string, readonly { op: string; path: readonly string[] }[]]> = []
+    const scope = buildSettingsScope(
+      {
+        update: async () => undefined,
+        mutate: async (ns, ops) => { mutations.push([ns, ops]) },
+      },
+      () => undefined,
+    )
+    await scope!.mutate([{ op: 'unset', path: ['modelEfforts', 'p/m'] }])
+    expect(mutations).toEqual([['feishu4dsh', [{ op: 'unset', path: ['modelEfforts', 'p/m'] }]]])
+  })
+
+  it('uses unset operations when a model effort key is removed (R55-D2)', async () => {
+    const updates: object[] = []
+    const mutations: Array<readonly { op: string; path: readonly string[]; value?: unknown }[]> = []
+    const scope = {
+      update: async (patch: object) => { updates.push(patch) },
+      mutate: async (ops: readonly { op: string; path: readonly string[]; value?: unknown }[]) => { mutations.push(ops) },
+    }
+    await writeModelEfforts(scope, { 'p2/m2': 'low' }, ['p1/m1'])
+    expect(updates).toEqual([])
+    expect(mutations).toEqual([[
+      { op: 'unset', path: ['modelEfforts', 'p1/m1'] },
+      { op: 'set', path: ['modelEfforts', 'p2/m2'], value: 'low' },
+    ]])
+
+    await writeModelEfforts(scope, { 'p2/m2': 'high' })
+    expect(updates).toEqual([{ modelEfforts: { 'p2/m2': 'high' } }])
+  })
+
+  it('rejects removals loudly when the host has no mutate API', async () => {
+    const scope = buildSettingsScope({ update: async () => undefined }, () => undefined)
+    await expect(scope!.mutate([{ op: 'unset', path: ['modelEfforts', 'p/m'] }]))
+      .rejects.toThrow('settings.mutate API 不可用')
   })
 
   it('returns undefined and notifies once when the host lacks the API', () => {

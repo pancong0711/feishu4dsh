@@ -16,11 +16,23 @@ import { Config, resolveConfig, hasCredentials } from './config.js'
  * journald), which silently disabled every persistence hook. Returns a
  * bridge-facing scope or `undefined`, and notifies ONCE when unusable.
  */
+export type SettingsPathOp =
+  | { readonly op: 'set'; readonly path: readonly string[]; readonly value: unknown }
+  | { readonly op: 'unset'; readonly path: readonly string[] }
+
+export interface RuntimeSettingsScope {
+  update(patch: object): Promise<unknown>
+  mutate(ops: readonly SettingsPathOp[]): Promise<unknown>
+}
+
 export function buildSettingsScope(
-  settings: { update(ns: string, patch: object, expectedRevision?: string): Promise<unknown> } | undefined,
+  settings: {
+    update(ns: string, patch: object, expectedRevision?: number): Promise<unknown>
+    mutate?(ns: string, ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<unknown>
+  } | undefined,
   notify: (line: string) => void,
   ns = 'feishu4dsh',
-): { update(patch: object): Promise<unknown> } | undefined {
+): RuntimeSettingsScope | undefined {
   if (settings === undefined || typeof settings.update !== 'function') {
     notify(
       'feishu4dsh: settings 服务不可用（宿主缺 settings.update API）— '
@@ -28,7 +40,40 @@ export function buildSettingsScope(
     )
     return undefined
   }
-  return { update: patch => settings.update(ns, patch) }
+  return {
+    update: patch => settings.update(ns, patch),
+    mutate: ops => {
+      if (typeof settings.mutate !== 'function') {
+        return Promise.reject(new Error('宿主 settings.mutate API 不可用；无法删除已持久化的 map 键'))
+      }
+      return settings.mutate(ns, ops)
+    },
+  }
+}
+
+/**
+ * R55-D2: persist the effort map without relying on deep-merge deletion.
+ * Adds/updates may use `update`; any removed key requires `mutate` with an
+ * explicit `unset` path, otherwise the old persisted value survives a restart.
+ */
+export async function writeModelEfforts(
+  scope: RuntimeSettingsScope,
+  efforts: Record<string, string>,
+  removedKeys: readonly string[] = [],
+): Promise<void> {
+  if (removedKeys.length === 0) {
+    await scope.update({ modelEfforts: efforts })
+    return
+  }
+  const ops: SettingsPathOp[] = [
+    ...removedKeys.map(key => ({ op: 'unset' as const, path: ['modelEfforts', key] })),
+    ...Object.entries(efforts).map(([key, value]) => ({
+      op: 'set' as const,
+      path: ['modelEfforts', key],
+      value,
+    })),
+  ]
+  await scope.mutate(ops)
 }
 
 import type { ResolvedConfig } from './config.js'
@@ -90,7 +135,8 @@ export function apply(ctx: Context, config: Config): void {
     // the effort table all died with the restart. Reads now come from the entry
     // config directly; the volatile fields are marked in `src/config.ts`.
     const settings = ctx.get('settings') as {
-      update(ns: string, patch: object, expectedRevision?: string): Promise<unknown>
+      update(ns: string, patch: object, expectedRevision?: number): Promise<unknown>
+      mutate?(ns: string, ops: readonly SettingsPathOp[], expectedRevision?: number): Promise<unknown>
     } | undefined
     const settingsScope = buildSettingsScope(settings, internals.notify)
 
@@ -148,10 +194,12 @@ export function apply(ctx: Context, config: Config): void {
             await settingsScope.update({ chatReasoning: { [scopeKey]: choice } })
           },
       // Persist the per-model reasoning-effort preference table (R28).
+      // R55-D2: clear operations must UNSET their exact key. settings.update
+      // deep-merges maps, so omitting a key would preserve the old value.
       onModelEffortsChange: settingsScope === undefined
         ? undefined
-        : async (efforts) => {
-            await settingsScope.update({ modelEfforts: efforts })
+        : async (efforts, removedKeys = []) => {
+            await writeModelEfforts(settingsScope, efforts, removedKeys)
           },
       // Persist the session registry + active-generation pointers (R29).
       onSessionsChange: settingsScope === undefined

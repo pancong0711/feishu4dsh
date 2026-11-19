@@ -3,10 +3,12 @@ import type { HostModelSelection, HostRequestHeaderConfig, HostSession } from '.
 import {
   createAgentModelSelection,
   EFFORT_LEVELS,
+  installAgentModelSelection,
   defaultSelectionOf,
   displayedModelOf,
   formatSelection,
   parseModelTarget,
+  readLoggedRoute,
   readLoggedSelection,
 } from '../src/model-selection.js'
 
@@ -82,6 +84,13 @@ describe('model-selection: readLoggedSelection', () => {
     expect(readLoggedSelection({ requestHeader: boom })).toBeUndefined()
   })
 
+  it('readLoggedRoute strips the previous effort so it cannot shadow /model effort', () => {
+    const session = sessionWith(() => ({
+      config: { provider: 'p1', model: 'm1', reasoningEffort: 'high' },
+    }))
+    expect(readLoggedRoute(session)).toEqual({ provider: 'p1', model: 'm1' })
+  })
+
   it('reads provider/model (and reasoningEffort when logged)', () => {
     expect(readLoggedSelection(sessionWith(() => ({ config: { provider: 'p1', model: 'm1' } }))))
       .toEqual({ provider: 'p1', model: 'm1' })
@@ -151,6 +160,78 @@ describe('model-selection: displayedModelOf', () => {
   it('renders nothing when nothing is known', () => {
     expect(displayedModelOf(undefined, undefined, undefined)).toBeUndefined()
     expect(displayedModelOf(createAgentModelSelection(() => undefined), undefined, undefined)).toBeUndefined()
+  })
+})
+
+describe('model-selection: local host-waterfall installer (R55)', () => {
+  type Handler = (...args: never[]) => unknown
+  function eventBus() {
+    const handlers = new Map<string, Handler>()
+    return {
+      ctx: {
+        on(event: string, listener: Handler) {
+          handlers.set(event, listener)
+          return () => handlers.delete(event)
+        },
+      },
+      async call(event: string, ...args: unknown[]): Promise<unknown> {
+        const handler = handlers.get(event)
+        if (handler === undefined) throw new Error(`missing handler: ${event}`)
+        return (handler as (...args: unknown[]) => unknown)(...args)
+      },
+    }
+  }
+
+  it('injects the composed effort through the real agent/request waterfall', async () => {
+    const bus = eventBus()
+    const selection = createAgentModelSelection(
+      () => ({ provider: 'p1', model: 'm1' }),
+      () => 'high',
+    )
+    const dispose = installAgentModelSelection(bus.ctx, selection)
+    try {
+      const assembled = await bus.call(
+        'system-prompt/assemble', {}, {},
+        async () => ({ variables: { existing: true } }),
+      ) as { variables: Record<string, unknown> }
+      expect(assembled.variables).toEqual({ existing: true, provider: 'p1', model: 'm1' })
+      const request = await bus.call(
+        'agent/request', {},
+        async () => ({ provider: 'old', model: 'old', reasoningEffort: 'low', maxTokens: 9 }),
+      ) as Record<string, unknown>
+      expect(request).toEqual({
+        provider: 'p1', model: 'm1', reasoningEffort: 'high', maxTokens: 9,
+      })
+    } finally {
+      dispose()
+    }
+  })
+
+  it('appends the same model-switch notice as dsh on a route change', async () => {
+    const bus = eventBus()
+    const selection = createAgentModelSelection(() => ({ provider: 'p1', model: 'm1' }))
+    selection.assembled = { provider: 'p2', model: 'm2' }
+    const dispose = installAgentModelSelection(bus.ctx, selection)
+    try {
+      const decision = await bus.call(
+        'agent/pre-step',
+        {
+          agent: { session: { requestHeader: () => ({ config: { provider: 'p1', model: 'm1' } }) } },
+          messages: [],
+          step: 2,
+          signal: { aborted: false },
+        },
+        async () => ({ kind: 'enter', messages: [] }),
+      ) as { kind: string; messages: { role: string; content: { text: string }[]; source: { kind: string } }[] }
+      expect(decision.kind).toBe('enter')
+      expect(decision.messages).toHaveLength(1)
+      expect(decision.messages[0]?.role).toBe('user')
+      expect(decision.messages[0]?.source.kind).toBe('model-selection')
+      expect(decision.messages[0]?.content[0]?.text).toContain('p1/m1')
+      expect(decision.messages[0]?.content[0]?.text).toContain('p2/m2')
+    } finally {
+      dispose()
+    }
   })
 })
 

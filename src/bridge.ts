@@ -23,9 +23,9 @@ import {
   CARD_STREAM_MAX_CHARS, CARD_ROLLOVER_MIN_CHARS, CARD_ROLLOVER_MIN_INTERVAL_MS, REASONING_PANEL_MAX_CHARS,
   type CardActionPayload, type MenuActionPayload, type QuestionActionPayload,
 } from './cards.js'
-import type { HostAgentCancelCause, HostAgentHandle, HostAgentOptions, HostAgentPresets, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostLlm, HostModelSelection, HostQuestionAnswer, HostQuestionAnswerItem, HostQuestionItem, HostQuestionRequest, HostSession, HostSessionEvent, HostSessionObservation, HostSessionQuery, HostTools, HostWorkspace, HostWorkspaceRegistry, AssistantMessageData, TokenUsageData } from './host.js'
+import type { HostAgentCancelCause, HostAgentHandle, HostAgentOptions, HostAgentPresets, HostAgentRegistry, HostApprovalOutcome, HostApprovalRequest, HostAttachments, HostCommands, HostContentBlock, HostDefaultModel, HostInstallModelSelection, HostLlm, HostModelSelection, HostQuestionAnswer, HostQuestionAnswerItem, HostQuestionItem, HostQuestionRequest, HostReasoningCapability, HostSession, HostSessionEvent, HostSessionObservation, HostSessionQuery, HostTools, HostWorkspace, HostWorkspaceRegistry, AssistantMessageData, TokenUsageData } from './host.js'
 import { assistantText, hookCancel, releaseObservation, sessionEvents, TURN_END_COMPLETED, isAssistantChunkEvent, isAssistantMessageEvent, isStepStartEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent, turnErrorDetail } from './host.js'
-import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedSelection, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
+import { EFFORT_LEVELS, installAgentModelSelection, createAgentModelSelection, defaultSelectionOf, displayedModelOf, parseModelTarget, readLoggedRoute, type AgentModelSelection, type ModelDisplay } from './model-selection.js'
 import { readOutboundFile, sendFileTool, storeInboundFile, type OutboundFile, type SendFilePorts } from './files.js'
 import { accumulateSessionUsage, emptySessionUsage, hasSessionUsage, statsOfEvents, type SessionUsage } from './session-stats.js'
 import {
@@ -235,8 +235,13 @@ export interface BridgeHooks {
   onPresetChange?: (scopeKey: string, preset: string) => void | Promise<void>
   /** Persist one scope's `/reasoning` display override (R36-2). */
   onReasoningChange?: (scopeKey: string, choice: ReasoningChoice) => void | Promise<void>
-  /** Persist the per-model reasoning-effort preference table (R28). */
-  onModelEffortsChange?: (efforts: Record<string, string>) => void | Promise<void>
+  /**
+   * Persist the per-model reasoning-effort preference table (R28).
+   * `removedKeys` carries explicit deletions so the runtime can issue a
+   * settings `unset`: dsh `settings.update` deep-merges object maps, where a
+   * missing key means "keep the old value", not "delete".
+   */
+  onModelEffortsChange?: (efforts: Record<string, string>, removedKeys?: readonly string[]) => void | Promise<void>
   /** Persist the `/model` picker catalog (R33: add/del/auto-learn). */
   onModelCatalogChange?: (entries: string[]) => void | Promise<void>
   /** Persist the session registry + active-generation pointers (R29). */
@@ -2134,16 +2139,14 @@ let presetObservationReported = false
  */
 let effortCapabilityReported = false
 
-/**
- * Effort ids the plugin enumeration DOES promise but a real capability set
- * typically exposes (`default` is the plugin-side RESET value and never a
- * wire id, so hosts never list it): only `max` is at risk of looking
- * "unsupported" while remaining a legal owner-level request. The R39
- * pre-validation lets these through unread — equality with the capability
- * list is preserved for the levels `EFFORT_LEVELS` already shares with the
- * host enum (`low` / `high`).
- */
-const EFFORT_RELEASE_VALVE_LEVELS: readonly string[] = ['max']
+/** One safely-formed effort token. Actual support is host-capability driven. */
+const EFFORT_TOKEN_RE = /^[a-z][a-z0-9-]*$/
+
+/** The outcome of resolving one requested effort against the live host. */
+type EffortSetResolution =
+  | { readonly kind: 'ok'; readonly level: string }
+  | { readonly kind: 'reject'; readonly message: string }
+  | { readonly kind: 'usage' }
 
 /**
  * Format one capability's effort ids for the rejection copy (R39): the host
@@ -2154,76 +2157,55 @@ function formatEffortIds(capability: { readonly efforts?: readonly { readonly id
 }
 
 /**
- * R39 (RC2, web `selectModel` parity): best-effort capability pre-validation
- * of an effort the user is about to remember — BEFORE anything is written or
- * persisted. Mirrors the web host, which asks `ctx.llm.resolveCallConfig`
- * FIRST and reports `UNSUPPORTED_REASONING_EFFORT` to the user in the same
- * breath, instead of letting the next request hit it.
+ * R55-D4: resolve a `/model effort` value against the EXACT live model
+ * capability before anything is written. The owner list remains the fallback
+ * when the host cannot answer, but a reachable capability can offer any wire
+ * id it advertises (`medium`/`xhigh`/...), not only the historical static set.
  *
- * Outcomes, driven strictly by the host `llm` service (all-optional contract):
- * - `llm` missing or `resolveModelInfo` not callable → write-as-is, and
- *   report ONCE per process (mirror of the R38 preset-observation flag:
- *   `host llm service unreachable …`). No rejection is produced on hosts
- *   that cannot answer.
- * - The capability call throws (adapter offline, unknown route — error
- *   kinds are deliberately indistinguishable here) → write-as-is, one
- *   status line in the operator log (`env.report`, NOT a chat message).
- * - Model has NO `reasoning` field → reject with
- *   `effortUnsupportedNoCapability` (the request would fail with
- *   UNSUPPORTED_REASONING_EFFORT no matter what level was asked).
- * - Capability known but the level is not among `efforts` → reject with
- *   `effortUnsupported` listing the supported ids. A capability that
- *   carries an EMPTY/absent efforts list is treated as unknowable (old
- *   adapters / odd metadata) and lets the write through.
- * - Otherwise (level supported) → `undefined` and the normal write path
- *   proceeds.
- *
- * The owner enumeration's `default` NEVER reaches this: it is the RESET
- * value — legal by definition. So does `max`: dsh's web validates the request
- * against the exact model capability at REQUEST time too, so a model that
- * truthfully lacks `max` still fails on the next turn while `max` remains a
- * first-class owner level here; a capability check that would break
- * `EFFORT_LEVELS`' promise at the desk is skipped rather than guessed
- * (and because `max` is `xhigh`'s owner-side synonym on some providers, a
- * hard equality refusal on a raw-id read would be wrong).
- *
- * @returns the localized rejection to send, or `undefined` to proceed.
+ * There is deliberately no `max` release valve: accepting a level the host
+ * does not advertise merely moves the failure to the next model request.
+ * `default` is the plugin-side reset value and never reaches the host.
  */
-async function rejectEffortIfUnsupported(
+async function resolveEffortForSet(
   env: BridgeEnv,
-  level: string,
+  requested: string,
   effective: HostModelSelection,
   modelKey: string,
   copy: Strings,
-): Promise<string | undefined> {
-  if (level === 'default' || EFFORT_RELEASE_VALVE_LEVELS.includes(level)) return undefined
+): Promise<EffortSetResolution> {
+  if (requested === 'default') return { kind: 'ok', level: requested }
+  const ownerLevel = (EFFORT_LEVELS as readonly string[]).includes(requested)
   const llm = env.host.get('llm') as HostLlm | undefined
   if (llm === undefined || typeof llm.resolveModelInfo !== 'function') {
     if (!effortCapabilityReported) {
       effortCapabilityReported = true
       env.report('feishu4dsh: host llm service unreachable; setting reasoning effort WITHOUT capability pre-validation')
     }
-    return undefined
+    return ownerLevel ? { kind: 'ok', level: requested } : { kind: 'usage' }
   }
-  let capability: Awaited<ReturnType<HostLlm['resolveModelInfo']>>['reasoning']
+  let capability: HostReasoningCapability | undefined
   try {
     capability = (await llm.resolveModelInfo(effective.provider, effective.model)).reasoning
   } catch (error) {
     env.report(`feishu4dsh: effort capability pre-validation failed (${describeError(error)}); proceeding without it`)
-    return undefined
+    return ownerLevel ? { kind: 'ok', level: requested } : { kind: 'usage' }
   }
   if (capability === undefined || capability === null) {
-    return copy.effortUnsupportedNoCapability(modelKey)
+    return { kind: 'reject', message: copy.effortUnsupportedNoCapability(modelKey) }
   }
   // An odd capability record (efforts absent, not an array, or empty) is not
-  // knowable enough to refuse on: keep the historical write-through, add no
-  // noise. (An empty list cannot reach null-capability semantics either: the
-  // host rejects adapter metadata with zero efforts itself,
-  // 'INVALID_MODEL_REASONING'.)
-  if (!Array.isArray(capability.efforts) || capability.efforts.length === 0) return undefined
-  const supported = formatEffortIds(capability)
-  if (capability.efforts.some(effort => effort.id === level)) return undefined
-  return copy.effortUnsupported(level, modelKey, supported)
+  // knowable enough to refuse on: keep the historical owner-level fallback,
+  // but do not invent dynamic levels from it.
+  if (!Array.isArray(capability.efforts) || capability.efforts.length === 0) {
+    return ownerLevel ? { kind: 'ok', level: requested } : { kind: 'usage' }
+  }
+  if (capability.efforts.some(effort => effort.id === requested)) {
+    return { kind: 'ok', level: requested }
+  }
+  return {
+    kind: 'reject',
+    message: copy.effortUnsupported(requested, modelKey, formatEffortIds(capability)),
+  }
 }
 
 /**
@@ -2593,8 +2575,11 @@ function ensureSelection(env: BridgeEnv, state: BridgeState, binding: ChatBindin
   const agentKey = currentAgentKey(binding)
   const existing = state.selections.get(agentKey)
   if (existing !== undefined) return existing
+  // R55-D1: route identity only. Inheriting the previous header's
+  // reasoningEffort here would silently outrank every later /model effort
+  // change (high→low/default) once the session had run one high request.
   const fallback = (): HostModelSelection | undefined =>
-    readLoggedSelection(state.ledger.get(agentKey)?.handle.agent.session) ?? advertisedDefaultSelection(env)
+    readLoggedRoute(state.ledger.get(agentKey)?.handle.agent.session) ?? advertisedDefaultSelection(env)
   // R28: the selection composes the per-model effort preference, so BOTH
   // installer paths (host service and local waterfall) route it.
   const selection = createAgentModelSelection(fallback, sel => state.modelEfforts[`${sel.provider}/${sel.model}`])
@@ -4516,6 +4501,7 @@ async function cmdStatus(env: BridgeEnv, state: BridgeState, binding: ChatBindin
     copy.statusPreset(sessionPresetOf(env, state, binding)),
     ...model === '' ? [] : [copy.statusModel(model)],
     copy.statusEffort(effort.value, effort.source),
+    measuredEffortOf(env, state, binding),
     copy.statusTurns(turns, steps),
     stats !== undefined && hasSessionUsage(stats.usage)
       ? copy.statusTokens(
@@ -4545,23 +4531,54 @@ function sessionPresetOf(env: BridgeEnv, state: BridgeState, binding: ChatBindin
 }
 
 /**
- * The reasoning effort /status should show (R26): what the session's last
- * request actually carried, or the deployment default. R28 prepends the
- * per-model preference as a source in front of this chain.
+ * The CONFIGURED effort preference for /status and /model. R55-D6 keeps this
+ * separate from the last request header: a preference can be pending, while
+ * the header proves what actually reached the host. The measured line is
+ * rendered alongside by {@link measuredEffortOf}.
  */
 function displayEffortOf(env: BridgeEnv, state: BridgeState, binding: ChatBinding): { value: string; source: string } {
   const effective = effectiveSessionSelection(env, state, binding)
   const modelKey = effective === undefined ? undefined : `${effective.provider}/${effective.model}`
   const preferred = modelKey === undefined ? undefined : state.modelEfforts[modelKey]
-  if (preferred !== undefined) {
-    return { value: preferred, source: state.copy.effortSourcePreferred }
-  }
+  return preferred === undefined
+    ? { value: 'default', source: '' }
+    : { value: preferred, source: state.copy.effortSourcePreferred }
+}
+
+/**
+ * R55-D6: what the latest request header actually carried, with an explicit
+ * three-way distinction — value / absent / unavailable. This is the only
+ * truthful "did it reach the host?" surface; reading the preference table
+ * alone cannot distinguish pending from applied.
+ */
+function measuredEffortOf(env: BridgeEnv, state: BridgeState, binding: ChatBinding): string {
+  const copy = state.copy
   const entry = state.ledger.get(currentAgentKey(binding))
-  const logged = readLoggedSelection(entry?.handle.agent.session)
-  if (logged?.reasoningEffort !== undefined) {
-    return { value: String(logged.reasoningEffort), source: state.copy.effortSourceMeasured }
+  if (entry === undefined) return copy.effortMeasuredNone
+  const session = entry.handle.agent.session
+  if (typeof session.requestHeader !== 'function') return copy.effortMeasuredUnavailable
+  let header: { config?: { reasoningEffort?: unknown } } | undefined
+  try {
+    header = session.requestHeader()
+  } catch {
+    return copy.effortMeasuredUnavailable
   }
-  return { value: 'default', source: '' }
+  if (header?.config === undefined) return copy.effortMeasuredNone
+  return header.config.reasoningEffort === undefined
+    ? copy.effortMeasuredAbsent
+    : copy.effortMeasuredValue(String(header.config.reasoningEffort))
+}
+
+/** R55-D4: host-advertised levels for the current route, if reachable. */
+async function supportedEffortsOf(env: BridgeEnv, effective: HostModelSelection): Promise<string[] | undefined> {
+  const llm = env.host.get('llm') as HostLlm | undefined
+  if (llm === undefined || typeof llm.resolveModelInfo !== 'function') return undefined
+  try {
+    const efforts = (await llm.resolveModelInfo(effective.provider, effective.model)).reasoning?.efforts
+    return Array.isArray(efforts) && efforts.length > 0 ? efforts.map(effort => effort.id) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -4585,7 +4602,7 @@ function effectiveSessionSelection(env: BridgeEnv, state: BridgeState, binding: 
   const pinned = state.selections.get(agentKey)?.current
   if (pinned !== undefined) return pinned
   const entry = state.ledger.get(agentKey)
-  const logged = readLoggedSelection(entry === undefined ? undefined : entry.handle.agent.session)
+  const logged = readLoggedRoute(entry === undefined ? undefined : entry.handle.agent.session)
   return logged ?? advertisedDefaultSelection(env)
 }
 
@@ -4622,7 +4639,7 @@ async function cmdModel(
       ? `${copy.modelTitle}：${copy.modelUnknown}`
       : `${copy.modelTitle}：${shown.text}${shown.isDefaultNotStarted ? copy.modelDefaultNotStarted : ''}${copy.modelSourceSession}`
     const hint = state.modelCatalog.length === 0 ? `\n${copy.modelCatalogHint}` : ''
-    await safeSend(env, chatId, `${modelLine}\n${copy.modelEffortLine(effort.value, effort.source)}${hint}`, replyTo)
+    await safeSend(env, chatId, `${modelLine}\n${copy.modelEffortLine(effort.value, effort.source)}\n${measuredEffortOf(env, state, binding)}${hint}`, replyTo)
     // R32: the tappable model list rides along when a catalog is configured.
     await sendModelMenu(env, state, binding, replyTo)
     return
@@ -4759,7 +4776,13 @@ async function cmdModelEffort(
       return
     }
     const effort = displayEffortOf(env, state, binding)
-    await safeSend(env, chatId, copy.modelEffortLine(effort.value, effort.source), replyTo)
+    const supported = await supportedEffortsOf(env, effective)
+    const lines = [
+      copy.modelEffortLine(effort.value, effort.source),
+      measuredEffortOf(env, state, binding),
+      ...(supported === undefined ? [] : [copy.effortSupportedLine(supported.join(' / '))]),
+    ]
+    await safeSend(env, chatId, lines.join('\n'), replyTo)
     return
   }
 
@@ -4768,8 +4791,11 @@ async function cmdModelEffort(
     return
   }
 
-  const level = rest.trim().toLowerCase()
-  if (!(EFFORT_LEVELS as readonly string[]).includes(level)) {
+  const requested = rest.trim().toLowerCase()
+  const ownerLevel = (EFFORT_LEVELS as readonly string[]).includes(requested)
+  // Without a known route, only the historical owner levels can be judged;
+  // an arbitrary dynamic token gets the usage copy instead of "unknown model".
+  if (!EFFORT_TOKEN_RE.test(requested) || (!ownerLevel && effective === undefined)) {
     await safeSend(env, chatId, copy.effortUsage, replyTo)
     return
   }
@@ -4779,28 +4805,51 @@ async function cmdModelEffort(
   }
 
   const modelKey = `${effective.provider}/${effective.model}`
-  // R39 (RC2): validate against the model's REAL capability before any
-  // state is touched — a rejection below must not leave a poisoned
-  // preference in the table or settings.
-  const rejection = await rejectEffortIfUnsupported(env, level, effective, modelKey, copy)
-  if (rejection !== undefined) {
-    await safeSend(env, chatId, rejection, replyTo)
+  // R39 (RC2) + R55-D4: validate before touching state. A reachable host
+  // capability is authoritative and may expose levels beyond the static
+  // owner fallback; `max` no longer bypasses this gate.
+  const resolution = await resolveEffortForSet(env, requested, effective, modelKey, copy)
+  if (resolution.kind === 'usage') {
+    await safeSend(env, chatId, copy.effortUsage, replyTo)
     return
   }
-  if (level === 'default') delete state.modelEfforts[modelKey]
-  else state.modelEfforts[modelKey] = level
-  try {
-    await env.hooks.onModelEffortsChange?.({ ...state.modelEfforts })
-  } catch (error) {
-    env.report(`feishu4dsh: persist model efforts failed: ${describeError(error)}`)
+  if (resolution.kind === 'reject') {
+    await safeSend(env, chatId, resolution.message, replyTo)
+    return
   }
-  env.report(`feishu4dsh: reasoning effort for ${modelKey} set to ${level} by ${senderId}`)
+  const level = resolution.level
+  const removedKeys: string[] = []
+  if (level === 'default') {
+    if (Object.hasOwn(state.modelEfforts, modelKey)) removedKeys.push(modelKey)
+    delete state.modelEfforts[modelKey]
+  } else {
+    state.modelEfforts[modelKey] = level
+  }
+
+  let persisted = false
+  let persistenceError: string | undefined
+  if (env.hooks.onModelEffortsChange === undefined) {
+    persistenceError = 'persistence hook unavailable'
+  } else {
+    try {
+      await env.hooks.onModelEffortsChange({ ...state.modelEfforts }, removedKeys)
+      persisted = true
+    } catch (error) {
+      persistenceError = describeError(error)
+      env.report(`feishu4dsh: persist model efforts failed: ${persistenceError}`)
+    }
+  }
+  env.report(
+    `feishu4dsh: reasoning effort for ${modelKey} set to ${level} by ${senderId}`
+    + ` (persisted=${persisted ? 'yes' : 'no'}${persistenceError === undefined ? '' : `: ${persistenceError}`})`,
+  )
+  const confirmation = level === 'default' ? copy.effortCleared(modelKey) : copy.effortSet(level, modelKey)
   await safeSend(
     env,
     chatId,
     // R39 (RC3): name the exact provider/model key — the preference binds to
     // THIS model form, and a same-name model on another provider has its own.
-    level === 'default' ? copy.effortCleared(modelKey) : copy.effortSet(level, modelKey),
+    persisted ? confirmation : `${confirmation}\n${copy.effortPersistenceWarning}`,
     replyTo,
   )
 }

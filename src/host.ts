@@ -611,15 +611,19 @@ export interface HostLoader {
   await(): Promise<unknown>
 }
 
-/** One registered namespace's owner scope (subset of `SettingsScope`). */
-export interface HostSettingsScope {
-  get(): unknown
-  update(patch: object): Promise<unknown>
-}
+/** One field edit accepted by the dsh settings `mutate` API. */
+export type HostSettingsPathOp =
+  | { readonly op: 'set'; readonly path: readonly string[]; readonly value: unknown }
+  | { readonly op: 'unset'; readonly path: readonly string[] }
 
-/** The `settings` user-settings service. */
+/**
+ * The `settings` user-settings service (dsh ≥ 0.2.0; `register` no longer
+ * exists). `update` deep-merges object maps, so removing one map key requires
+ * `mutate` with an `unset` operation rather than omitting the key.
+ */
 export interface HostSettings {
-  register(ns: string, schema: unknown, options?: { base?: unknown }): HostSettingsScope
+  update(ns: string, patch: object, expectedRevision?: number): Promise<unknown>
+  mutate(ns: string, ops: readonly HostSettingsPathOp[], expectedRevision?: number): Promise<unknown>
 }
 
 /* ------------------------------------------------------------------ */

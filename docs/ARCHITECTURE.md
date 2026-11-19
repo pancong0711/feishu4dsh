@@ -57,7 +57,7 @@
 | `src/files.ts` | 收件箱落地、出站路径校验、`send_file` 工具 | Hermes 文件收发与安全边界 |
 | `src/config.ts` | schemastery 配置 schema + 解析（默认值/下限） | Hermes 平台配置段 |
 | `src/strings.ts` | zh-CN/en-US 渠道文案 | Hermes 本地化 |
-| `src/model-selection.ts` | 模型选择/展示纯逻辑：pin→会话→默认三级解析、effort 组合、`/model` 目标解析（R7/R8/R28） | — |
+| `src/model-selection.ts` | 模型选择/展示纯逻辑：pin→会话→默认三级解析、effort 组合、`/model` 目标解析、与宿主同构的 `system-prompt/assemble`/`agent/request`/`agent/pre-step` 安装器（R7/R8/R28/R55） | — |
 | `src/session-registry.ts` | `/session` 注册表：登记/自动标题/切回/归档候选；水合时重建宿主冻结配置（R29/R30） | — |
 | `src/session-stats.ts` | 会话统计纯逻辑：轮/步/Token 累计（R26，与每轮摘要同口径） | — |
 | `src/card-menu.ts` | 交互菜单纯逻辑：菜单注册表（每 scope×kind 一张活卡/TTL）、分页、四类选择卡构建（R32） | Hermes 交互卡片 |
@@ -95,7 +95,7 @@ dsh 的服务 API 在预览期会变化，因此宿主契约**收敛在 `src/hos
 - **`ctx.on('user-questions/request')` 瀑布（R51）**：`ask_user` 的结构化提问，是**独立瀑布**、不走审批。回答方式同上（只答本通道的会话），渲染为一张表单卡（单选/多选/自由文本），提交回完整的"每题一条"答案批；超时或宿主撤回则 `next()` 委托，绝不编造空答案。表单值来自回调的 `action.form_value`，因此通道开启 `includeRawEvent: true`。
 - **会话日志读取（R50 P1-5）**：`Session` 在 0.2.1 起只暴露 `snapshotEvents()`（旧的 `events` 属性已移除）。桥层一律经 `sessionEvents(session)` 适配层读取（优先 accessor、回退旧属性），`/status` 统计与 `/compact` 原文尾巴共用这一处。
 - **可选服务**（缺省则降级，不阻塞启动）：`tools`（注册 `send_file`）、`commands`（宿主斜杠命令；0.2.1 起签名是 `execute(agent, line, submittedAttachments, signal)`，通道传空附件批）、`attachments`（图片附件化）、`settings`（持久化配置段与工作区选择）、`workspaceRegistry`（列举/注册工作区，供 `/ws` `/cd`；`archivedSessionIds` 自 0.2.1 起是**取值器**，读到异常必须报错而不是谎报"不支持"）、`agentDefaultModel`（`/status` 展示）、`loader`（等待组合完成）。
-- **预设与模型能力服务（R38/R39/R41，可选）**：`agentPresets`（`mount(agentCtx, presetId)` 在 agent setup 里把预设组合挂到该会话 scope——preset 由 `agent-preset-registry` + 每预设一条 `@deepseek-ai/dsh-agent-preset` 声明提供，插件 bundle patch 出厂声明 `standard`/`minimal`，部署层可按 id 覆盖）、`sessionQuery`（`observeSession(id)` 读会话投影的真实 preset，resume 按真值挂载、读不到回退链路值；0.2.1 起返回的是**引用计数租约**，调用方必须 `releaseObservation()`，否则 prepared 缓存永不回收）、`llm`（`resolveModelInfo(provider, model)` 读模型能力，`/model effort` 设置前预校验档位）。
+- **预设与模型能力服务（R38/R39/R41，可选）**：`agentPresets`（`mount(agentCtx, presetId)` 在 agent setup 里把预设组合挂到该会话 scope——preset 由 `agent-preset-registry` + 每预设一条 `@deepseek-ai/dsh-agent-preset` 声明提供，插件 bundle patch 出厂声明 `standard`/`minimal`，部署层可按 id 覆盖）、`sessionQuery`（`observeSession(id)` 读会话投影的真实 preset，resume 按真值挂载、读不到回退链路值；0.2.1 起返回的是**引用计数租约**，调用方必须 `releaseObservation()`，否则 prepared 缓存永不回收）、`llm`（`resolveModelInfo(provider, model)` 读模型能力；R55 起 `/model effort` 以宿主真实档位为准、不再对 `max` 跳过校验）。`settings` 的 `update` 对 map 是深合并，删除 `modelEfforts` 精确键必须走 `mutate` 的 `unset`（R55）。
 - **宿主配置只读契约（R30）**：`dsh-settings` 对下发的配置节**深度冻结**（`deepFreeze`，设计行为而非事故）——凡从 `config.*` 读入桥内工作状态的对象图（如 `chatSessions` 的会话注册表），水合时必须在边界处**重建**（逐条浅拷贝/克隆，见 `hydrateSessionRegistry`），绝不按引用采纳；可变性由插件自有结构承担。持久化键还须过形状校验（agentKey = `scope§workspace`，见 `isAgentKey`）。
 - **会话单写入方假设（长期目标 R31）**：桥层的事件渲染、每 agentKey 单句柄与审批路由均以「通道独占驱动所建会话」为前提；宿主契约未暴露会话归属/活动排他（`HostSession` 仅 id/events/requestHeader），无法检测或拒绝外部（如 dsh web）驱动同一会话——双写入方会串扰渲染乃至损坏会话日志。当前以文档约定规避，根治待上游能力或回合发起方过滤。
 

@@ -3125,6 +3125,133 @@ describe('bridge: R39 /model effort capability pre-validation', () => {
 })
 
 /* ------------------------------------------------------------------ */
+/* R55: effort state-machine / persistence / capability / observability */
+/* ------------------------------------------------------------------ */
+
+describe('bridge: R55 effort lifecycle hardening', () => {
+  function emitInbound(port: FakePort, messageId: string, content: string): void {
+    port.emit('message', {
+      messageId,
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      senderId: 'ou_user',
+      senderName: 'User',
+      content,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      createTime: Date.now(),
+    })
+  }
+
+  function texts(port: FakePort): string[] {
+    return port.sent
+      .filter(m => typeof m.input.markdown === 'string')
+      .map(m => m.input.markdown as string)
+  }
+
+  it('R55-D1/D2: a logged effort cannot freeze later changes; clear passes removed keys', async () => {
+    const writes: { efforts: Record<string, string>; removed: readonly string[] }[] = []
+    const { host, port } = makeEnv({}, {
+      onModelEffortsChange: async (efforts, removed = []) => { writes.push({ efforts, removed }) },
+    })
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p1', model: 'm1' }),
+    })
+    const installed = captureSelections(host)
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+    // A previous request really carried high. R55-D1 says the NEXT /model
+    // effort command must still win.
+    agent.headerReader = () => ({ config: { provider: 'p1', model: 'm1', reasoningEffort: 'high' } })
+
+    await textMessage(port, '/model effort high')
+    expect(installed[0]?.selection.current).toEqual({ provider: 'p1', model: 'm1', reasoningEffort: 'high' })
+
+    await textMessage(port, '/model effort low')
+    expect(installed[0]?.selection.current).toEqual({ provider: 'p1', model: 'm1', reasoningEffort: 'low' })
+    // Preference and measured header are shown separately (R55-D6).
+    await textMessage(port, '/status')
+    expect(texts(port).at(-1)).toContain('推理强度：low（模型偏好）')
+    expect(texts(port).at(-1)).toContain('最近请求：high（请求头实测）')
+
+    await textMessage(port, '/model effort default')
+    expect(installed[0]?.selection.current).toEqual({ provider: 'p1', model: 'm1' })
+    expect(writes.at(-1)?.removed).toEqual(['p1/m1'])
+  })
+
+  it('R55-D3: persistence failure is surfaced instead of claiming it was remembered', async () => {
+    const reportLines: string[] = []
+    const { host, port } = makeEnv({}, {
+      onModelEffortsChange: async () => { throw new Error('disk full') },
+    }, undefined, line => { reportLines.push(line) })
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p1', model: 'm1' }),
+    })
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model effort high')
+    expect(texts(port).at(-1)).toContain('已将 p1/m1 的推理强度设为 high')
+    expect(texts(port).at(-1)).toContain('持久化不可用')
+    expect(reportLines.some(line => line.includes('persisted=no') && line.includes('disk full'))).toBe(true)
+  })
+
+  it('R55-D4: live capability drives accepted levels and max no longer bypasses validation', async () => {
+    const persisted: Record<string, string>[] = []
+    const resolveModelInfo = vi.fn(async () => ({
+      provider: 'p1',
+      id: 'm1',
+      name: 'M1',
+      reasoning: {
+        efforts: [{ id: 'low', name: 'Low' }, { id: 'xhigh', name: 'XHigh' }],
+      },
+    }))
+    const { host, port } = makeEnv({}, {
+      onModelEffortsChange: async efforts => { persisted.push(efforts) },
+    })
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p1', model: 'm1' }),
+    })
+    host.services.set('llm', { resolveModelInfo })
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+
+    await textMessage(port, '/model effort max')
+    expect(texts(port).at(-1)).toContain('不支持 max：p1/m1 支持的档位是 low / xhigh。')
+    expect(persisted).toEqual([])
+
+    await textMessage(port, '/model effort xhigh')
+    expect(texts(port).at(-1)).toContain('已将 p1/m1 的推理强度设为 xhigh')
+    expect(persisted.at(-1)).toEqual({ 'p1/m1': 'xhigh' })
+  })
+
+  it('R55-D6: /status distinguishes absent and unavailable request measurements', async () => {
+    const { host, port } = makeEnv()
+    host.services.set('agentDefaultModel', {
+      currentSelection: () => ({ provider: 'p1', model: 'm1' }),
+    })
+    emitInbound(port, 'm1', 'hello')
+    await sleep(20)
+    const agent = host.created[0]
+    if (agent === undefined) throw new Error('agent missing')
+
+    // No requestHeader capability at all.
+    await textMessage(port, '/status')
+    expect(texts(port).at(-1)).toContain('最近请求：不可用（宿主不提供 requestHeader）')
+
+    // Header exists but carries no effort field.
+    agent.headerReader = () => ({ config: { provider: 'p1', model: 'm1' } })
+    await textMessage(port, '/status')
+    expect(texts(port).at(-1)).toContain('最近请求：未携带 reasoning_effort')
+  })
+})
+
+/* ------------------------------------------------------------------ */
 /* R29: /session — list / switch / rename / archive                    */
 /* ------------------------------------------------------------------ */
 
