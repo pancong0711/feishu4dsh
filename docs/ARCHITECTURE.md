@@ -63,6 +63,7 @@
 | `src/card-menu.ts` | 交互菜单纯逻辑：菜单注册表（每 scope×kind 一张活卡/TTL）、分页、四类选择卡构建（R32） | Hermes 交互卡片 |
 | `src/host.ts` | dsh 宿主服务的窄契约（唯一适配面） | —（dsh 特有） |
 | `src/runtime.ts` | Cordis `apply`：bootstrap、settings、端口装配、拆卸 | —（dsh 特有） |
+| `src/secretary/` | 可选 SHE 子模块：确定性 `/she` 命令、Topic/Task 状态机、SQLite、串行队列/watcher、OpenCode adapter、worktree、报告校验；不依赖飞书 SDK/dsh 类型 | 秘书转发层 |
 
 ## 4. 能力映射：Hermes 飞书适配器 → 本插件
 
@@ -158,3 +159,30 @@ NormalizedMessage ──► scopeKey(sessionScope) ──┐
 - **纯逻辑模块**（config/sessions/workspaces/acl/cards/files/util/strings）全部无网络单测；
 - **bridge 集成测试**用 `FakePort` + `fakeHost`：文本回合、流式去重、失败回合、审批点击/超时 fail-closed/跨会话委托/转发拦截、命令（help/new/stop/status/ws/cd/ws add/ws remove/未知）、媒体落盘、工作区切换/添加/移除与持久化、会话复用、帮助来源标识、默认模型传入/降级——**91 项全部通过**；
 - 真实链路验证（需要飞书应用凭据）：按 README 挂载后在飞书发消息回归。
+
+
+## 10. SHE 秘书子模块（R56）
+
+SHE 是 feishu4dsh 的可选、默认关闭的能力，不是第二个自由发挥的 Agent。它把用户原文按固定信封转交给本机 OpenCode，并持久化 Topic/Task、串行队列、状态与报告。
+
+```text
+飞书 /she
+  -> bridge.ts 薄命令适配（只做字段映射/文案/报告文件投递）
+  -> secretary/service.ts（状态唯一事实源 + watcher）
+       -> store.ts（SQLite：topics/tasks/attempts/artifacts/events/leases）
+       -> envelope.ts（[she/v1] 固定信封；原文逐字保留）
+       -> types.ts ExecutorAdapter
+            -> opencode.ts（HTTP Basic；HttpApi 2.3.2）
+       -> worktree.ts（每 Topic 独立 git worktree）
+```
+
+边界：
+
+- `bridge.ts` 不写状态机；`secretary/` 不 import 飞书 SDK 或 dsh 宿主类型；
+- 未启用 `secretaryEnabled` 时不创建数据库、不读取 OpenCode 凭据、不启动 watcher；
+- 同一 Topic 严格串行、每聊天最多 2 个活跃 Topic、每 Topic 最多 20 个排队 task；
+- 失败/中断/报告缺失/执行器不可达均暂停 Topic，`/she resume` 恢复；
+- 排队任务原文仅以 0600 临时 spool 暂存，OpenCode 接收后删除；数据库只存 hash/20 字摘录；
+- 报告必须由执行器写到约定路径；SHE 只校验存在与大小，然后原样回传。
+
+部署与 G1 技术验证记录见 [SECRETARY.md](SECRETARY.md) 与 [R56 工作单](20261119-需求-r56-秘书子模块SHE.md)。

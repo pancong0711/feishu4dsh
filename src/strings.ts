@@ -315,6 +315,31 @@ export interface Strings {
   notAFileRefusal: string
   tooLargeRefusal: (size: string, limit: string) => string
   commandUnknown: (line: string) => string
+  /* SHE secretary handoff (R56). */
+  sheUsage: string
+  sheDisabled: string
+  sheNoPermission: string
+  sheSubmitted: (label: string, status: string) => string
+  sheContinued: (label: string, status: string) => string
+  sheInvalid: (reason: string) => string
+  sheListEmpty: string
+  sheTopicListLine: (label: string, status: string, excerpt: string, summary: string) => string
+  sheTaskListLine: (label: string, status: string, excerpt: string) => string
+  sheTaskSummary: (total: string, running: string, queued: string, done: string) => string
+  sheStatusTitle: string
+  sheStatusTopic: (label: string, status: string, excerpt: string) => string
+  sheStatusTask: (label: string, status: string, excerpt: string) => string
+  sheStatusSession: (sessionId: string) => string
+  sheStatusReport: (path: string) => string
+  sheStatusAttachments: (count: string) => string
+  sheNotFound: (reference: string) => string
+  sheReportMissing: (label: string) => string
+  sheReportReady: (label: string, size: string) => string
+  sheStopped: (label: string) => string
+  sheResumed: (label: string) => string
+  sheRenamed: (oldLabel: string, newLabel: string) => string
+  sheRemoved: (label: string, purged: boolean) => string
+  sheError: (code: string, detail: string) => string
 }
 
 const zhCN: Strings = {
@@ -402,6 +427,7 @@ const zhCN: Strings = {
     '/ws remove <名称或路径> — 移除一个已添加的工作区',
     '/cd <名称或路径> — 切换当前会话的工作区',
     '/model <provider>/<model> — 切换当前会话模型（/model effort 设置推理强度）',
+    '/she — 秘书任务：提交给 OpenCode 异步执行、查看状态与报告（/she help 查看子命令）',
   ],
   statusTitle: '会话状态',
   statusSession: id => `会话：${id}`,
@@ -557,6 +583,41 @@ const zhCN: Strings = {
   modelDeleted: entry => `已将 ${entry} 移出点选清单。`,
   modelRemoveLast: '至少保留 1 条点选清单项。',
   modelAddCurButton: '➕ 把当前模型加入清单',
+  sheUsage: [
+    '用法：',
+    '/she submit <原文> — 新建 Topic 并提交任务',
+    '/she continue <Topic> <原文> — 在同一 Topic 追加串行任务',
+    '/she list [Topic] — 查看 Topic / Task 看板',
+    '/she status <Topic|Task> — 查询状态',
+    '/she report <Task> — 回传报告文件',
+    '/she stop <Task> — 中断当前任务并暂停 Topic',
+    '/she resume <Topic> — 恢复 Topic 队列',
+    '/she topic rename <旧编号> <新编号> [--force] — 重命名 Topic',
+    '/she topic remove <Topic> [--purge] — 移除 Topic',
+  ].join('\n'),
+  sheDisabled: '秘书功能未启用：请在插件配置中设置 secretaryEnabled: true。',
+  sheNoPermission: '当前发送人无权使用 /she（需为审批人 / 会话驱动者）。',
+  sheSubmitted: (label, status) => `已提交任务 ${label}（${status}）。完成后用 /she status ${label} 查看。`,
+  sheContinued: (label, status) => `已追加任务 ${label}（${status}）。`,
+  sheInvalid: reason => `命令参数无效（${reason}）；发送 /she help 查看用法。`,
+  sheListEmpty: '当前聊天还没有 Topic。用 /she submit <原文> 创建第一个。',
+  sheTopicListLine: (label, status, excerpt, summary) => `${label}  [${status}]  ${excerpt}  ${summary}`,
+  sheTaskListLine: (label, status, excerpt) => `${label}  [${status}]  ${excerpt}`,
+  sheTaskSummary: (total, running, queued, done) => `共 ${total} 个任务：运行中 ${running}，排队 ${queued}，已完成 ${done}`,
+  sheStatusTitle: '秘书任务状态',
+  sheStatusTopic: (label, status, excerpt) => `Topic ${label} · ${status} · ${excerpt}`,
+  sheStatusTask: (label, status, excerpt) => `Task ${label} · ${status} · ${excerpt}`,
+  sheStatusSession: sessionId => `OpenCode session：${sessionId}`,
+  sheStatusReport: path => `报告：${path}`,
+  sheStatusAttachments: count => `附件：${count} 个`,
+  sheNotFound: reference => `未找到 ${reference}。`,
+  sheReportMissing: label => `任务 ${label} 尚无已登记报告（可能仍在运行或报告缺失）。`,
+  sheReportReady: (label, size) => `任务 ${label} 的报告（${size}）：`,
+  sheStopped: label => `已中断 ${label}，所属 Topic 已暂停。`,
+  sheResumed: label => `已恢复 Topic ${label} 的队列。`,
+  sheRenamed: (oldLabel, newLabel) => `Topic 编号已由 ${oldLabel} 改为 ${newLabel}。`,
+  sheRemoved: (label, purged) => purged ? `Topic ${label} 已彻底删除。` : `Topic ${label} 已归档并从看板隐藏；产物保留。`,
+  sheError: (code, detail) => `秘书命令失败（${code}）：${detail}`,
 }
 
 const enUS: Strings = {
@@ -762,6 +823,41 @@ const enUS: Strings = {
   notAFileRefusal: 'That path is not a regular file.',
   tooLargeRefusal: (size, limit) => `The file is ${size}, over the ${limit} limit.`,
   commandUnknown: line => `Unknown command: ${line} (try /help)`,
+  sheUsage: [
+    'Usage:',
+    '/she submit <request> — create a Topic and enqueue a task',
+    '/she continue <Topic> <request> — append a serial task',
+    '/she list [Topic] — show Topics / Tasks',
+    '/she status <Topic|Task> — query status',
+    '/she report <Task> — return the report file',
+    '/she stop <Task> — interrupt the running task and pause its Topic',
+    '/she resume <Topic> — resume the Topic queue',
+    '/she topic rename <old> <new> [--force] — rename a Topic label',
+    '/she topic remove <Topic> [--purge] — archive/remove a Topic',
+  ].join('\n'),
+  sheDisabled: 'Secretary is disabled: set secretaryEnabled: true in the plugin config.',
+  sheNoPermission: 'This sender may not use /she (must be an approver / the chat driver).',
+  sheSubmitted: (label, status) => `Submitted task ${label} (${status}). Check it with /she status ${label}.`,
+  sheContinued: (label, status) => `Appended task ${label} (${status}).`,
+  sheInvalid: reason => `Invalid command arguments (${reason}); send /she help for usage.`,
+  sheListEmpty: 'No Topics in this chat yet. Use /she submit <request> to create one.',
+  sheTopicListLine: (label, status, excerpt, summary) => `${label}  [${status}]  ${excerpt}  ${summary}`,
+  sheTaskListLine: (label, status, excerpt) => `${label}  [${status}]  ${excerpt}`,
+  sheTaskSummary: (total, running, queued, done) => `${total} task(s): ${running} running, ${queued} queued, ${done} done`,
+  sheStatusTitle: 'Secretary task status',
+  sheStatusTopic: (label, status, excerpt) => `Topic ${label} · ${status} · ${excerpt}`,
+  sheStatusTask: (label, status, excerpt) => `Task ${label} · ${status} · ${excerpt}`,
+  sheStatusSession: sessionId => `OpenCode session: ${sessionId}`,
+  sheStatusReport: path => `Report: ${path}`,
+  sheStatusAttachments: count => `Attachments: ${count}`,
+  sheNotFound: reference => `Not found: ${reference}.`,
+  sheReportMissing: label => `Task ${label} has no registered report yet (still running or report missing).`,
+  sheReportReady: (label, size) => `Report for ${label} (${size}):`,
+  sheStopped: label => `Interrupted ${label}; its Topic is paused.`,
+  sheResumed: label => `Resumed the queue for Topic ${label}.`,
+  sheRenamed: (oldLabel, newLabel) => `Topic label renamed from ${oldLabel} to ${newLabel}.`,
+  sheRemoved: (label, purged) => purged ? `Topic ${label} was purged.` : `Topic ${label} was archived and hidden; artifacts are retained.`,
+  sheError: (code, detail) => `Secretary command failed (${code}): ${detail}`,
   wsMenuTitle: '🗂 Workspaces (tap to switch)',
   wsMenuEmpty: 'No registered workspaces yet (besides the default). Add one via /ws new or /ws add.',
   wsMenuNote: 'Tap to switch · /ws list for text · /ws new to create',

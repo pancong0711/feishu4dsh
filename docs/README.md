@@ -12,7 +12,8 @@
 | [CONFIG.md](CONFIG.md) | 插件配置项（传输、作用域、工作区、审批、媒体、文案） |
 | [FEISHU-SETUP.md](FEISHU-SETUP.md) | 飞书自建应用创建、事件订阅、权限申请 |
 | [PUBLISHING.md](PUBLISHING.md) | GitHub / npm 发布指南与推送前检查清单 |
-| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | 故障排查手册（`has no provider/model`、会话假卡住、工作区紊乱） |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | 故障排查手册（`has no provider/model`、会话假卡住、工作区紊乱、`/she`） |
+| [SECRETARY.md](SECRETARY.md) | 可选秘书子模块（SHE）：`/she`、Topic 串行队列、OpenCode、安全边界 |
 
 ## 关联
 

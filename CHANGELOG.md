@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.16.0 (2026-11-19)
+
+**R56：新增可选秘书子模块（SHE）——飞书任务确定性转交本机 OpenCode**
+
+- **新能力**：默认关闭的 `/she submit|continue|list|status|report|stop|resume|topic rename/remove`；支持 Topic/Task 两级看板、同 Topic 严格串行、成功后自动推进、失败/中断/报告缺失暂停与 `/she resume` 恢复。
+- **架构边界**：新增 `src/secretary/`（command/types/envelope/store/service/opencode/worktree/permissions/runtime），状态机与飞书通道解耦；`bridge.ts` 只增加薄命令适配和报告文件投递，不承载 SHE 状态。
+- **持久化与恢复**：SQLite 保存 topics/tasks/attempts/artifacts/events/leases；数据库不存任务原文（只存 hash + 20 字摘录），排队等待 dispatch 的原文仅写入 0600 临时 spool，OpenCode 接收后删除；重启后队列可恢复。
+- **执行器**：OpenCode HttpApi 适配器使用 HTTP Basic；session 固定 model/variant，按 Topic 复用；每 Topic 独立 git worktree；附件复制到 `.secretary/inbox/<task-id>/` 后只传相对路径；报告必须由 OpenCode 写到 `report_path`，SHE 只校验存在/大小并原样回传。
+- **安全**：`secretaryEnabled` 默认 false；未启用不建库、不读 OpenCode 凭据、不启动 watcher；固定 permission ruleset 与提示词 forbidden 列表；不自动 commit/push/merge/deploy；群聊报告文件沿用审批。
+- **G1 真机验证**：OpenCode `2.3.2`；Basic 鉴权通过；prompt 异步返回；同 session 多轮成功；outcome/busy/idle/message/diff schema 实测；项目内 git worktree 执行并落盘/回读报告。发现 OpenCode `location.directory` 对 `/tmp` 新目录返回 `LocationNotFoundError`，部署应使用项目可解析 worktree 根。
+- **permission 负例验证**：permission 是 session 级且不改全局配置；`read` 的 `.env`/外部目录拒绝、`shell` 的 `git commit` 拒绝已真机通过。修正 action 名称 `bash`→`shell`、`task`→`subagent`；同时实测 `external_directory` 不约束 shell，shell 仍可写 worktree 外文件，故明确该规则集不是 OS 沙箱，强隔离需独立用户/容器/namespace。
+- **测试**：391/391（基线 369 + 22：命令解析/信封/SQLite/service 串行与重启恢复/附件/worktree 路径/OpenCode HTTP mock/bridge `/she` 适配）。
+
 ## 0.15.4 (2026-11-19)
 
 **R55：`/model effort` 状态机、持久化语义与能力/观测链加固**

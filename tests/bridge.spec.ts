@@ -16,6 +16,7 @@ import type { SessionRecord } from '../src/session-registry.js'
 import { agentKeyOf, sessionIdOf } from '../src/sessions.js'
 import { canonicalPath } from '../src/workspaces.js'
 import { sleep, splitWithCodeFences } from '../src/util.js'
+import type { SecretaryService } from '../src/secretary/service.js'
 
 /* ------------------------------------------------------------------ */
 /* Fakes                                                               */
@@ -6252,5 +6253,53 @@ describe('bridge: R50 host-contract adaptation and R51 ask_user', () => {
     }, async () => ({ answers: [] }))
     expect(await results[0]).toEqual({ answers: [] })
     expect(port.sent.some(m => 'card' in m.input)).toBe(false)
+  })
+})
+
+describe('bridge: SHE secretary commands (R56)', () => {
+  it('shows /she help and refuses submit when the submodule is disabled', async () => {
+    const { port } = makeEnv()
+    await textMessage(port, '/she help')
+    expect(port.sent.some(message => String(message.input.markdown ?? '').includes('/she submit <原文>'))).toBe(true)
+
+    await textMessage(port, '/she submit 修复登录问题')
+    expect(port.sent.some(message => String(message.input.markdown ?? '').includes('secretaryEnabled: true'))).toBe(true)
+  })
+
+  it('routes submit/continue/list/status through the secretary service', async () => {
+    const calls: unknown[] = []
+    const secretary = {
+      submit: async (input: unknown) => {
+        calls.push({ kind: 'submit', input })
+        return { topic: { displayNo: '1' }, task: { seq: 1, status: 'queued' } }
+      },
+      continue: async (input: unknown) => {
+        calls.push({ kind: 'continue', input })
+        return { topic: { displayNo: '1' }, task: { seq: 2, status: 'queued' } }
+      },
+      list: () => [{
+        topic: { id: 't1', displayNo: '1', status: 'active', titleExcerpt: '修复登录问题' },
+        tasks: [
+          { task: { status: 'queued', rawExcerpt: '修复登录问题' }, display: '1.1' },
+          { task: { status: 'succeeded', rawExcerpt: '补测试' }, display: '1.2' },
+        ],
+      }],
+      status: async () => ({
+        topic: { id: 't1', displayNo: '1', status: 'active', titleExcerpt: '修复登录问题', opencodeSessionId: 'ses_1' },
+        task: { seq: 1, status: 'running', rawExcerpt: '修复登录问题', opencodeSessionId: 'ses_1', attachments: [], error: null },
+      }),
+    } as unknown as SecretaryService
+    const { port } = makeEnv({}, { secretary })
+
+    await textMessage(port, '/she submit 修复登录问题')
+    await textMessage(port, '/she continue 1 补测试')
+    await textMessage(port, '/she list')
+    await textMessage(port, '/she list 1')
+    await textMessage(port, '/she status 1.1')
+
+    expect(calls).toHaveLength(2)
+    expect(String(port.sent.at(-3)?.input.markdown)).toContain('1  [active]')
+    expect(String(port.sent.at(-2)?.input.markdown)).toContain('1.1  [queued]')
+    expect(String(port.sent.at(-1)?.input.markdown)).toContain('OpenCode session：ses_1')
   })
 })

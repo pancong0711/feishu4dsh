@@ -62,6 +62,7 @@ journalctl --user -u dsh-feishu4dsh.service -f
 | 交互选择卡 | `/ws` `/model` `/session` 均有点选卡片（当前项标 ✅，`/model` 支持分页下拉）；点击以点击者身份过审批 ACL，菜单 15 分钟自动失效 |
 | 授权 | 应用可用范围 + 发送人/群白名单 + 审批人名单（只收窄） |
 | 命令 | `/help` `/new` `/mode` `/reasoning` `/session` `/stop` `/status` `/ws` `/cd` `/model`（含 effort、清单增删与点选卡片） |
+| **秘书（SHE，可选）** | 默认关闭。`/she submit/continue/list/status/report/stop/resume/topic …` 把任务确定性转交本机 OpenCode；Topic 独立 session + git worktree + 串行队列，SQLite 持久化、重启恢复、报告原样回传。启用见 [docs/SECRETARY.md](docs/SECRETARY.md) |
 | 文件 | 入站进 `.feishu4dsh/inbox/`；`send_file` 回传，群聊逐次审批 |
 | i18n | `locale: auto` 跟随读者语言，默认中文 |
 
@@ -91,13 +92,14 @@ pnpm build        # tsc 产出 lib/
 - 📂 [docs/README.md](docs/README.md) — 文档索引（长期记忆中心，先读它）
 - 架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - 配置：[docs/CONFIG.md](docs/CONFIG.md) ｜ 飞书应用：[docs/FEISHU-SETUP.md](docs/FEISHU-SETUP.md)
+- 秘书子模块（SHE）：[docs/SECRETARY.md](docs/SECRETARY.md)
 - 排障（含 `has no provider/model`）：[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 - 📜 开发史与发布模型：[HISTORY.md](HISTORY.md)
 - 发布：[docs/PUBLISHING.md](docs/PUBLISHING.md)
 
 ## 版本与兼容性
 
-要求 **dsh `>= 0.2.1-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.2.1-rc.2` 上验证（v0.15.3）。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。
+要求 **dsh `>= 0.2.1-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.2.1-rc.2` 上验证（v0.16.0）。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。
 
 **升级前先跑契约门禁**：`pnpm test` 里的 `tests/host-contract.spec.ts` 会直接读取本机已安装 dsh 的 `.d.ts`，把 `TurnEndReasonMap`、`AgentCancelCause`、`commands.execute` 签名、`archivedSessionIds` getter、`snapshotEvents()`、观察租约、`user-questions/request` 逐条对账；宿主不可达时自动 skip。0.2.1 的四处漂移（`cancel` 结构化原因、`execute` 四参、归档集变取值器、`Session.events` 移除）都不会让插件启动失败，只会让 `/stop`、`/compact`、`/session archive`、`/status` 在真机上静默哑掉——这正是该门禁要提前拦住的。兼容底线说明：0.2.0 起 Agent 预设由 `@deepseek-ai/dsh-agent-preset-registry`（注册表服务）+ 每预设一条 `@deepseek-ai/dsh-agent-preset` 声明行提供（dsh 不再内置预设），插件 bundle patch 出厂声明 `standard` / `minimal` 并把宿主模型面工具行让位给 preset 层；dsh `0.1.5-rc.1` 及以下使用已废弃的 `@deepseek-ai/dsh-agent-presets` 包与 `settings.yaml` 载体，**本版本不可用**（需配套 v0.9.x）。
 

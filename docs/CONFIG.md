@@ -98,6 +98,30 @@ dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操�
 
 白名单**只收窄、不放行**：可触达范围本身由飞书应用的「可用范围」决定。
 
+
+## 秘书子模块（SHE，可选）
+
+默认关闭。未设置 `secretaryEnabled: true` 时不会创建 SQLite、不会读取 OpenCode 凭据、不会启动 watcher。
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `secretaryEnabled` | `false` | 启用 `/she` |
+| `secretaryRoot` | `.feishu4dsh/secretary` | 状态根：SQLite 与 worktrees；需可写且 OpenCode 可解析 |
+| `secretaryOpencodeUrl` | `http://127.0.0.1:49374` | OpenCode HttpApi 地址 |
+| `secretaryOpencodeUsername` | `opencode` | HTTP Basic 用户名 |
+| `secretaryOpencodePasswordFile` | `~/.config/opencode/service.json` | 600 权限 JSON 的 `password`；也可用 `OPENCODE_SERVICE_PASSWORD` |
+| `secretaryModelProviderID` | `opencode-go` | 固定 provider |
+| `secretaryModelID` | `deepseek-v4.1-flash` | 固定 model |
+| `secretaryModelVariant` | `high` | 固定 variant |
+| `secretaryPollIntervalMs` | `2000` | watcher 轮询间隔 |
+| `secretaryMaxTopicsPerChat` | `2` | 每聊天最多活跃 Topic |
+| `secretaryMaxQueuedTasks` | `20` | 每 Topic 最多排队 |
+| `secretaryMaxConcurrent` | `0` | 0 = 自动 |
+| `secretaryRequireReport` | `true` | 成功但报告缺失时暂停 Topic |
+| `secretaryMaxReportBytes` | `10485760` | 报告大小上限 |
+
+完整命令与状态机见 [SECRETARY.md](SECRETARY.md)。
+
 ## cordis.patch.yml 示例
 
 ```yaml
@@ -117,6 +141,9 @@ dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操�
         # senderAllowlist: ['ou_xxx']
         # groupAllowlist: ['oc_xxx']
         # approvers: ['ou_admin']
+        # secretaryEnabled: true
+        # secretaryRoot: /path/to/secretary-state
+        # secretaryOpencodePasswordFile: ~/.config/opencode/service.json
 ```
 
 > `!!js`（双感叹号）表示「在配置解析期求值的环境表达式」；单感叹号 `!js` 语义不同，勿混用。

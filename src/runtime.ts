@@ -81,6 +81,7 @@ import { resolveAuthorization, describeAuthorization } from './acl.js'
 import { createFeishuPort } from './adapter.js'
 import { installBridge, type BridgeHost, type BridgeHooks } from './bridge.js'
 import { resolveLocale, strings } from './strings.js'
+import { startSecretaryRuntime } from './secretary/runtime.js'
 
 /** Resolved configuration whose credentials are present. */
 export type ChannelConfig = ResolvedConfig
@@ -150,6 +151,7 @@ export function apply(ctx: Context, config: Config): void {
 
     const authorization = resolveAuthorization(resolved)
     internals.notify(describeAuthorization(authorization))
+    const secretaryService = await startSecretaryRuntime(resolved, internals.notify)
 
     // R36: the streaming placeholder is user-facing copy — resolve it from the
     // shared strings table here and hand it to the transport, so the adapter
@@ -207,6 +209,7 @@ export function apply(ctx: Context, config: Config): void {
         : async ({ sessions, activeGen }) => {
             await settingsScope.update({ chatSessions: sessions, chatActiveGen: activeGen })
           },
+      ...(secretaryService === undefined ? {} : { secretary: secretaryService }),
     }
     const disposeBridge = installBridge(host, resolved, port, authorization, internals.notify, hooks)
 
@@ -224,11 +227,13 @@ export function apply(ctx: Context, config: Config): void {
         error instanceof Error ? error.message : error,
       )
       void disposeBridge().catch(() => undefined)
+      await secretaryService?.dispose().catch(() => undefined)
       return
     }
 
     ctx.effect(() => async () => {
       await disposeBridge()
+      await secretaryService?.dispose().catch(() => undefined)
       await port.disconnect().catch(() => undefined)
     }, 'feishu:teardown')
   }

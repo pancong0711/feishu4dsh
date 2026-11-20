@@ -39,6 +39,9 @@ import {
 } from './card-menu.js'
 import { resolveLocale, strings, type Locale, type Strings } from './strings.js'
 import { formatBytes, formatNumber, formatStamp, shortHash, sleep, splitWithCodeFences } from './util.js'
+import { parseSheCommand } from './secretary/command.js'
+import { SecretaryServiceError, type SecretaryService } from './secretary/service.js'
+import type { SecretaryAttachmentInput } from './secretary/types.js'
 
 /* ------------------------------------------------------------------ */
 /* Host surface the bridge needs (structurally satisfied by cordis ctx) */
@@ -249,6 +252,8 @@ export interface BridgeHooks {
     sessions: SessionRegistry
     activeGen: ActiveGenMap
   }) => void | Promise<void>
+  /** Optional SHE secretary service; content is formatted by this bridge. */
+  secretary?: SecretaryService
 }
 
 /**
@@ -1273,7 +1278,7 @@ async function handleInboundMessage(env: BridgeEnv, state: BridgeState, message:
 
   // A slash line routes to the command runtime, never to a model turn.
   if (message.content.trim().startsWith('/')) {
-    await runCommand(env, state, binding, message.content.trim(), message.senderId)
+    await runCommand(env, state, binding, message.content.trim(), message.senderId, message)
     return
   }
 
@@ -3869,7 +3874,14 @@ function currentSessionId(state: BridgeState, binding: ChatBinding): string {
 }
 
 /** Built-in channel commands; unrecognised lines fall through to the host. */
-async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBinding, line: string, senderId: string): Promise<void> {
+async function runCommand(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  line: string,
+  senderId: string,
+  message?: NormalizedMessage,
+): Promise<void> {
   const chatId = binding.chatId
   const replyTo = binding.replyTo
   const name = line.split(/\s+/)[0] ?? ''
@@ -3946,6 +3958,10 @@ async function runCommand(env: BridgeEnv, state: BridgeState, binding: ChatBindi
     }
     case '/cd': {
       await cmdSwitchWorkspace(env, state, binding, line.slice('/cd'.length).trim(), senderId, replyTo)
+      return
+    }
+    case '/she': {
+      await cmdShe(env, state, binding, line.slice('/she'.length).trim(), senderId, replyTo, message)
       return
     }
     default: {
@@ -5113,6 +5129,252 @@ function tryHostCompactListed(env: BridgeEnv, state: BridgeState, binding: ChatB
     return commands.list(entry.handle.agent).some(command => command.name === 'compact')
   } catch {
     return false
+  }
+}
+
+
+/* ------------------------------------------------------------------ */
+/* SHE secretary (/she, R56)                                           */
+/* ------------------------------------------------------------------ */
+
+/** Download this inbound message's resources into memory for the secretary. */
+async function collectSecretaryAttachments(
+  env: BridgeEnv,
+  state: BridgeState,
+  message: NormalizedMessage | undefined,
+): Promise<SecretaryAttachmentInput[]> {
+  if (message === undefined || message.resources.length === 0) return []
+  const inputs: SecretaryAttachmentInput[] = []
+  let total = 0
+  for (const resource of message.resources) {
+    const type = resource.type === 'image' ? 'image' : 'file'
+    let data: Buffer
+    try {
+      data = await env.port.downloadResource(resource.fileKey, type, message.messageId)
+    } catch (error) {
+      env.report(`feishu4dsh: secretary attachment fetch failed (${resource.type}): ${describeError(error)}`)
+      throw new SecretaryServiceError('attachment_failed', '无法下载附件')
+    }
+    if (data.byteLength > env.config.maxReceiveFileBytes) {
+      throw new SecretaryServiceError('attachment_too_large', `附件超过 ${formatBytes(env.config.maxReceiveFileBytes)} 限制`)
+    }
+    total += data.byteLength
+    if (total > env.config.maxMessageReceiveBytes) {
+      throw new SecretaryServiceError('attachment_too_large', `附件总大小超过 ${formatBytes(env.config.maxMessageReceiveBytes)} 限制`)
+    }
+    inputs.push({
+      fileName: resource.fileName ?? `${resource.type}-${shortHash(resource.fileKey, 6)}`,
+      bytes: data,
+    })
+  }
+  return inputs
+}
+
+/** Send a validated SHE report. Group chats retain the mandatory approval gate. */
+async function sendSecretaryReportFile(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  replyTo: string | undefined,
+  bytes: Buffer,
+  fileName: string,
+): Promise<void> {
+  const options = anchorOptions(replyTo)
+  if (binding.chatType === 'p2p') {
+    await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
+    return
+  }
+  const token = randomUUID()
+  const cardObject = approvalCard({
+    title: state.copy.sendFileApprovalTitle,
+    body: state.copy.sendFileApprovalDetail(fileName, 'SHE', formatBytes(bytes.byteLength)),
+    approveLabel: state.copy.approveButton,
+    denyLabel: state.copy.denyButton,
+    payload: { kind: 'file-send' as const, token, decision: 'deny' as const, chatId: binding.chatId },
+  })
+  const sent = await env.port.send(binding.chatId, { card: cardObject }, options)
+  // The existing file-send approval handler resolves the card's owning scope
+  // through sessionScopes; a SHE report has no dsh session of its own, so a
+  // short-lived synthetic mapping lets the same ACL/timer path own the click.
+  const syntheticSession = `she-report-${token}`
+  const hadMapping = state.sessionScopes.has(syntheticSession)
+  if (!hadMapping) state.sessionScopes.set(syntheticSession, binding.scopeKey)
+  try {
+    const decision = await waitForCardDecision(env, state, {
+      token,
+      kind: 'file-send',
+      chatId: binding.chatId,
+      sessionId: syntheticSession,
+      messageId: sent.messageId,
+    })
+    if (decision !== 'approve') {
+      await safeSend(env, binding.chatId, state.copy.sheError('report_denied', 'group approval denied'), replyTo)
+      return
+    }
+    await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
+  } finally {
+    if (!hadMapping) state.sessionScopes.delete(syntheticSession)
+  }
+}
+
+function secretaryFailure(copy: Strings, error: unknown): string {
+  if (error instanceof SecretaryServiceError) return copy.sheError(error.code, error.message)
+  return copy.sheError('internal', describeError(error))
+}
+
+/** `/she`: deterministic command adapter over SecretaryService. */
+async function cmdShe(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  args: string,
+  senderId: string,
+  replyTo?: string,
+  message?: NormalizedMessage,
+): Promise<void> {
+  const copy = state.copy
+  const command = parseSheCommand(args)
+  if (command.kind === 'help') {
+    await safeSend(env, binding.chatId, copy.sheUsage, replyTo)
+    return
+  }
+  if (command.kind === 'invalid') {
+    await safeSend(env, binding.chatId, copy.sheInvalid(command.reason), replyTo)
+    return
+  }
+  const service = env.hooks.secretary
+  if (service === undefined) {
+    await safeSend(env, binding.chatId, copy.sheDisabled, replyTo)
+    return
+  }
+  if (!mayApprove(env.authorization, senderId, true)) {
+    await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
+    return
+  }
+
+  try {
+    switch (command.kind) {
+      case 'submit': {
+        const attachments = await collectSecretaryAttachments(env, state, message)
+        const submitted = await service.submit({
+          scopeKey: binding.scopeKey,
+          workspacePath: binding.workspacePath,
+          rawRequest: command.raw,
+          attachments,
+        })
+        await safeSend(env, binding.chatId, copy.sheSubmitted(`${submitted.topic.displayNo}.${submitted.task.seq}`, submitted.task.status), replyTo)
+        return
+      }
+      case 'continue': {
+        const attachments = await collectSecretaryAttachments(env, state, message)
+        const submitted = await service.continue({
+          scopeKey: binding.scopeKey,
+          topicRef: command.topic,
+          rawRequest: command.raw,
+          attachments,
+        })
+        await safeSend(env, binding.chatId, copy.sheContinued(`${submitted.topic.displayNo}.${submitted.task.seq}`, submitted.task.status), replyTo)
+        return
+      }
+      case 'list': {
+        const views = service.list(binding.scopeKey)
+        if (views.length === 0) {
+          await safeSend(env, binding.chatId, copy.sheListEmpty, replyTo)
+          return
+        }
+        const selected = command.topic === undefined
+          ? views
+          : views.filter(view => view.topic.displayNo === command.topic || view.topic.id === command.topic)
+        if (selected.length === 0) {
+          await safeSend(env, binding.chatId, copy.sheNotFound(command.topic ?? ''), replyTo)
+          return
+        }
+        const lines: string[] = []
+        for (const view of selected) {
+          if (command.topic === undefined) {
+            const running = view.tasks.filter(item => ['dispatching', 'submitted', 'running'].includes(item.task.status)).length
+            const queued = view.tasks.filter(item => item.task.status === 'queued').length
+            const done = view.tasks.filter(item => item.task.status === 'succeeded').length
+            lines.push(copy.sheTopicListLine(
+              view.topic.displayNo ?? '?', view.topic.status, view.topic.titleExcerpt,
+              copy.sheTaskSummary(String(view.tasks.length), String(running), String(queued), String(done)),
+            ))
+          } else {
+            for (const item of view.tasks) lines.push(copy.sheTaskListLine(item.display, item.task.status, item.task.rawExcerpt))
+            if (view.tasks.length === 0) lines.push(copy.sheListEmpty)
+          }
+        }
+        await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
+        return
+      }
+      case 'status': {
+        const result = await service.status(binding.scopeKey, command.reference)
+        if (result === undefined) {
+          await safeSend(env, binding.chatId, copy.sheNotFound(command.reference), replyTo)
+          return
+        }
+        const lines = [copy.sheStatusTitle]
+        if (result.task !== undefined) {
+          lines.push(copy.sheStatusTask(
+            `${result.topic.displayNo ?? '?'}.${result.task.seq}`,
+            result.task.status,
+            result.task.rawExcerpt,
+          ))
+          if (result.task.opencodeSessionId !== null) lines.push(copy.sheStatusSession(result.task.opencodeSessionId))
+          if (result.task.attachments.length > 0) lines.push(copy.sheStatusAttachments(String(result.task.attachments.length)))
+          if (result.task.error !== null) lines.push(result.task.error)
+        } else {
+          lines.push(copy.sheStatusTopic(result.topic.displayNo ?? '?', result.topic.status, result.topic.titleExcerpt))
+          if (result.topic.opencodeSessionId !== null) lines.push(copy.sheStatusSession(result.topic.opencodeSessionId))
+          const view = service.list(binding.scopeKey).find(item => item.topic.id === result.topic.id)
+          for (const item of view?.tasks ?? []) {
+            lines.push(copy.sheTaskListLine(item.display, item.task.status, item.task.rawExcerpt))
+          }
+        }
+        await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
+        return
+      }
+      case 'report': {
+        const report = await service.report(binding.scopeKey, command.reference)
+        if (report === undefined || report.task === undefined) {
+          await safeSend(env, binding.chatId, copy.sheNotFound(command.reference), replyTo)
+          return
+        }
+        if (report.artifact === null) {
+          await safeSend(env, binding.chatId, copy.sheReportMissing(`${report.topic.displayNo}.${report.task.seq}`), replyTo)
+          return
+        }
+        const bytes = await service.readReport(report.artifact.path)
+        await safeSend(env, binding.chatId, copy.sheReportReady(`${report.topic.displayNo}.${report.task.seq}`, formatBytes(bytes.byteLength)), replyTo)
+        await sendSecretaryReportFile(env, state, binding, replyTo, bytes, basename(report.artifact.path))
+        return
+      }
+      case 'stop': {
+        const stopped = await service.stop(binding.scopeKey, command.reference)
+        const label = stopped.task === undefined
+          ? (stopped.topic.displayNo ?? command.reference)
+          : `${stopped.topic.displayNo ?? '?'}.${stopped.task.seq}`
+        await safeSend(env, binding.chatId, copy.sheStopped(label), replyTo)
+        return
+      }
+      case 'resume': {
+        const resumed = service.resume(binding.scopeKey, command.reference)
+        await safeSend(env, binding.chatId, copy.sheResumed(resumed.displayNo ?? command.reference), replyTo)
+        return
+      }
+      case 'rename': {
+        const renamed = service.rename(binding.scopeKey, command.oldRef, command.newLabel, command.force)
+        await safeSend(env, binding.chatId, copy.sheRenamed(command.oldRef, renamed.displayNo ?? command.newLabel), replyTo)
+        return
+      }
+      case 'remove': {
+        const removed = await service.remove(binding.scopeKey, command.reference, command.purge)
+        await safeSend(env, binding.chatId, copy.sheRemoved(removed.displayNo ?? command.reference, command.purge), replyTo)
+        return
+      }
+    }
+  } catch (error) {
+    await safeSend(env, binding.chatId, secretaryFailure(copy, error), replyTo)
   }
 }
 
