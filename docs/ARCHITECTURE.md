@@ -63,7 +63,7 @@
 | `src/card-menu.ts` | 交互菜单纯逻辑：菜单注册表（每 scope×kind 一张活卡/TTL）、分页、四类选择卡构建（R32） | Hermes 交互卡片 |
 | `src/host.ts` | dsh 宿主服务的窄契约（唯一适配面） | —（dsh 特有） |
 | `src/runtime.ts` | Cordis `apply`：bootstrap、settings、端口装配、拆卸 | —（dsh 特有） |
-| `src/secretary/` | 可选 SHE 子模块：确定性 `/she` 命令、Topic/Task 状态机、SQLite、串行队列/watcher、OpenCode adapter、worktree、报告校验；不依赖飞书 SDK/dsh 类型 | 秘书转发层 |
+| `src/secretary/` | 可选 SHE 子模块：确定性 `/she` 命令、`/she init` 初始化控制器、0600 bootstrap 状态、Topic/Task 状态机、SQLite、串行队列/watcher、OpenCode adapter、worktree、报告校验；不依赖飞书 SDK/dsh 类型 | 秘书转发层 |
 
 ## 4. 能力映射：Hermes 飞书适配器 → 本插件
 
@@ -179,7 +179,7 @@ SHE 是 feishu4dsh 的可选、默认关闭的能力，不是第二个自由发�
 边界：
 
 - `bridge.ts` 不写状态机；`secretary/` 不 import 飞书 SDK 或 dsh 宿主类型；
-- 未启用 `secretaryEnabled` 时不创建数据库、不读取 OpenCode 凭据、不启动 watcher；
+- 未初始化且未启用 `secretaryEnabled` 时不创建数据库、不读取 OpenCode 凭据、不启动 watcher；管理员 `/she init` 可创建 0600 状态并在当前进程内启动；重启时状态文件可自动恢复；
 - 同一 Topic 严格串行、每聊天最多 2 个活跃 Topic、每 Topic 最多 20 个排队 task；
 - 失败/中断/报告缺失/执行器不可达均暂停 Topic，`/she resume` 恢复；
 - 排队任务原文仅以 0600 临时 spool 暂存，OpenCode 接收后删除；数据库只存 hash/20 字摘录；

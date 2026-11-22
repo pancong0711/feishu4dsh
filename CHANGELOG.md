@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16.1 (2026-11-22)
+
+**R58：`/she init` 一键初始化、持久状态文件与 `/she doctor`**
+
+- **新能力**：审批人可在飞书执行 `/she init [名称]`，以当前绑定的 git workspace 为源，自动创建共享 shadow repo、SHE runtime/worktree、bot2603/opencode-she ACL；探测 OpenCode `/api/info` 后写入 0600 状态文件并在当前进程内启动 SHE。
+- **状态文件**：默认 `~/.local/state/feishu4dsh/she-bootstrap.json`，只保存 runtime/shadow repo/loopback URL/passwordFile 路径与模型标识，不保存 provider key、HttpApi 密码或飞书 secret；原子写入、schema/loopback 校验、损坏 fail-closed。
+- **自动恢复**：手工 `secretaryEnabled: true` 仍最高优先；否则 `secretaryAutoRestore`（默认 true）读取状态文件恢复 SHE，dsh 重启后无需再改 profile。
+- **诊断**：新增 `/she doctor`，展示来源（manual/bootstrap/none）、状态文件、OpenCode health、runtime/worktree/repos 与当前 scope shadow repo。
+- **作用域映射**：`/she init` 记录当前 scope 的 source→shadow repo；`/she submit` 自动使用 shadow repo，正常 dsh 会话工作区不被改写。
+- **边界**：SHE 仍不管理 Docker/容器/provider 凭据；`/she init` 只做 bot2603 权限内的共享目录、ACL、shadow repo 与状态文件。
+- **测试**：400/400（基线 391 + 9：init/doctor 解析、状态文件原子写入与损坏校验、bootstrap 自动恢复、init 权限拒绝、runtime init 的 shadow/runtime/state/scope 映射、bridge init/doctor 路由）。
+
 ## 0.16.0 (2026-11-19)
 
 **R56：新增可选秘书子模块（SHE）——飞书任务确定性转交本机 OpenCode**

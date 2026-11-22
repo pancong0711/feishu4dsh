@@ -6257,6 +6257,76 @@ describe('bridge: R50 host-contract adaptation and R51 ask_user', () => {
 })
 
 describe('bridge: SHE secretary commands (R56)', () => {
+  it('R58: /she init activates the service and routes submit to the mapped shadow repo', async () => {
+    const calls: Array<{ kind: string; input?: unknown }> = []
+    const shadow = '/srv/opencode-she/worktrees/repos/demo'
+    const secretary = {
+      submit: async (input: unknown) => {
+        calls.push({ kind: 'submit', input })
+        return { topic: { displayNo: '1' }, task: { seq: 1, status: 'queued' } }
+      },
+    } as unknown as SecretaryService
+    let initInput: unknown
+    const { port } = makeEnv({}, {
+      secretaryInit: async input => {
+        initInput = input
+        return {
+          service: secretary,
+          shadowRepo: shadow,
+          sourceRepo: '/home/bot2603/Projects/demo',
+          runtimeRoot: '/srv/opencode-she/worktrees/she-runtime',
+          worktreeRoot: '/srv/opencode-she/worktrees/she-runtime/worktrees',
+          healthVersion: '2.3.2',
+        }
+      },
+      secretaryWorkspaceFor: () => shadow,
+    })
+
+    await textMessage(port, '/she init demo')
+    expect(initInput).toMatchObject({ repoName: 'demo' })
+    expect(port.sent.some(message => String(message.input.markdown ?? '').includes(shadow))).toBe(true)
+
+    await textMessage(port, '/she submit 修复登录问题')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.input).toMatchObject({ workspacePath: shadow })
+  })
+
+  it('R58: /she init is denied for a non-approver', async () => {
+    let called = false
+    const { port } = makeEnv({ approvers: ['ou_admin'] }, {
+      secretaryInit: async () => {
+        called = true
+        throw new Error('must not be called')
+      },
+    })
+    await textMessage(port, '/she init demo')
+    expect(called).toBe(false)
+    expect(port.sent.some(message => String(message.input.markdown ?? '').includes('无权使用 /she'))).toBe(true)
+  })
+
+  it('R58: /she doctor formats source, health, paths and scope mapping', async () => {
+    const { port } = makeEnv({}, {
+      secretaryDoctor: async () => ({
+        ready: true,
+        source: 'bootstrap',
+        stateFile: '/home/bot2603/.local/state/feishu4dsh/she-bootstrap.json',
+        statePresent: true,
+        runtimeRoot: '/srv/opencode-she/worktrees/she-runtime',
+        worktreeRoot: '/srv/opencode-she/worktrees/she-runtime/worktrees',
+        reposRoot: '/srv/opencode-she/worktrees/repos',
+        opencodeUrl: 'http://127.0.0.1:49375',
+        health: { ok: true, version: '2.3.2' },
+        currentScopeShadowRepo: '/srv/opencode-she/worktrees/repos/demo',
+      }),
+    })
+    await textMessage(port, '/she doctor')
+    const text = String(port.sent.at(-1)?.input.markdown ?? '')
+    expect(text).toContain('SHE 诊断')
+    expect(text).toContain('来源：bootstrap')
+    expect(text).toContain('OpenCode：healthy（v2.3.2）')
+    expect(text).toContain('/srv/opencode-she/worktrees/repos/demo')
+  })
+
   it('shows /she help and refuses submit when the submodule is disabled', async () => {
     const { port } = makeEnv()
     await textMessage(port, '/she help')

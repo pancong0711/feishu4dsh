@@ -15,6 +15,13 @@ describe('secretary command parser', () => {
     expect(parseSheCommand('submit')).toEqual({ kind: 'invalid', reason: 'submit_usage' })
   })
 
+  it('parses init/doctor and rejects malformed init arguments', () => {
+    expect(parseSheCommand('init')).toEqual({ kind: 'init' })
+    expect(parseSheCommand('init demo')).toEqual({ kind: 'init', repoName: 'demo' })
+    expect(parseSheCommand('init demo extra')).toEqual({ kind: 'invalid', reason: 'init_usage' })
+    expect(parseSheCommand('doctor')).toEqual({ kind: 'doctor' })
+  })
+
   it('parses continue, list, status, report, stop and resume', () => {
     expect(parseSheCommand('continue 1 第二项任务')).toEqual({ kind: 'continue', topic: '1', raw: '第二项任务' })
     expect(parseSheCommand('list')).toEqual({ kind: 'list' })

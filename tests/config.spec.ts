@@ -25,6 +25,12 @@ describe('resolveConfig', () => {
     expect(resolved.chatPresets).toEqual({})
     expect(resolved.chatSessions).toEqual({})
     expect(resolved.chatActiveGen).toEqual({})
+    expect(resolved.secretaryEnabled).toBe(false)
+    expect(resolved.secretaryAutoRestore).toBe(true)
+    expect(resolved.secretaryBootstrapFile).toBe('~/.local/state/feishu4dsh/she-bootstrap.json')
+    expect(resolved.secretarySandboxRoot).toBe('/srv/opencode-she/worktrees')
+    expect(resolved.secretarySandboxOpencodeUrl).toBe('http://127.0.0.1:49375')
+    expect(resolved.secretarySandboxPasswordFile).toBe('/srv/opencode-she/secrets/opencode-service.json')
 
     expect(resolved.senderAllowlist).toEqual([])
     expect(resolved.groupAllowlist).toEqual([])

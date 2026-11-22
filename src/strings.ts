@@ -319,6 +319,13 @@ export interface Strings {
   sheUsage: string
   sheDisabled: string
   sheNoPermission: string
+  sheInitUnavailable: string
+  sheInitOk: (shadowRepo: string, runtimeRoot: string, version: string) => string
+  sheDoctorTitle: string
+  sheDoctorSource: (source: string, stateFile: string, statePresent: string) => string
+  sheDoctorHealth: (ok: boolean, detail: string) => string
+  sheDoctorRuntime: (runtimeRoot: string, worktreeRoot: string, reposRoot: string) => string
+  sheDoctorScope: (shadowRepo: string | undefined) => string
   sheSubmitted: (label: string, status: string) => string
   sheContinued: (label: string, status: string) => string
   sheInvalid: (reason: string) => string
@@ -585,6 +592,8 @@ const zhCN: Strings = {
   modelAddCurButton: '➕ 把当前模型加入清单',
   sheUsage: [
     '用法：',
+    '/she init [名称] — 初始化共享 shadow repo、SHE runtime 与状态文件',
+    '/she doctor — 查看 SHE/OpenCode/共享目录诊断',
     '/she submit <原文> — 新建 Topic 并提交任务',
     '/she continue <Topic> <原文> — 在同一 Topic 追加串行任务',
     '/she list [Topic] — 查看 Topic / Task 看板',
@@ -595,7 +604,14 @@ const zhCN: Strings = {
     '/she topic rename <旧编号> <新编号> [--force] — 重命名 Topic',
     '/she topic remove <Topic> [--purge] — 移除 Topic',
   ].join('\n'),
-  sheDisabled: '秘书功能未启用：请在插件配置中设置 secretaryEnabled: true。',
+  sheDisabled: '秘书功能未启用：管理员发送 /she init 完成初始化，或在插件配置中设置 secretaryEnabled: true。',
+  sheInitUnavailable: '当前运行环境不支持 /she init（未安装 R58 初始化控制器）。',
+  sheInitOk: (shadowRepo, runtimeRoot, version) => `SHE 初始化完成（OpenCode ${version}）。\nShadow repo：${shadowRepo}\nRuntime：${runtimeRoot}\n下一步直接 /she submit。`,
+  sheDoctorTitle: 'SHE 诊断',
+  sheDoctorSource: (source, stateFile, statePresent) => `来源：${source}；状态文件：${stateFile}（${statePresent}）`,
+  sheDoctorHealth: (ok, detail) => `OpenCode：${ok ? 'healthy' : 'unhealthy'}${detail === '' ? '' : `（${detail}）`}`,
+  sheDoctorRuntime: (runtimeRoot, worktreeRoot, reposRoot) => `Runtime：${runtimeRoot}\nWorktree：${worktreeRoot}\nRepos：${reposRoot}`,
+  sheDoctorScope: shadowRepo => `当前话题 shadow repo：${shadowRepo ?? '未映射'}`,
   sheNoPermission: '当前发送人无权使用 /she（需为审批人 / 会话驱动者）。',
   sheSubmitted: (label, status) => `已提交任务 ${label}（${status}）。完成后用 /she status ${label} 查看。`,
   sheContinued: (label, status) => `已追加任务 ${label}（${status}）。`,
@@ -825,6 +841,8 @@ const enUS: Strings = {
   commandUnknown: line => `Unknown command: ${line} (try /help)`,
   sheUsage: [
     'Usage:',
+    '/she init [name] — initialize the shared shadow repo, SHE runtime and state file',
+    '/she doctor — inspect SHE/OpenCode/shared-directory diagnostics',
     '/she submit <request> — create a Topic and enqueue a task',
     '/she continue <Topic> <request> — append a serial task',
     '/she list [Topic] — show Topics / Tasks',
@@ -835,7 +853,14 @@ const enUS: Strings = {
     '/she topic rename <old> <new> [--force] — rename a Topic label',
     '/she topic remove <Topic> [--purge] — archive/remove a Topic',
   ].join('\n'),
-  sheDisabled: 'Secretary is disabled: set secretaryEnabled: true in the plugin config.',
+  sheDisabled: 'Secretary is disabled: ask an admin to run /she init, or set secretaryEnabled: true in the plugin config.',
+  sheInitUnavailable: 'This runtime does not provide the R58 /she init controller.',
+  sheInitOk: (shadowRepo, runtimeRoot, version) => `SHE initialized (OpenCode ${version}).\nShadow repo: ${shadowRepo}\nRuntime: ${runtimeRoot}\nNext: use /she submit.`,
+  sheDoctorTitle: 'SHE diagnostics',
+  sheDoctorSource: (source, stateFile, statePresent) => `Source: ${source}; state file: ${stateFile} (${statePresent})`,
+  sheDoctorHealth: (ok, detail) => `OpenCode: ${ok ? 'healthy' : 'unhealthy'}${detail === '' ? '' : ` (${detail})`}`,
+  sheDoctorRuntime: (runtimeRoot, worktreeRoot, reposRoot) => `Runtime: ${runtimeRoot}\nWorktree: ${worktreeRoot}\nRepos: ${reposRoot}`,
+  sheDoctorScope: shadowRepo => `Current-scope shadow repo: ${shadowRepo ?? 'not mapped'}`,
   sheNoPermission: 'This sender may not use /she (must be an approver / the chat driver).',
   sheSubmitted: (label, status) => `Submitted task ${label} (${status}). Check it with /she status ${label}.`,
   sheContinued: (label, status) => `Appended task ${label} (${status}).`,

@@ -42,6 +42,7 @@ import { formatBytes, formatNumber, formatStamp, shortHash, sleep, splitWithCode
 import { parseSheCommand } from './secretary/command.js'
 import { SecretaryServiceError, type SecretaryService } from './secretary/service.js'
 import type { SecretaryAttachmentInput } from './secretary/types.js'
+import type { SecretaryDoctorReport, SecretaryRuntimeInitInput, SecretaryRuntimeInitResult } from './secretary/runtime.js'
 
 /* ------------------------------------------------------------------ */
 /* Host surface the bridge needs (structurally satisfied by cordis ctx) */
@@ -254,6 +255,12 @@ export interface BridgeHooks {
   }) => void | Promise<void>
   /** Optional SHE secretary service; content is formatted by this bridge. */
   secretary?: SecretaryService
+  /** `/she init`: B-side one-shot initialization from the current workspace. */
+  secretaryInit?: (input: SecretaryRuntimeInitInput) => Promise<SecretaryRuntimeInitResult>
+  /** `/she doctor`: read-only SHE diagnostics. */
+  secretaryDoctor?: (scopeKey: string) => Promise<SecretaryDoctorReport>
+  /** Persistent scope→shadow-repo mapping written by `/she init`. */
+  secretaryWorkspaceFor?: (scopeKey: string) => string | undefined
 }
 
 /**
@@ -5242,23 +5249,68 @@ async function cmdShe(
     await safeSend(env, binding.chatId, copy.sheInvalid(command.reason), replyTo)
     return
   }
-  const service = env.hooks.secretary
-  if (service === undefined) {
-    await safeSend(env, binding.chatId, copy.sheDisabled, replyTo)
-    return
-  }
-  if (!mayApprove(env.authorization, senderId, true)) {
-    await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
-    return
-  }
-
   try {
+    if (command.kind === 'init') {
+      if (!mayApprove(env.authorization, senderId, true)) {
+        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
+        return
+      }
+      const init = env.hooks.secretaryInit
+      if (init === undefined) {
+        await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
+        return
+      }
+      const result = await init({
+        scopeKey: binding.scopeKey,
+        workspacePath: binding.workspacePath,
+        ...(command.repoName === undefined ? {} : { repoName: command.repoName }),
+      })
+      env.hooks.secretary = result.service
+      await safeSend(env, binding.chatId, copy.sheInitOk(result.shadowRepo, result.runtimeRoot, result.healthVersion), replyTo)
+      return
+    }
+    if (command.kind === 'doctor') {
+      if (!mayApprove(env.authorization, senderId, true)) {
+        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
+        return
+      }
+      const doctor = env.hooks.secretaryDoctor
+      if (doctor === undefined) {
+        await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
+        return
+      }
+      const report = await doctor(binding.scopeKey)
+      const healthDetail = report.health.ok
+        ? `v${report.health.version ?? '?'}`
+        : report.health.detail ?? 'unknown'
+      const lines = [
+        copy.sheDoctorTitle,
+        copy.sheDoctorSource(report.source, report.stateFile, report.statePresent ? 'present' : 'missing'),
+        copy.sheDoctorHealth(report.health.ok, healthDetail),
+      ]
+      if (report.runtimeRoot !== undefined && report.worktreeRoot !== undefined && report.reposRoot !== undefined) {
+        lines.push(copy.sheDoctorRuntime(report.runtimeRoot, report.worktreeRoot, report.reposRoot))
+      }
+      lines.push(copy.sheDoctorScope(report.currentScopeShadowRepo))
+      await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
+      return
+    }
+
+    const service = env.hooks.secretary
+    if (service === undefined) {
+      await safeSend(env, binding.chatId, copy.sheDisabled, replyTo)
+      return
+    }
+    if (!mayApprove(env.authorization, senderId, true)) {
+      await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
+      return
+    }
     switch (command.kind) {
       case 'submit': {
         const attachments = await collectSecretaryAttachments(env, state, message)
         const submitted = await service.submit({
           scopeKey: binding.scopeKey,
-          workspacePath: binding.workspacePath,
+          workspacePath: env.hooks.secretaryWorkspaceFor?.(binding.scopeKey) ?? binding.workspacePath,
           rawRequest: command.raw,
           attachments,
         })

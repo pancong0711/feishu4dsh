@@ -5,6 +5,8 @@
 
 export type SheCommand =
   | { readonly kind: 'help' }
+  | { readonly kind: 'init'; readonly repoName?: string }
+  | { readonly kind: 'doctor' }
   | { readonly kind: 'submit'; readonly raw: string }
   | { readonly kind: 'continue'; readonly topic: string; readonly raw: string }
   | { readonly kind: 'list'; readonly topic?: string }
@@ -28,6 +30,13 @@ export function parseSheCommand(text: string): SheCommand {
   const line = text.trim()
   if (line === '' || line === 'help' || line === '?') return { kind: 'help' }
 
+  if (line === 'init') return { kind: 'init' }
+  if (line.startsWith('init ')) {
+    const parts = line.slice(5).trim().split(/\s+/).filter(Boolean)
+    if (parts.length > 1) return { kind: 'invalid', reason: 'init_usage' }
+    return { kind: 'init', repoName: parts[0] }
+  }
+  if (line === 'doctor') return { kind: 'doctor' }
   if (line === 'submit' || line.startsWith('submit ')) {
     const raw = restAfter(line, 'submit')
     return raw === '' ? { kind: 'invalid', reason: 'submit_usage' } : { kind: 'submit', raw }

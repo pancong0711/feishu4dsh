@@ -101,11 +101,16 @@ dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操�
 
 ## 秘书子模块（SHE，可选）
 
-默认关闭。未设置 `secretaryEnabled: true` 时不会创建 SQLite、不会读取 OpenCode 凭据、不会启动 watcher。
+默认关闭；部署管理员可在飞书执行 `/she init` 完成 B 侧一键初始化。状态写入 0600 文件，后续 dsh 重启可自动恢复；手工 `secretaryEnabled: true` 仍优先。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `secretaryEnabled` | `false` | 启用 `/she` |
+| `secretaryEnabled` | `false` | 手工强制启用 SHE |
+| `secretaryAutoRestore` | `true` | 未手工启用时从状态文件自动恢复 |
+| `secretaryBootstrapFile` | `~/.local/state/feishu4dsh/she-bootstrap.json` | `/she init` 状态文件（无密钥） |
+| `secretarySandboxRoot` | `/srv/opencode-she/worktrees` | `/she init` 共享根 |
+| `secretarySandboxOpencodeUrl` | `http://127.0.0.1:49375` | `/she init` 探测的 loopback OpenCode |
+| `secretarySandboxPasswordFile` | `/srv/opencode-she/secrets/opencode-service.json` | HttpApi 密码 JSON |
 | `secretaryRoot` | `.feishu4dsh/secretary` | 状态根：SQLite 与 worktrees；需可写且 OpenCode 可解析 |
 | `secretaryOpencodeUrl` | `http://127.0.0.1:49374` | OpenCode HttpApi 地址 |
 | `secretaryOpencodeUsername` | `opencode` | HTTP Basic 用户名 |
@@ -141,7 +146,13 @@ dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操�
         # senderAllowlist: ['ou_xxx']
         # groupAllowlist: ['oc_xxx']
         # approvers: ['ou_admin']
+        # 普通部署无需手填；管理员发 /she init
         # secretaryEnabled: true
+        # secretaryAutoRestore: true
+        # secretaryBootstrapFile: ~/.local/state/feishu4dsh/she-bootstrap.json
+        # secretarySandboxRoot: /srv/opencode-she/worktrees
+        # secretarySandboxOpencodeUrl: http://127.0.0.1:49375
+        # secretarySandboxPasswordFile: /srv/opencode-she/secrets/opencode-service.json
         # secretaryRoot: /path/to/secretary-state
         # secretaryOpencodePasswordFile: ~/.config/opencode/service.json
 ```

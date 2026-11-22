@@ -115,6 +115,16 @@ export interface Config {
   /* SHE / secretary handoff (R56). Disabled by default. */
   /** Enable the optional `/she` secretary submodule. */
   secretaryEnabled?: boolean
+  /** Auto-restore SHE from the 0600 bootstrap state file when no manual config is enabled. */
+  secretaryAutoRestore?: boolean
+  /** 0600 JSON state written by `/she init`; path only, never credentials. */
+  secretaryBootstrapFile?: string
+  /** Default shared sandbox root used by `/she init`. */
+  secretarySandboxRoot?: string
+  /** OpenCode endpoint used by `/she init` (loopback only). */
+  secretarySandboxOpencodeUrl?: string
+  /** JSON `{password}` file used by `/she init` to probe the sandbox endpoint. */
+  secretarySandboxPasswordFile?: string
   /** Root for relay.db, worktrees, reports and transient prompt spool files. */
   secretaryRoot?: string
   /** OpenCode HttpApi base URL; loopback only. */
@@ -184,6 +194,11 @@ export const Config = Schema.object({
   groupAllowlist: Schema.array(String).default([]),
   approvers: Schema.array(String).default([]),
   secretaryEnabled: Schema.boolean().default(false),
+  secretaryAutoRestore: Schema.boolean().default(true),
+  secretaryBootstrapFile: Schema.string().default('~/.local/state/feishu4dsh/she-bootstrap.json'),
+  secretarySandboxRoot: Schema.string().default('/srv/opencode-she/worktrees'),
+  secretarySandboxOpencodeUrl: Schema.string().default('http://127.0.0.1:49375'),
+  secretarySandboxPasswordFile: Schema.string().default('/srv/opencode-she/secrets/opencode-service.json'),
   secretaryRoot: Schema.string().default('.feishu4dsh/secretary'),
   secretaryOpencodeUrl: Schema.string().default('http://127.0.0.1:49374'),
   secretaryOpencodeUsername: Schema.string().default('opencode'),
@@ -295,6 +310,15 @@ export function resolveConfig(config: Config): Required<Config> {
     groupAllowlist: cleanList(config.groupAllowlist),
     approvers: cleanList(config.approvers),
     secretaryEnabled: config.secretaryEnabled ?? false,
+    secretaryAutoRestore: config.secretaryAutoRestore ?? true,
+    secretaryBootstrapFile: (config.secretaryBootstrapFile ?? '~/.local/state/feishu4dsh/she-bootstrap.json').trim()
+      || '~/.local/state/feishu4dsh/she-bootstrap.json',
+    secretarySandboxRoot: (config.secretarySandboxRoot ?? '/srv/opencode-she/worktrees').trim()
+      || '/srv/opencode-she/worktrees',
+    secretarySandboxOpencodeUrl: (config.secretarySandboxOpencodeUrl ?? 'http://127.0.0.1:49375').trim()
+      || 'http://127.0.0.1:49375',
+    secretarySandboxPasswordFile: (config.secretarySandboxPasswordFile ?? '/srv/opencode-she/secrets/opencode-service.json').trim()
+      || '/srv/opencode-she/secrets/opencode-service.json',
     secretaryRoot: (config.secretaryRoot ?? '.feishu4dsh/secretary').trim() || '.feishu4dsh/secretary',
     secretaryOpencodeUrl: (config.secretaryOpencodeUrl ?? 'http://127.0.0.1:49374').trim() || 'http://127.0.0.1:49374',
     secretaryOpencodeUsername: (config.secretaryOpencodeUsername ?? 'opencode').trim() || 'opencode',
