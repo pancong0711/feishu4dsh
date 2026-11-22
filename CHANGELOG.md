@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.2 (2026-11-22)
+
+**R58-a：`/she` 子命令帮助体系与 submit 提示词指南**
+
+- **修复**：`/she init help` 不再被当成仓库名并创建 `repos/help`；`/she help <命令>`、`/<命令> --help|-h|help` 统一进入帮助分支，在解析动作前拦截。
+- **帮助**：新增 init/doctor/submit/continue/list/status/report/stop/resume/rename/remove 的独立帮助文本（中英双语）；`/she help` 保留全局命令列表。
+- **文档**：`docs/SECRETARY.md` 增加 `/she submit` 提示词写法：目标/范围/验收/禁止/报告路径，并强调路径与验收比长篇背景更重要。
+- **代码注释**：补充 SheCommand、runtime init/doctor 结果类型与关键状态字段的 docstring。
+- **测试**：402/402（新增 help 解析形式与 `/she init help` 不触发初始化的 bridge 回归）。
+
 ## 0.16.1 (2026-11-22)
 
 **R58：`/she init` 一键初始化、持久状态文件与 `/she doctor`**

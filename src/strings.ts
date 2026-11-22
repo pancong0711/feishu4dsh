@@ -317,6 +317,7 @@ export interface Strings {
   commandUnknown: (line: string) => string
   /* SHE secretary handoff (R56). */
   sheUsage: string
+  sheHelpTopic: (topic: string) => string
   sheDisabled: string
   sheNoPermission: string
   sheInitUnavailable: string
@@ -347,6 +348,86 @@ export interface Strings {
   sheRenamed: (oldLabel: string, newLabel: string) => string
   sheRemoved: (label: string, purged: boolean) => string
   sheError: (code: string, detail: string) => string
+}
+
+
+function sheHelpZh(topic: string): string {
+  const map: Record<string, string> = {
+    init: [
+      '/she init [仓库名] — 初始化当前话题的 SHE 运行环境',
+      '',
+      '作用：',
+      '  1. 读取当前聊天绑定的 git workspace，在共享区创建 shadow repo；',
+      '  2. 创建 SHE runtime 与 worktree root；',
+      '  3. 设置 bot2603/opencode-she ACL；',
+      '  4. 探测 OpenCode /api/info；',
+      '  5. 写入 0600 状态文件，并在当前进程启动 SHE。',
+      '',
+      '示例：/she init feishu4dsh-smoke',
+      '注意：仅审批人可用；需要当前工作区是 git 仓库；clone 只包含已提交 HEAD。',
+      '帮助：/she init --help 或 /she help init',
+    ].join('\n'),
+    doctor: [
+      '/she doctor — 查看 SHE 诊断信息',
+      '',
+      '显示：来源（manual/bootstrap/none）、状态文件、OpenCode health、',
+      'runtime/worktree/repos 路径、当前话题的 shadow repo。',
+      '仅审批人可执行，避免泄露宿主绝对路径。',
+    ].join('\n'),
+    submit: [
+      '/she submit <任务原文> — 新建 Topic 并提交任务',
+      '',
+      '建议把任务写成：目标 + 范围 + 验收标准 + 禁止事项 + 报告路径。',
+      '示例：/she submit 阅读 README.md，写不超过 100 字的摘要报告到',
+      '  .secretary/reports/readme-smoke.md；不要修改其他文件，不要 commit/push。',
+      '',
+      '不需要写很长的解释；路径、验收和禁止事项比背景描述更有价值。',
+    ].join('\n'),
+    continue: '/she continue <Topic> <任务原文> — 在同一 Topic 追加串行任务。\n示例：/she continue 1 补充测试并更新报告。',
+    list: '/she list — 查看全部 Topic/Task。\n/she list <Topic> — 查看指定 Topic 的任务列表。',
+    status: '/she status <Topic|Task> — 查询 Topic 或任务状态；运行中的任务会主动刷新一次执行器状态。',
+    report: '/she report <Task> — 校验并回传任务报告文件；群聊仍走文件审批。',
+    stop: '/she stop <Task> — 中断当前运行任务并暂停其 Topic；排队任务保留。',
+    resume: '/she resume <Topic> — 恢复暂停的 Topic 队列，从下一个 queued task 继续。',
+    rename: '/she topic rename <旧编号> <新编号> [--force] — 重命名 Topic；冲突时用 --force 自动改旧编号。',
+    remove: '/she topic remove <Topic> [--purge] — 归档并隐藏 Topic；--purge 会删除 worktree 与数据库记录。',
+  }
+  return map[topic] ?? `未知 SHE 帮助主题：${topic}\n发送 /she help 查看全部命令。`
+}
+
+function sheHelpEn(topic: string): string {
+  const map: Record<string, string> = {
+    init: [
+      '/she init [repo-name] — initialize SHE for the current chat',
+      '',
+      'Creates a shared shadow repo from the current git workspace, prepares the SHE',
+      'runtime/worktree root and ACLs, probes OpenCode /api/info, writes a 0600 state',
+      'file, and starts SHE in-process.',
+      '',
+      'Example: /she init feishu4dsh-smoke',
+      'Admins only; the current workspace must be a git repository; the clone contains committed HEAD only.',
+      'Help: /she init --help or /she help init',
+    ].join('\n'),
+    doctor: '/she doctor — show source, state file, OpenCode health, runtime paths and current-scope shadow repo (admins only).',
+    submit: [
+      '/she submit <request> — create a Topic and enqueue a task',
+      '',
+      'A good request states: goal + scope + acceptance + forbidden actions + report path.',
+      'Example: /she submit Read README.md and write a <=100-word report to',
+      '  .secretary/reports/readme-smoke.md; do not modify other files or commit/push.',
+      '',
+      'Keep it concise: paths, acceptance and prohibitions matter more than long background prose.',
+    ].join('\n'),
+    continue: '/she continue <Topic> <request> — append a serial task to an existing Topic.',
+    list: '/she list — show all Topics/Tasks. /she list <Topic> — show one Topic.',
+    status: '/she status <Topic|Task> — query state; running tasks are polled once.',
+    report: '/she report <Task> — validate and return the report file; group chats still require file approval.',
+    stop: '/she stop <Task> — interrupt the running task and pause its Topic.',
+    resume: '/she resume <Topic> — resume a paused Topic queue.',
+    rename: '/she topic rename <old> <new> [--force] — rename a Topic label.',
+    remove: '/she topic remove <Topic> [--purge] — archive/hide; --purge removes worktree and DB rows.',
+  }
+  return map[topic] ?? `Unknown SHE help topic: ${topic}\nSend /she help for the command list.`
 }
 
 const zhCN: Strings = {
@@ -592,6 +673,7 @@ const zhCN: Strings = {
   modelAddCurButton: '➕ 把当前模型加入清单',
   sheUsage: [
     '用法：',
+    '/she help [命令] — 查看全局或子命令帮助',
     '/she init [名称] — 初始化共享 shadow repo、SHE runtime 与状态文件',
     '/she doctor — 查看 SHE/OpenCode/共享目录诊断',
     '/she submit <原文> — 新建 Topic 并提交任务',
@@ -604,6 +686,7 @@ const zhCN: Strings = {
     '/she topic rename <旧编号> <新编号> [--force] — 重命名 Topic',
     '/she topic remove <Topic> [--purge] — 移除 Topic',
   ].join('\n'),
+  sheHelpTopic: sheHelpZh,
   sheDisabled: '秘书功能未启用：管理员发送 /she init 完成初始化，或在插件配置中设置 secretaryEnabled: true。',
   sheInitUnavailable: '当前运行环境不支持 /she init（未安装 R58 初始化控制器）。',
   sheInitOk: (shadowRepo, runtimeRoot, version) => `SHE 初始化完成（OpenCode ${version}）。\nShadow repo：${shadowRepo}\nRuntime：${runtimeRoot}\n下一步直接 /she submit。`,
@@ -841,6 +924,7 @@ const enUS: Strings = {
   commandUnknown: line => `Unknown command: ${line} (try /help)`,
   sheUsage: [
     'Usage:',
+    '/she help [command] — show global or per-command help',
     '/she init [name] — initialize the shared shadow repo, SHE runtime and state file',
     '/she doctor — inspect SHE/OpenCode/shared-directory diagnostics',
     '/she submit <request> — create a Topic and enqueue a task',
@@ -853,6 +937,7 @@ const enUS: Strings = {
     '/she topic rename <old> <new> [--force] — rename a Topic label',
     '/she topic remove <Topic> [--purge] — archive/remove a Topic',
   ].join('\n'),
+  sheHelpTopic: sheHelpEn,
   sheDisabled: 'Secretary is disabled: ask an admin to run /she init, or set secretaryEnabled: true in the plugin config.',
   sheInitUnavailable: 'This runtime does not provide the R58 /she init controller.',
   sheInitOk: (shadowRepo, runtimeRoot, version) => `SHE initialized (OpenCode ${version}).\nShadow repo: ${shadowRepo}\nRuntime: ${runtimeRoot}\nNext: use /she submit.`,

@@ -22,6 +22,16 @@ describe('secretary command parser', () => {
     expect(parseSheCommand('doctor')).toEqual({ kind: 'doctor' })
   })
 
+  it('reserves help forms before action parsing', () => {
+    expect(parseSheCommand('help init')).toEqual({ kind: 'help', topic: 'init' })
+    expect(parseSheCommand('init help')).toEqual({ kind: 'help', topic: 'init' })
+    expect(parseSheCommand('init --help')).toEqual({ kind: 'help', topic: 'init' })
+    expect(parseSheCommand('init -h')).toEqual({ kind: 'help', topic: 'init' })
+    expect(parseSheCommand('submit help')).toEqual({ kind: 'help', topic: 'submit' })
+    expect(parseSheCommand('topic rename --help')).toEqual({ kind: 'help', topic: 'rename' })
+    expect(parseSheCommand('help unknown-topic')).toEqual({ kind: 'help', topic: 'unknown-topic' })
+  })
+
   it('parses continue, list, status, report, stop and resume', () => {
     expect(parseSheCommand('continue 1 第二项任务')).toEqual({ kind: 'continue', topic: '1', raw: '第二项任务' })
     expect(parseSheCommand('list')).toEqual({ kind: 'list' })

@@ -6291,6 +6291,21 @@ describe('bridge: SHE secretary commands (R56)', () => {
     expect(calls[0]?.input).toMatchObject({ workspacePath: shadow })
   })
 
+  it('R58: /she init help returns help and never initializes a repo named help', async () => {
+    let called = false
+    const { port } = makeEnv({}, {
+      secretaryInit: async () => {
+        called = true
+        throw new Error('must not be called')
+      },
+    })
+    await textMessage(port, '/she init help')
+    expect(called).toBe(false)
+    const text = String(port.sent.at(-1)?.input.markdown ?? '')
+    expect(text).toContain('/she init [仓库名]')
+    expect(text).toContain('仅审批人可用')
+  })
+
   it('R58: /she init is denied for a non-approver', async () => {
     let called = false
     const { port } = makeEnv({ approvers: ['ou_admin'] }, {

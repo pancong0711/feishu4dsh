@@ -4,8 +4,11 @@
  */
 
 export type SheCommand =
-  | { readonly kind: 'help' }
+  /** Help query; `topic` absent means the global command list. */
+  | { readonly kind: 'help'; readonly topic?: string }
+  /** One-shot B-side initialization; optional repo name overrides the source basename. */
   | { readonly kind: 'init'; readonly repoName?: string }
+  /** Read-only SHE/OpenCode/runtime diagnostics. */
   | { readonly kind: 'doctor' }
   | { readonly kind: 'submit'; readonly raw: string }
   | { readonly kind: 'continue'; readonly topic: string; readonly raw: string }
@@ -22,14 +25,34 @@ function restAfter(text: string, prefix: string): string {
   return text.slice(prefix.length).replace(/^\s+/, '')
 }
 
+function helpTopicOf(raw: string): string {
+  const value = raw.trim().toLowerCase()
+  if (value === 'topic rename' || value === 'rename') return 'rename'
+  if (value === 'topic remove' || value === 'remove') return 'remove'
+  return value
+}
+
+function helpFor(topic: string | undefined): SheCommand {
+  return topic === undefined || topic === '' ? { kind: 'help' } : { kind: 'help', topic: helpTopicOf(topic) }
+}
+
 /**
  * Parse the text after `/she`. `submit` and `continue` preserve the raw
  * request body verbatim apart from the leading separator whitespace.
+ *
+ * Help is recognized before action parsing so `/she init help`,
+ * `/she init --help` and `/she help init` never create a repo named "help"
+ * or submit a task body containing only the word "help".
  */
 export function parseSheCommand(text: string): SheCommand {
   const line = text.trim()
-  if (line === '' || line === 'help' || line === '?') return { kind: 'help' }
+  if (line === '' || line === 'help' || line === '?') return helpFor(undefined)
 
+  // `help <topic>` and `<topic> --help|-h|help` are unambiguous help queries.
+  if (line.startsWith('help ')) return helpFor(line.slice(5))
+  if (/\s--help$/.test(line)) return helpFor(line.replace(/\s--help$/, ''))
+  if (/\s-h$/.test(line)) return helpFor(line.replace(/\s-h$/, ''))
+  if (/\shelp$/.test(line)) return helpFor(line.replace(/\shelp$/, ''))
   if (line === 'init') return { kind: 'init' }
   if (line.startsWith('init ')) {
     const parts = line.slice(5).trim().split(/\s+/).filter(Boolean)

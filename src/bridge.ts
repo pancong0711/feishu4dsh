@@ -5242,7 +5242,7 @@ async function cmdShe(
   const copy = state.copy
   const command = parseSheCommand(args)
   if (command.kind === 'help') {
-    await safeSend(env, binding.chatId, copy.sheUsage, replyTo)
+    await safeSend(env, binding.chatId, command.topic === undefined ? copy.sheUsage : copy.sheHelpTopic(command.topic), replyTo)
     return
   }
   if (command.kind === 'invalid') {

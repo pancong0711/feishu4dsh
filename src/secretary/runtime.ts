@@ -35,17 +35,26 @@ import {
 const execFileAsync = promisify(execFile)
 
 export interface SecretaryRuntimeInitInput {
+  /** Bridge scope whose `/she submit` should use the resulting shadow repo. */
   readonly scopeKey: string
+  /** Existing git workspace selected in the chat; cloned as committed HEAD. */
   readonly workspacePath: string
+  /** Optional safe single-segment shadow repo name; defaults to source basename. */
   readonly repoName?: string
 }
 
 export interface SecretaryRuntimeInitResult {
+  /** Live service installed into the bridge after successful initialization. */
   readonly service: SecretaryService
+  /** Shared clone used by SHE instead of the original dsh workspace. */
   readonly shadowRepo: string
+  /** Canonical git root of the source workspace. */
   readonly sourceRepo: string
+  /** `secretaryRoot` containing relay.db and worktrees. */
   readonly runtimeRoot: string
+  /** Root under which per-Topic git worktrees are created. */
   readonly worktreeRoot: string
+  /** Version reported by OpenCode `/api/info` during init. */
   readonly healthVersion: string
 }
 
@@ -59,15 +68,21 @@ export interface SecretaryRuntimeDeps {
 }
 
 export interface SecretaryDoctorReport {
+  /** True when a live service exists and the loopback OpenCode probe succeeds. */
   readonly ready: boolean
+  /** Which source activated the current service. */
   readonly source: SecretaryRuntimeSource
+  /** Configured 0600 bootstrap state path. */
   readonly stateFile: string
+  /** Whether the state file was found (valid or malformed). */
   readonly statePresent: boolean
   readonly runtimeRoot?: string
   readonly worktreeRoot?: string
   readonly reposRoot?: string
   readonly opencodeUrl?: string
+  /** Live `/api/info` probe result; detail never contains credentials. */
   readonly health: { readonly ok: boolean; readonly version?: string; readonly detail?: string }
+  /** Shadow repo mapped to the requesting chat scope, when initialized. */
   readonly currentScopeShadowRepo?: string
 }
 

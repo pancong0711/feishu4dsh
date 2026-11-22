@@ -43,7 +43,25 @@ secretaryEnabled: true（手工配置）
 /she topic rename <old> <new> [--force]
 /she topic remove <Topic> [--purge]
 /she help
+/she help <命令>
+/<命令> --help
 ```
+
+帮助形式等价：`/she help init`、`/she init --help`、`/she init -h`、`/she init help`。
+
+### `/she submit` 提示词怎么写
+
+不需要长篇背景。建议写清：目标、范围、验收、禁止事项、报告路径。
+
+```text
+/she submit 目标：阅读 README.md 并总结当前插件用途。
+范围：只读 README.md，不修改源码。
+验收：写一份不超过 200 字的报告。
+禁止：不要 commit/push，不要安装依赖，不要访问 worktree 外文件。
+报告：.secretary/reports/readme-summary.md
+```
+
+路径、验收和禁止事项比背景描述更重要；不建议把大量文件内容直接粘进消息。
 
 ## 行为与安全
 
