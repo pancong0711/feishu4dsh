@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.0 (2026-11-22)
+
+**R59：SHE init 生命周期收敛 + two-stage 结果回收**
+
+- **init 收敛**：`/she init` 不再接受自定义名称，shadow repo 自动命名为 `<源仓库 basename>-shadow-repo`；同一 scope 只能初始化一次，重复调用拒绝并提示 `/she init update` 或 `/she init reset`。
+- **`/she init update`**：要求无 queued/running 任务、shadow 主工作区干净且 origin 匹配；`git fetch --prune origin` + `git merge --ff-only @{u}`，不删除既有 worktree/branch。
+- **`/she init reset`**：仅删除状态文件中的 scope 映射并停用当前内存 service，保留 shadow 目录；用于误初始化/切换源仓库。
+- **`/she return <Task>`**：把 succeeded 任务结果复制到 `<project>/she_returns/<task-id>/`：REPORT.md、CHANGES.patch、changed-files/、new-files/、outputs/、manifest.json；不修改项目源码、不 stage、不 commit。
+- **`/she accept <Task>`**：读取 return manifest，先 `git apply --check --binary`，再应用 patch、复制新文件，并且只 stage manifest affectedPaths；不 commit/push。语义是 `git apply + 文件复制 + git add`，不是单纯 git add。
+- **安全**：所有 bundle 路径必须为项目内相对路径，拒绝绝对路径、`..`、symlink ancestor；项目写入仅限 manifest；`she_returns/` 永不被 stage；不破坏 dsh workspace sandbox。
+- **帮助**：新增 init update/reset、return/accept 的中英帮助；`/she submit` 不再要求用户写报告路径（自动注入）。
+- **测试**：407/407（新增 return/accept bundle、init update/reset、duplicate-init、路由/帮助回归）。
+
 ## 0.16.2 (2026-11-22)
 
 **R58-a：`/she` 子命令帮助体系与 submit 提示词指南**

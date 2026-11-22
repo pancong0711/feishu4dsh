@@ -107,16 +107,22 @@ describe('SHE runtime bootstrap restore', () => {
         probeOpenCode: async () => ({ ok: true, version: '2.3.2' }),
       })
       try {
-        const init = await runtime.init({ scopeKey: 'scope-a', workspacePath: source, repoName: 'demo' })
-        expect(init.shadowRepo).toBe(join(shared, 'repos', 'demo'))
+        const init = await runtime.init({ scopeKey: 'scope-a', workspacePath: source })
+        expect(init.shadowRepo).toBe(join(shared, 'repos', 'source-shadow-repo'))
         expect(init.healthVersion).toBe('2.3.2')
         expect(runtime.workspaceFor('scope-a')).toBe(init.shadowRepo)
+        await expect(runtime.init({ scopeKey: 'scope-a', workspacePath: source })).rejects.toThrow(/already initialized/)
+        const updated = await runtime.update({ scopeKey: 'scope-a' })
+        expect(updated.shadowRepo).toBe(init.shadowRepo)
         const state = await readBootstrapState(stateFile)
         expect(state?.scopes['scope-a']?.sourceRepo).toBe(init.sourceRepo)
         expect(state?.scopes['scope-a']?.shadowRepo).toBe(init.shadowRepo)
         const doctor = await runtime.doctor('scope-a')
         expect(doctor).toMatchObject({ ready: true, source: 'bootstrap', health: { ok: true, version: '2.3.2' } })
         expect(doctor.currentScopeShadowRepo).toBe(init.shadowRepo)
+        const reset = await runtime.reset({ scopeKey: 'scope-a' })
+        expect(reset.shadowRepo).toBe(init.shadowRepo)
+        expect(runtime.workspaceFor('scope-a')).toBeUndefined()
       } finally {
         await runtime.dispose()
       }

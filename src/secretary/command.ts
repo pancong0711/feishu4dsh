@@ -6,10 +6,18 @@
 export type SheCommand =
   /** Help query; `topic` absent means the global command list. */
   | { readonly kind: 'help'; readonly topic?: string }
-  /** One-shot B-side initialization; optional repo name overrides the source basename. */
-  | { readonly kind: 'init'; readonly repoName?: string }
+  /** One-shot B-side initialization; naming is derived from the source repo. */
+  | { readonly kind: 'init' }
+  /** Refresh the current scope's shadow repo from its committed source HEAD. */
+  | { readonly kind: 'init_update' }
+  /** Remove the current scope→shadow mapping without deleting the repo directory. */
+  | { readonly kind: 'init_reset' }
   /** Read-only SHE/OpenCode/runtime diagnostics. */
   | { readonly kind: 'doctor' }
+  /** Copy one task's report/patch/outputs into `<project>/she_returns/<task-id>/`. */
+  | { readonly kind: 'return'; readonly reference: string }
+  /** Apply a returned task bundle to the project working tree and stage affected paths. */
+  | { readonly kind: 'accept'; readonly reference: string }
   | { readonly kind: 'submit'; readonly raw: string }
   | { readonly kind: 'continue'; readonly topic: string; readonly raw: string }
   | { readonly kind: 'list'; readonly topic?: string }
@@ -29,6 +37,8 @@ function helpTopicOf(raw: string): string {
   const value = raw.trim().toLowerCase()
   if (value === 'topic rename' || value === 'rename') return 'rename'
   if (value === 'topic remove' || value === 'remove') return 'remove'
+  if (value === 'init update' || value === 'update') return 'update'
+  if (value === 'init reset' || value === 'reset') return 'reset'
   return value
 }
 
@@ -54,12 +64,20 @@ export function parseSheCommand(text: string): SheCommand {
   if (/\s-h$/.test(line)) return helpFor(line.replace(/\s-h$/, ''))
   if (/\shelp$/.test(line)) return helpFor(line.replace(/\shelp$/, ''))
   if (line === 'init') return { kind: 'init' }
-  if (line.startsWith('init ')) {
-    const parts = line.slice(5).trim().split(/\s+/).filter(Boolean)
-    if (parts.length > 1) return { kind: 'invalid', reason: 'init_usage' }
-    return { kind: 'init', repoName: parts[0] }
-  }
+  if (line === 'init update') return { kind: 'init_update' }
+  if (line === 'init reset') return { kind: 'init_reset' }
+  if (line.startsWith('init ')) return { kind: 'invalid', reason: 'init_usage' }
   if (line === 'doctor') return { kind: 'doctor' }
+  if (line === 'return') return { kind: 'invalid', reason: 'return_usage' }
+  if (line.startsWith('return ')) {
+    const ref = line.slice(7).trim()
+    return ref === '' ? { kind: 'invalid', reason: 'return_usage' } : { kind: 'return', reference: ref }
+  }
+  if (line === 'accept') return { kind: 'invalid', reason: 'accept_usage' }
+  if (line.startsWith('accept ')) {
+    const ref = line.slice(7).trim()
+    return ref === '' ? { kind: 'invalid', reason: 'accept_usage' } : { kind: 'accept', reference: ref }
+  }
   if (line === 'submit' || line.startsWith('submit ')) {
     const raw = restAfter(line, 'submit')
     return raw === '' ? { kind: 'invalid', reason: 'submit_usage' } : { kind: 'submit', raw }

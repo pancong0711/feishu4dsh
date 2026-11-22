@@ -460,6 +460,17 @@ export class SecretaryStore {
     return row.n
   }
 
+  /** Whether one chat scope still has queued or in-flight work. */
+  hasUnfinishedTasks(scopeKey: string): boolean {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS n FROM tasks k
+      JOIN topics t ON t.id = k.topic_id
+      WHERE t.scope_key = ? AND t.deleted = 0
+        AND k.status IN ('queued','dispatching','submitted','running')
+    `).get(scopeKey) as { n: number }
+    return row.n > 0
+  }
+
   findRecentDuplicate(scopeKey: string, rawHash: string, since: number): SecretaryTask | undefined {
     const row = this.db.prepare(`
       SELECT k.* FROM tasks k JOIN topics t ON t.id = k.topic_id

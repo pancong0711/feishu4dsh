@@ -42,7 +42,8 @@ import { formatBytes, formatNumber, formatStamp, shortHash, sleep, splitWithCode
 import { parseSheCommand } from './secretary/command.js'
 import { SecretaryServiceError, type SecretaryService } from './secretary/service.js'
 import type { SecretaryAttachmentInput } from './secretary/types.js'
-import type { SecretaryDoctorReport, SecretaryRuntimeInitInput, SecretaryRuntimeInitResult } from './secretary/runtime.js'
+import type { SecretaryDoctorReport, SecretaryRuntimeInitInput, SecretaryRuntimeInitResult, SecretaryRuntimeResetResult, SecretaryRuntimeUpdateResult } from './secretary/runtime.js'
+import type { TaskAcceptResult, TaskReturnResult } from './secretary/returns.js'
 
 /* ------------------------------------------------------------------ */
 /* Host surface the bridge needs (structurally satisfied by cordis ctx) */
@@ -257,10 +258,18 @@ export interface BridgeHooks {
   secretary?: SecretaryService
   /** `/she init`: B-side one-shot initialization from the current workspace. */
   secretaryInit?: (input: SecretaryRuntimeInitInput) => Promise<SecretaryRuntimeInitResult>
+  /** `/she init update`: fast-forward the current scope's shadow repo. */
+  secretaryInitUpdate?: (scopeKey: string) => Promise<SecretaryRuntimeUpdateResult>
+  /** `/she init reset`: forget one scope→shadow mapping without deleting files. */
+  secretaryInitReset?: (scopeKey: string) => Promise<SecretaryRuntimeResetResult>
   /** `/she doctor`: read-only SHE diagnostics. */
   secretaryDoctor?: (scopeKey: string) => Promise<SecretaryDoctorReport>
   /** Persistent scope→shadow-repo mapping written by `/she init`. */
   secretaryWorkspaceFor?: (scopeKey: string) => string | undefined
+  /** `/she return`: copy one task's results into `<project>/she_returns/<task-id>/`. */
+  secretaryReturn?: (input: { scopeKey: string; taskRef: string; projectRoot: string }) => Promise<TaskReturnResult>
+  /** `/she accept`: apply a returned bundle to the project working tree and stage it. */
+  secretaryAccept?: (input: { scopeKey: string; taskRef: string; projectRoot: string }) => Promise<TaskAcceptResult>
 }
 
 /**
@@ -5263,10 +5272,38 @@ async function cmdShe(
       const result = await init({
         scopeKey: binding.scopeKey,
         workspacePath: binding.workspacePath,
-        ...(command.repoName === undefined ? {} : { repoName: command.repoName }),
       })
       env.hooks.secretary = result.service
       await safeSend(env, binding.chatId, copy.sheInitOk(result.shadowRepo, result.runtimeRoot, result.healthVersion), replyTo)
+      return
+    }
+    if (command.kind === 'init_update') {
+      if (!mayApprove(env.authorization, senderId, true)) {
+        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
+        return
+      }
+      const update = env.hooks.secretaryInitUpdate
+      if (update === undefined) {
+        await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
+        return
+      }
+      const result = await update(binding.scopeKey)
+      await safeSend(env, binding.chatId, copy.sheInitUpdateOk(result.shadowRepo, result.head), replyTo)
+      return
+    }
+    if (command.kind === 'init_reset') {
+      if (!mayApprove(env.authorization, senderId, true)) {
+        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
+        return
+      }
+      const reset = env.hooks.secretaryInitReset
+      if (reset === undefined) {
+        await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
+        return
+      }
+      const result = await reset(binding.scopeKey)
+      env.hooks.secretary = undefined
+      await safeSend(env, binding.chatId, copy.sheInitResetOk(result.shadowRepo), replyTo)
       return
     }
     if (command.kind === 'doctor') {
@@ -5326,6 +5363,26 @@ async function cmdShe(
           attachments,
         })
         await safeSend(env, binding.chatId, copy.sheContinued(`${submitted.topic.displayNo}.${submitted.task.seq}`, submitted.task.status), replyTo)
+        return
+      }
+      case 'return': {
+        const run = env.hooks.secretaryReturn
+        if (run === undefined) {
+          await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
+          return
+        }
+        const result = await run({ scopeKey: binding.scopeKey, taskRef: command.reference, projectRoot: binding.workspacePath })
+        await safeSend(env, binding.chatId, copy.sheReturned(result.display, result.returnDir, result.changedFiles, result.newFiles, result.outputs), replyTo)
+        return
+      }
+      case 'accept': {
+        const run = env.hooks.secretaryAccept
+        if (run === undefined) {
+          await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
+          return
+        }
+        const result = await run({ scopeKey: binding.scopeKey, taskRef: command.reference, projectRoot: binding.workspacePath })
+        await safeSend(env, binding.chatId, copy.sheAccepted(result.display, result.stagedPaths.length, result.copiedNewFiles, result.appliedPatch), replyTo)
         return
       }
       case 'list': {

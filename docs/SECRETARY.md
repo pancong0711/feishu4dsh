@@ -12,8 +12,11 @@ SHE = **S**ecretary **H**andoff **E**xecutor。它让飞书里的 `/she` 命令�
 审批人在飞书执行：
 
 ```text
-/she init [shadow-repo-name]
+/she init
 ```
+
+Shadow repo 自动命名为 `<源仓库 basename>-shadow-repo`。同一 scope 只初始化一次；
+更新用 `/she init update`，更换源仓库先 `/she init reset`。
 
 `/she init` 会准备共享 shadow repo、SHE runtime/worktree、ACL 和 0600 状态文件，并
 在当前进程内启动 SHE。普通用户不需要编辑 URL/password/model/root 配置。
@@ -31,13 +34,17 @@ secretaryEnabled: true（手工配置）
 ## 命令
 
 ```text
-/she init [名称]
+/she init
+/she init update
+/she init reset
 /she doctor
 /she submit <原文>
 /she continue <Topic> <原文>
 /she list [Topic]
 /she status <Topic|Task>
 /she report <Task>
+/she return <Task>
+/she accept <Task>
 /she stop <Task>
 /she resume <Topic>
 /she topic rename <old> <new> [--force]
@@ -49,16 +56,24 @@ secretaryEnabled: true（手工配置）
 
 帮助形式等价：`/she help init`、`/she init --help`、`/she init -h`、`/she init help`。
 
+### 结果回收
+
+`/she return <Task>` 只复制到 `<project>/she_returns/<task-id>/`，不改源码：
+报告、patch、changed/new files、outputs 与 manifest 均按固定协议生成。
+
+`/she accept <Task>` 先 `git apply --check`，再应用 patch、复制新文件，并只 stage
+manifest 中的 affectedPaths；不 commit/push。它不是单纯的 `git add`。
+
 ### `/she submit` 提示词怎么写
 
-不需要长篇背景。建议写清：目标、范围、验收、禁止事项、报告路径。
+不需要长篇背景。建议写清：目标、范围、验收、禁止事项。报告路径由 SHE 自动生成，
+用户不要自行指定，以免写出协议约定之外的文件。
 
 ```text
 /she submit 目标：阅读 README.md 并总结当前插件用途。
 范围：只读 README.md，不修改源码。
-验收：写一份不超过 200 字的报告。
+验收：报告不超过 200 字，引用关键能力点。
 禁止：不要 commit/push，不要安装依赖，不要访问 worktree 外文件。
-报告：.secretary/reports/readme-summary.md
 ```
 
 路径、验收和禁止事项比背景描述更重要；不建议把大量文件内容直接粘进消息。

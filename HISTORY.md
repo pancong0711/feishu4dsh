@@ -51,6 +51,7 @@
 | 0.15.2 | 2026-10-24 | **R53 修复每轮直接失败**：preset persona 残留 0.2.0 时代的 `suffix: Your working directory is {{cwd}}.`，而 dsh 0.2.1 的提示词插值器只注册 `provider`/`model` 且对未知变量严格抛错（组装期、任何模型请求之前），删该行并加变量白名单门禁 |
 | 0.15.3 | 2026-10-24 | **R54 preset 真实性门禁**：R52/R53 同类缺陷本机均复现不了（70/77 会话跑 minimal、`standard` 路径零流量，且缺陷在运行时非组合期、单测跑手写桩）；补两条防线——patch 生效值里的 `{{var}}` 必须在宿主注册集合内、两个 preset 的 persona 交给真实 `renderPrompt` 渲染（宿主不可达自动 skip）；逐 id 对账上游 preset 确认其余差异均为有意设计 |
 | 0.15.4 | 2026-11-19 | **R55 effort 生命周期加固**：真机确认精确键存在时 opencode-go/deepseek-v4.1-flash high 已生效；修复历史 header effort 粘滞（改档/清档不生效）、`default` 清键被 settings deep-merge 保留（重启回魂）、持久化失败仍谎报成功；档位改为宿主能力驱动且不再放过 `max`；`/status` 分列偏好与最近请求实测；本地安装器补齐 dsh 同款模型切换 notice |
+| 0.17.0 | 2026-11-22 | **R59 SHE init 生命周期与结果回收**：init 确定性命名且单 scope 一次，`init update/reset` 管理 shadow 基线；`return` 生成 she_returns 结果包（report/patch/changed/new/outputs/manifest），`accept` apply+stage 不 commit；407/407 |
 | 0.16.2 | 2026-11-22 | **R58-a `/she` 帮助体系**：`/she help <命令>` 与 `/<命令> --help|-h|help` 在动作解析前拦截，修复 `/she init help` 误建 `repos/help`；补 10 个子命令中英帮助与 submit 提示词模板；402/402 |
 | 0.16.1 | 2026-11-22 | **R58 SHE 一键初始化**：`/she init` 创建 shadow repo/runtime/ACL 与 0600 bootstrap 状态文件，当前进程即时启动；重启自动恢复；`/she doctor` 诊断来源/health/路径/scope 映射；SHE 仍不管理容器或 provider 凭据 |
 | 0.16.0 | 2026-11-19 | **R56 SHE 秘书子模块**：默认关闭的 `/she` 任务入口，把用户原文按固定信封转交本机 OpenCode；Topic/Task + SQLite + 串行队列/watcher + 独立 worktree + session 复用 + 报告回传 + 重启恢复；G1 真机验证 Basic 鉴权、异步 prompt、多轮 session、message/diff 与报告落盘；permission 负例验证并修正 shell action 名称，同时确认 external_directory 不约束 shell、强写隔离需 OS 沙箱 |

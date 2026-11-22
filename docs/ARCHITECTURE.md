@@ -63,7 +63,7 @@
 | `src/card-menu.ts` | 交互菜单纯逻辑：菜单注册表（每 scope×kind 一张活卡/TTL）、分页、四类选择卡构建（R32） | Hermes 交互卡片 |
 | `src/host.ts` | dsh 宿主服务的窄契约（唯一适配面） | —（dsh 特有） |
 | `src/runtime.ts` | Cordis `apply`：bootstrap、settings、端口装配、拆卸 | —（dsh 特有） |
-| `src/secretary/` | 可选 SHE 子模块：确定性 `/she` 命令、`/she init` 初始化控制器、0600 bootstrap 状态、Topic/Task 状态机、SQLite、串行队列/watcher、OpenCode adapter、worktree、报告校验；不依赖飞书 SDK/dsh 类型 | 秘书转发层 |
+| `src/secretary/` | 可选 SHE 子模块：确定性 `/she` 命令、`/she init update/reset` 生命周期、0600 bootstrap 状态、Topic/Task 状态机、SQLite、串行队列/watcher、OpenCode adapter、worktree、报告校验、`return/accept` 结果回收；不依赖飞书 SDK/dsh 类型 | 秘书转发层 |
 
 ## 4. 能力映射：Hermes 飞书适配器 → 本插件
 

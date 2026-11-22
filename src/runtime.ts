@@ -212,8 +212,12 @@ export function apply(ctx: Context, config: Config): void {
           },
       ...(secretaryService === undefined ? {} : { secretary: secretaryService }),
       secretaryInit: input => secretaryRuntime.init(input),
+      secretaryInitUpdate: scopeKey => secretaryRuntime.update({ scopeKey }),
+      secretaryInitReset: scopeKey => secretaryRuntime.reset({ scopeKey }),
       secretaryDoctor: scopeKey => secretaryRuntime.doctor(scopeKey),
       secretaryWorkspaceFor: scopeKey => secretaryRuntime.workspaceFor(scopeKey),
+      secretaryReturn: input => secretaryRuntime.returnTask(input),
+      secretaryAccept: input => secretaryRuntime.acceptTask(input),
     }
     const disposeBridge = installBridge(host, resolved, port, authorization, internals.notify, hooks)
 

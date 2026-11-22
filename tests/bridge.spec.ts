@@ -6282,8 +6282,8 @@ describe('bridge: SHE secretary commands (R56)', () => {
       secretaryWorkspaceFor: () => shadow,
     })
 
-    await textMessage(port, '/she init demo')
-    expect(initInput).toMatchObject({ repoName: 'demo' })
+    await textMessage(port, '/she init')
+    expect(initInput).toMatchObject({ workspacePath: expect.any(String) })
     expect(port.sent.some(message => String(message.input.markdown ?? '').includes(shadow))).toBe(true)
 
     await textMessage(port, '/she submit 修复登录问题')
@@ -6302,7 +6302,7 @@ describe('bridge: SHE secretary commands (R56)', () => {
     await textMessage(port, '/she init help')
     expect(called).toBe(false)
     const text = String(port.sent.at(-1)?.input.markdown ?? '')
-    expect(text).toContain('/she init [仓库名]')
+    expect(text).toContain('/she init — 初始化当前话题')
     expect(text).toContain('仅审批人可用')
   })
 
@@ -6314,9 +6314,59 @@ describe('bridge: SHE secretary commands (R56)', () => {
         throw new Error('must not be called')
       },
     })
-    await textMessage(port, '/she init demo')
+    await textMessage(port, '/she init')
     expect(called).toBe(false)
     expect(port.sent.some(message => String(message.input.markdown ?? '').includes('无权使用 /she'))).toBe(true)
+  })
+
+  it('R58: /she init update and reset route to their runtime hooks', async () => {
+    const calls: string[] = []
+    const { port } = makeEnv({}, {
+      secretaryInitUpdate: async scopeKey => {
+        calls.push(`update:${scopeKey}`)
+        return { shadowRepo: '/shared/repo-shadow-repo', sourceRepo: '/src/repo', previousHead: 'a', head: 'b' }
+      },
+      secretaryInitReset: async scopeKey => {
+        calls.push(`reset:${scopeKey}`)
+        return { shadowRepo: '/shared/repo-shadow-repo', sourceRepo: '/src/repo' }
+      },
+    })
+    await textMessage(port, '/she init update')
+    await textMessage(port, '/she init reset')
+    expect(calls).toHaveLength(2)
+    expect(calls[0]).toMatch(/^update:/)
+    expect(calls[1]).toMatch(/^reset:/)
+    expect(port.sent.some(message => String(message.input.markdown ?? '').includes('HEAD：b'))).toBe(true)
+    expect(port.sent.some(message => String(message.input.markdown ?? '').includes('已清除当前 scope'))).toBe(true)
+  })
+
+  it('R59: /she return and accept route to runtime hooks with the project workspace', async () => {
+    const calls: unknown[] = []
+    const { workspace, port } = makeEnv({}, {
+      secretary: {} as SecretaryService,
+      secretaryReturn: async input => {
+        calls.push({ kind: 'return', input })
+        return {
+          taskId: 't1', display: '1.1', returnDir: join(workspace, 'she_returns', 't1'),
+          changedFiles: 1, newFiles: 2, outputs: 3,
+        }
+      },
+      secretaryAccept: async input => {
+        calls.push({ kind: 'accept', input })
+        return {
+          taskId: 't1', display: '1.1', returnDir: join(workspace, 'she_returns', 't1'),
+          appliedPatch: true, copiedNewFiles: 2, stagedPaths: ['a.ts', 'b.ts'],
+        }
+      },
+    })
+    await textMessage(port, '/she return 1.1')
+    await textMessage(port, '/she accept 1.1')
+    expect(calls).toEqual([
+      { kind: 'return', input: { scopeKey: expect.any(String), taskRef: '1.1', projectRoot: workspace } },
+      { kind: 'accept', input: { scopeKey: expect.any(String), taskRef: '1.1', projectRoot: workspace } },
+    ])
+    expect(port.sent.some(message => String(message.input.markdown ?? '').includes('results copied') || String(message.input.markdown ?? '').includes('结果已复制'))).toBe(true)
+    expect(port.sent.some(message => String(message.input.markdown ?? '').includes('已接受'))).toBe(true)
   })
 
   it('R58: /she doctor formats source, health, paths and scope mapping', async () => {

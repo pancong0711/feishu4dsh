@@ -15,7 +15,8 @@
 import { execFile } from 'node:child_process'
 import { availableParallelism, homedir, userInfo } from 'node:os'
 import { access, chmod, mkdir, readFile, realpath, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { ResolvedConfig } from '../config.js'
 import { sanitizeFileName } from '../util.js'
@@ -23,6 +24,8 @@ import { OpenCodeClient, OpenCodeExecutor } from './opencode.js'
 import { GitWorktreeAllocator } from './worktree.js'
 import { SecretaryService } from './service.js'
 import { SHE_PERMISSION_RULES } from './permissions.js'
+import { acceptTaskReturn, buildTaskReturn, SecretaryReturnError, type TaskAcceptResult, type TaskReturnResult } from './returns.js'
+import type { SecretaryTask, SecretaryTopic } from './types.js'
 import {
   bootstrapWorkspaceOf,
   readBootstrapState,
@@ -39,8 +42,18 @@ export interface SecretaryRuntimeInitInput {
   readonly scopeKey: string
   /** Existing git workspace selected in the chat; cloned as committed HEAD. */
   readonly workspacePath: string
-  /** Optional safe single-segment shadow repo name; defaults to source basename. */
-  readonly repoName?: string
+}
+
+export interface SecretaryRuntimeUpdateResult {
+  readonly shadowRepo: string
+  readonly sourceRepo: string
+  readonly previousHead: string
+  readonly head: string
+}
+
+export interface SecretaryRuntimeResetResult {
+  readonly shadowRepo: string
+  readonly sourceRepo: string
 }
 
 export interface SecretaryRuntimeInitResult {
@@ -196,10 +209,36 @@ async function ensureGitRepo(path: string): Promise<string> {
   return stdout.trim()
 }
 
+async function shadowOriginPath(shadowRepo: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', shadowRepo, 'remote', 'get-url', 'origin'], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      maxBuffer: 1024 * 1024,
+    })
+    const origin = stdout.trim()
+    if (origin.startsWith('file://')) return fileURLToPath(origin)
+    return origin
+  } catch {
+    return ''
+  }
+}
+
+async function shadowMatchesSource(shadowRepo: string, sourceRepo: string): Promise<boolean> {
+  try {
+    const [origin, source] = await Promise.all([shadowOriginPath(shadowRepo), realpath(sourceRepo)])
+    return origin !== '' && await realpath(origin).then(path => path === source).catch(() => false)
+  } catch {
+    return false
+  }
+}
+
 async function cloneShadowRepo(sourceRepo: string, shadowRepo: string): Promise<void> {
   if (await pathExists(shadowRepo)) {
     const root = await ensureGitRepo(shadowRepo)
     if (root !== (await realpath(shadowRepo))) throw new Error(`shadow path exists but is not its own git root: ${shadowRepo}`)
+    if (!(await shadowMatchesSource(shadowRepo, sourceRepo))) {
+      throw new Error(`shadow repo name collision: ${shadowRepo} belongs to a different source repo`)
+    }
     return
   }
   await mkdir(dirname(shadowRepo), { recursive: true, mode: 0o2770 })
@@ -207,6 +246,14 @@ async function cloneShadowRepo(sourceRepo: string, shadowRepo: string): Promise<
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
     maxBuffer: 8 * 1024 * 1024,
   })
+}
+
+async function gitHead(path: string): Promise<string> {
+  const { stdout } = await execFileAsync('git', ['-C', path, 'rev-parse', 'HEAD'], {
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    maxBuffer: 1024 * 1024,
+  })
+  return stdout.trim()
 }
 
 function defaultState(config: ResolvedConfig, now: number): SecretaryBootstrapState {
@@ -318,6 +365,10 @@ export class SecretaryRuntime {
     const now = Date.now()
     let state = this.bootstrap ?? await readBootstrapState(this.stateFile)
     if (state === undefined) state = defaultState(this.config, now)
+    const existing = state.scopes[input.scopeKey]
+    if (existing !== undefined) {
+      throw new Error(`current scope is already initialized: shadow=${existing.shadowRepo}; use /she init update or /she init reset`)
+    }
 
     const credential = await readPasswordJson(state.opencode.passwordFile, this.report)
     const health = await (this.deps.probeOpenCode ?? probeOpenCode)(state.opencode.url, state.opencode.username, credential)
@@ -330,7 +381,7 @@ export class SecretaryRuntime {
     } catch {
       throw new Error(`SHE init requires a git workspace; current path is not a git repository: ${sourceRepo}`)
     }
-    const repoName = sanitizeFileName(input.repoName ?? sourceRoot.split('/').filter(Boolean).at(-1) ?? 'project', 'project')
+    const repoName = `${sanitizeFileName(basename(sourceRoot), 'project')}-shadow-repo`
     const shadowRepo = join(state.runtime.reposRoot, repoName)
 
     await mkdir(state.runtime.root, { recursive: true, mode: 0o2770 })
@@ -372,6 +423,75 @@ export class SecretaryRuntime {
       worktreeRoot: next.runtime.worktreeRoot,
       healthVersion: health.version ?? 'unknown',
     }
+  }
+
+  /** Fast-forward the current scope's shadow repo from its committed source HEAD. */
+  async update(input: { readonly scopeKey: string }): Promise<SecretaryRuntimeUpdateResult> {
+    if (this.service === undefined) throw new Error('SHE service is not active; run /she init first')
+    const state = this.bootstrap ?? await readBootstrapState(this.stateFile)
+    const scope = state?.scopes[input.scopeKey]
+    if (state === undefined || scope === undefined) throw new Error('current scope is not initialized; run /she init first')
+    if (this.service.storeView().hasUnfinishedTasks(input.scopeKey)) {
+      throw new Error('cannot update shadow repo while queued or running tasks exist')
+    }
+    if (!(await shadowMatchesSource(scope.shadowRepo, scope.sourceRepo))) {
+      throw new Error(`shadow repo origin does not match source: ${scope.shadowRepo}`)
+    }
+    const dirty = await execFileAsync('git', ['-C', scope.shadowRepo, 'status', '--porcelain'], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      maxBuffer: 8 * 1024 * 1024,
+    })
+    if (dirty.stdout.trim() !== '') throw new Error('shadow repo has a dirty working tree; refusing update')
+    const previousHead = await gitHead(scope.shadowRepo)
+    await execFileAsync('git', ['-C', scope.shadowRepo, 'fetch', '--prune', 'origin'], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      maxBuffer: 16 * 1024 * 1024,
+    })
+    await execFileAsync('git', ['-C', scope.shadowRepo, 'merge', '--ff-only', '@{u}'], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      maxBuffer: 16 * 1024 * 1024,
+    })
+    const head = await gitHead(scope.shadowRepo)
+    const next = { ...state, updatedAt: Date.now() }
+    await writeBootstrapState(this.stateFile, next)
+    this.bootstrap = next
+    return { shadowRepo: scope.shadowRepo, sourceRepo: scope.sourceRepo, previousHead, head }
+  }
+
+  /** Forget one scope→shadow mapping; the repo directory is intentionally retained. */
+  async reset(input: { readonly scopeKey: string }): Promise<SecretaryRuntimeResetResult> {
+    const state = this.bootstrap ?? await readBootstrapState(this.stateFile)
+    const scope = state?.scopes[input.scopeKey]
+    if (state === undefined || scope === undefined) throw new Error('current scope is not initialized')
+    const scopes = { ...state.scopes }
+    delete scopes[input.scopeKey]
+    const next = { ...state, scopes, updatedAt: Date.now() }
+    await writeBootstrapState(this.stateFile, next)
+    this.bootstrap = next
+    const service = this.service
+    this.service = undefined
+    this.source = 'none'
+    await service?.dispose().catch(() => undefined)
+    return { shadowRepo: scope.shadowRepo, sourceRepo: scope.sourceRepo }
+  }
+
+  private resolveTask(scopeKey: string, reference: string): { topic: SecretaryTopic; task: SecretaryTask } {
+    if (this.service === undefined) throw new SecretaryReturnError('not_found', 'SHE service is not active')
+    const found = this.service.storeView().resolveReference(scopeKey, reference)
+    if (found?.task === undefined) throw new SecretaryReturnError('not_found', `task not found: ${reference}`)
+    return { topic: found.topic, task: found.task }
+  }
+
+  /** Copy one task's report/patch/outputs into the project return directory. */
+  async returnTask(input: { readonly scopeKey: string; readonly taskRef: string; readonly projectRoot: string }): Promise<TaskReturnResult> {
+    const found = this.resolveTask(input.scopeKey, input.taskRef)
+    return buildTaskReturn({ projectRoot: input.projectRoot, topic: found.topic, task: found.task })
+  }
+
+  /** Apply a previously returned bundle to the project working tree and stage affected paths. */
+  async acceptTask(input: { readonly scopeKey: string; readonly taskRef: string; readonly projectRoot: string }): Promise<TaskAcceptResult> {
+    const found = this.resolveTask(input.scopeKey, input.taskRef)
+    return acceptTaskReturn({ projectRoot: input.projectRoot, taskId: found.task.id })
   }
 
   /** Read-only diagnostics for `/she doctor`. */

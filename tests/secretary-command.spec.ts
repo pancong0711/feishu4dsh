@@ -15,11 +15,16 @@ describe('secretary command parser', () => {
     expect(parseSheCommand('submit')).toEqual({ kind: 'invalid', reason: 'submit_usage' })
   })
 
-  it('parses init/doctor and rejects malformed init arguments', () => {
+  it('parses init lifecycle, doctor, return and accept', () => {
     expect(parseSheCommand('init')).toEqual({ kind: 'init' })
-    expect(parseSheCommand('init demo')).toEqual({ kind: 'init', repoName: 'demo' })
-    expect(parseSheCommand('init demo extra')).toEqual({ kind: 'invalid', reason: 'init_usage' })
+    expect(parseSheCommand('init update')).toEqual({ kind: 'init_update' })
+    expect(parseSheCommand('init reset')).toEqual({ kind: 'init_reset' })
+    expect(parseSheCommand('init demo')).toEqual({ kind: 'invalid', reason: 'init_usage' })
     expect(parseSheCommand('doctor')).toEqual({ kind: 'doctor' })
+    expect(parseSheCommand('return 1.2')).toEqual({ kind: 'return', reference: '1.2' })
+    expect(parseSheCommand('accept 1.2')).toEqual({ kind: 'accept', reference: '1.2' })
+    expect(parseSheCommand('return')).toEqual({ kind: 'invalid', reason: 'return_usage' })
+    expect(parseSheCommand('accept')).toEqual({ kind: 'invalid', reason: 'accept_usage' })
   })
 
   it('reserves help forms before action parsing', () => {
