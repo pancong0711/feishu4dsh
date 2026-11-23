@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.3 (2026-11-23)
+
+**R63-b：sandbox 安装包回到原话题/线程**
+
+- 真机 journal 确认向导四步全部成功，安装包在 20:14:21 已生成；问题出在最终确认卡后的现场文本、群聊文件审批卡与文件发送没有携带线程锚。
+- 最终 build 现在把 `event.messageId` 作为 `replyTo` 传入 `buildAndSendSandboxPackage`，包完成文本、审批卡和最终文件均回复在向导所在线程/话题。
+- 增加 package delivery 日志：生成名称、chatId、chatType、是否 anchored，便于真机定位。
+- 回归测试固化 p2p 文件发送的 `{replyTo, replyInThread}` 锚点；全量 419/419。
+
 ## 0.19.2 (2026-11-23)
 
 **R63-a：`/she sandbox` 改为逐步新卡片**

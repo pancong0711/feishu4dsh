@@ -6654,6 +6654,8 @@ describe('bridge: SHE secretary commands (R56)', () => {
       agent: { id: 'opencode' },
       tools: ['core', 'node'],
     })
-    expect(port.sent.some(message => 'file' in message.input)).toBe(true)
+    const packageFile = [...port.sent].reverse().find(message => 'file' in message.input)
+    expect(packageFile).toBeDefined()
+    expect(packageFile?.options).toEqual({ replyTo: 'om_sandbox', replyInThread: true })
   })
 })

@@ -3177,6 +3177,7 @@ async function buildAndSendSandboxPackage(
     return
   }
   const result = await build({ spec, preflight })
+  env.report(`feishu4dsh: sandbox package generated name=${result.sandboxName} anchored=${replyTo !== undefined}`)
   await safeSend(env, binding.chatId, state.copy.sheSandboxPackageDone(result.sandboxName, result.archivePath), replyTo)
   await sendShePackageFile(env, state, binding, replyTo, result.archiveBytes, result.archiveName)
 }
@@ -3273,7 +3274,7 @@ async function handleSandboxMenuAction(
       await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('confirm'), state.copy.sheSandboxPackageDone(wizard.name, '…'))
       try {
         const spec = sandboxSpecFromWizard(wizard, preflight)
-        await buildAndSendSandboxPackage(env, state, binding, preflight, spec)
+        await buildAndSendSandboxPackage(env, state, binding, preflight, spec, event.messageId)
       } catch (error) {
         await safeSend(env, event.chatId, state.copy.sheError('sandbox_build_failed', describeError(error)))
       }
@@ -5535,6 +5536,7 @@ async function sendSecretaryReportFile(
   fileName: string,
 ): Promise<void> {
   const options = anchorOptions(replyTo)
+  env.report(`feishu4dsh: SHE package delivery chat=${binding.chatId} kind=${binding.chatType} anchored=${replyTo !== undefined}`)
   if (binding.chatType === 'p2p') {
     await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
     return
@@ -5582,6 +5584,7 @@ async function sendShePackageFile(
   fileName: string,
 ): Promise<void> {
   const options = anchorOptions(replyTo)
+  env.report(`feishu4dsh: SHE package delivery chat=${binding.chatId} kind=${binding.chatType} anchored=${replyTo !== undefined}`)
   if (binding.chatType === 'p2p') {
     await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
     return
