@@ -3179,7 +3179,12 @@ async function buildAndSendSandboxPackage(
   const result = await build({ spec, preflight })
   env.report(`feishu4dsh: sandbox package generated name=${result.sandboxName} anchored=${replyTo !== undefined}`)
   await safeSend(env, binding.chatId, state.copy.sheSandboxPackageDone(result.sandboxName, result.archivePath), replyTo)
-  await sendShePackageFile(env, state, binding, replyTo, result.archiveBytes, result.archiveName)
+  const delivered = await sendShePackageFile(env, state, binding, replyTo, result.archiveBytes, result.archiveName)
+  if (delivered) {
+    await safeSend(env, binding.chatId,
+      state.copy.sheSandboxUsageGuide(result.sandboxName, spec.target.requiresRootBootstrap, spec.target.user),
+      replyTo)
+  }
 }
 
 /**
@@ -5582,12 +5587,12 @@ async function sendShePackageFile(
   replyTo: string | undefined,
   bytes: Buffer,
   fileName: string,
-): Promise<void> {
+): Promise<boolean> {
   const options = anchorOptions(replyTo)
   env.report(`feishu4dsh: SHE package delivery chat=${binding.chatId} kind=${binding.chatType} anchored=${replyTo !== undefined}`)
   if (binding.chatType === 'p2p') {
     await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
-    return
+    return true
   }
   const token = randomUUID()
   const cardObject = approvalCard({
@@ -5611,9 +5616,10 @@ async function sendShePackageFile(
     })
     if (decision !== 'approve') {
       await safeSend(env, binding.chatId, state.copy.sheError('package_denied', 'group approval denied'), replyTo)
-      return
+      return false
     }
     await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
+    return true
   } finally {
     if (!hadMapping) state.sessionScopes.delete(syntheticSession)
   }

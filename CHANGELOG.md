@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.4 (2026-11-23)
+
+**R63-c：安装包发送后补操作说明**
+
+- 安装包成功送达后，在同一话题/线程追加操作指南：解压、`host-preflight.sh`、CHECKSUMS、`create-sandbox.sh`、`verify-sandbox.sh`、`destroy-sandbox.sh`。
+- 专用账户模式额外提示 `bootstrap-host.sh --dry-run`、正式执行与切换目标用户。
+- 指南只在文件真正送达后发送；群聊审批被拒绝时不发送。
+- 指南继续使用同一 `replyTo` 线程锚，避免操作说明落到聊天根。
+- 回归测试覆盖文件锚点与操作指南；全量 419/419。
+
 ## 0.19.3 (2026-11-23)
 
 **R63-b：sandbox 安装包回到原话题/线程**

@@ -345,6 +345,7 @@ export interface Strings {
   sheSandboxTargetWarning: string
   sheSandboxCardUpdateFailed: string
   sheSandboxPackageDone: (name: string, archivePath: string) => string
+  sheSandboxUsageGuide: (name: string, requiresRootBootstrap: boolean, targetUser: string) => string
   sheSandboxUnavailable: string
   sheNeedAliasHint: string
   sheNeedPackageDeprecated: string
@@ -799,6 +800,30 @@ const zhCN: Strings = {
   sheSandboxTargetWarning: '当前用户 Docker 预检未完全通过；仍可生成安装包，但请在目标用户侧执行 host-preflight.sh 复核。',
   sheSandboxCardUpdateFailed: '卡片状态更新失败。当前步骤已切换，但飞书卡片可能未刷新；请重新发送 /she sandbox，或查看服务日志。',
   sheSandboxPackageDone: (name, archivePath) => `已生成 sandbox 安装包：${name}\n归档：${archivePath}`,
+  sheSandboxUsageGuide: (name, requiresRootBootstrap, targetUser) => {
+    const steps = [
+      '下载并解压 tar.gz，进入解压目录，执行 chmod +x *.sh',
+      './host-preflight.sh',
+      'sha256sum -c CHECKSUMS',
+      ...(requiresRootBootstrap
+        ? [
+            'sudo ./bootstrap-host.sh --dry-run',
+            'sudo ./bootstrap-host.sh',
+            `切换到目标用户 ${targetUser}，在包目录执行 ./create-sandbox.sh`,
+          ]
+        : ['./create-sandbox.sh']),
+      './verify-sandbox.sh，确认输出 SANDBOX_VERIFY_OK',
+      '不再需要时执行 ./destroy-sandbox.sh；数据默认保留，--purge 才删除',
+    ]
+    return [
+      `安装包 ${name} 已发送，但尚未创建容器。`,
+      '',
+      '操作步骤：',
+      ...steps.map((step, index) => `${index + 1}. ${step}`),
+      '',
+      '注意：SHE 不会自动执行 sudo、Docker 创建或容器操作，请先审查 plan.json、Dockerfile 与脚本。',
+    ].join('\n')
+  },
   sheSandboxUnavailable: '当前运行环境不支持 build-sandbox（未装配 sandbox hook）。',
   sheNeedAliasHint: '兼容入口：/she need 已并入 /she sandbox status；后续请优先使用 /she sandbox。',
   sheNeedPackageDeprecated: '/she need package 已并入 /she sandbox；本次按默认 OpenCode 方案继续生成。后续请使用 /she sandbox build。',
@@ -1086,6 +1111,30 @@ const enUS: Strings = {
   sheSandboxTargetWarning: 'Current-user Docker preflight was not fully successful; package generation can continue, but run host-preflight.sh as the target user before creating the sandbox.',
   sheSandboxCardUpdateFailed: 'Could not refresh the card. The wizard state advanced, but the Feishu card may be stale; send /she sandbox again or inspect service logs.',
   sheSandboxPackageDone: (name, archivePath) => `Generated sandbox package: ${name}\nArchive: ${archivePath}`,
+  sheSandboxUsageGuide: (name, requiresRootBootstrap, targetUser) => {
+    const steps = [
+      'Download and extract the tar.gz, then chmod +x *.sh',
+      './host-preflight.sh',
+      'sha256sum -c CHECKSUMS',
+      ...(requiresRootBootstrap
+        ? [
+            'sudo ./bootstrap-host.sh --dry-run',
+            'sudo ./bootstrap-host.sh',
+            `Switch to target user ${targetUser} and run ./create-sandbox.sh from the package directory`,
+          ]
+        : ['./create-sandbox.sh']),
+      './verify-sandbox.sh and confirm SANDBOX_VERIFY_OK',
+      'When done, run ./destroy-sandbox.sh; data is retained unless --purge is passed',
+    ]
+    return [
+      `Package ${name} has been sent, but no container has been created yet.`,
+      '',
+      'Next steps:',
+      ...steps.map((step, index) => `${index + 1}. ${step}`),
+      '',
+      'SHE never runs sudo, container creation, or Docker lifecycle actions automatically. Review plan.json, Dockerfile and scripts first.',
+    ].join('\n')
+  },
   sheSandboxUnavailable: 'This runtime does not provide the build-sandbox hook.',
   sheNeedAliasHint: 'Compatibility: /she need now maps to /she sandbox status; prefer /she sandbox.',
   sheNeedPackageDeprecated: '/she need package is merged into /she sandbox; generating the default OpenCode package now. Prefer /she sandbox build.',
