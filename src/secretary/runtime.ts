@@ -25,6 +25,7 @@ import { GitWorktreeAllocator } from './worktree.js'
 import { SecretaryService } from './service.js'
 import { SHE_PERMISSION_RULES } from './permissions.js'
 import { acceptTaskReturn, buildTaskReturn, SecretaryReturnError, type TaskAcceptResult, type TaskReturnResult } from './returns.js'
+import { buildSheNeedPackage, inspectSheNeed, readSandboxDescriptor, type SandboxDescriptor, type SheNeedPackageResult, type SheNeedReport } from './need.js'
 import type { SecretaryTask, SecretaryTopic } from './types.js'
 import {
   bootstrapWorkspaceOf,
@@ -256,6 +257,18 @@ async function gitHead(path: string): Promise<string> {
   return stdout.trim()
 }
 
+function stateFromDescriptor(config: ResolvedConfig, descriptor: SandboxDescriptor, now: number): SecretaryBootstrapState {
+  return {
+    schema: 1,
+    initializedAt: now,
+    updatedAt: now,
+    runtime: descriptor.runtime,
+    opencode: descriptor.service,
+    model: descriptor.model,
+    scopes: {},
+  }
+}
+
 function defaultState(config: ResolvedConfig, now: number): SecretaryBootstrapState {
   const sharedRoot = absolutePath(expandHome(config.secretarySandboxRoot))
   const runtimeRoot = join(sharedRoot, 'she-runtime')
@@ -364,7 +377,12 @@ export class SecretaryRuntime {
     if (this.disposed) throw new Error('secretary runtime is disposed')
     const now = Date.now()
     let state = this.bootstrap ?? await readBootstrapState(this.stateFile)
-    if (state === undefined) state = defaultState(this.config, now)
+    if (state === undefined) {
+      // Prefer the she-sandbox descriptor when present. Invalid descriptors are
+      // fail-closed; a missing descriptor falls back to local defaults.
+      const descriptor = await readSandboxDescriptor(resolve(this.config.secretarySandboxDescriptor))
+      state = descriptor === undefined ? defaultState(this.config, now) : stateFromDescriptor(this.config, descriptor, now)
+    }
     const existing = state.scopes[input.scopeKey]
     if (existing !== undefined) {
       throw new Error(`current scope is already initialized: shadow=${existing.shadowRepo}; use /she init update or /she init reset`)
@@ -423,6 +441,17 @@ export class SecretaryRuntime {
       worktreeRoot: next.runtime.worktreeRoot,
       healthVersion: health.version ?? 'unknown',
     }
+  }
+
+  /** Read-only `/she need` diagnosis; usable before SHE initialization. */
+  async needStatus(): Promise<SheNeedReport> {
+    return inspectSheNeed(this.config)
+  }
+
+  /** Generate a secret-free she-sandbox handoff package into the project. */
+  async needPackage(projectRoot: string): Promise<SheNeedPackageResult> {
+    const report = await inspectSheNeed(this.config)
+    return buildSheNeedPackage({ report, projectRoot })
   }
 
   /** Fast-forward the current scope's shadow repo from its committed source HEAD. */

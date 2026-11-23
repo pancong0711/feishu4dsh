@@ -121,6 +121,10 @@ export interface Config {
   secretaryBootstrapFile?: string
   /** Default shared sandbox root used by `/she init`. */
   secretarySandboxRoot?: string
+  /** Dedicated OS user owned by the sandbox implementation (default opencode-she). */
+  secretarySandboxUser?: string
+  /** JSON descriptor written by she-sandbox and consumed by `/she need verify` / `/she init`. */
+  secretarySandboxDescriptor?: string
   /** OpenCode endpoint used by `/she init` (loopback only). */
   secretarySandboxOpencodeUrl?: string
   /** JSON `{password}` file used by `/she init` to probe the sandbox endpoint. */
@@ -197,6 +201,8 @@ export const Config = Schema.object({
   secretaryAutoRestore: Schema.boolean().default(true),
   secretaryBootstrapFile: Schema.string().default('~/.local/state/feishu4dsh/she-bootstrap.json'),
   secretarySandboxRoot: Schema.string().default('/srv/opencode-she/worktrees'),
+  secretarySandboxUser: Schema.string().default('opencode-she'),
+  secretarySandboxDescriptor: Schema.string().default('/srv/opencode-she/worktrees/.she/sandbox.json'),
   secretarySandboxOpencodeUrl: Schema.string().default('http://127.0.0.1:49375'),
   secretarySandboxPasswordFile: Schema.string().default('/srv/opencode-she/secrets/opencode-service.json'),
   secretaryRoot: Schema.string().default('.feishu4dsh/secretary'),
@@ -315,6 +321,9 @@ export function resolveConfig(config: Config): Required<Config> {
       || '~/.local/state/feishu4dsh/she-bootstrap.json',
     secretarySandboxRoot: (config.secretarySandboxRoot ?? '/srv/opencode-she/worktrees').trim()
       || '/srv/opencode-she/worktrees',
+    secretarySandboxUser: (config.secretarySandboxUser ?? 'opencode-she').trim() || 'opencode-she',
+    secretarySandboxDescriptor: (config.secretarySandboxDescriptor ?? '/srv/opencode-she/worktrees/.she/sandbox.json').trim()
+      || '/srv/opencode-she/worktrees/.she/sandbox.json',
     secretarySandboxOpencodeUrl: (config.secretarySandboxOpencodeUrl ?? 'http://127.0.0.1:49375').trim()
       || 'http://127.0.0.1:49375',
     secretarySandboxPasswordFile: (config.secretarySandboxPasswordFile ?? '/srv/opencode-she/secrets/opencode-service.json').trim()

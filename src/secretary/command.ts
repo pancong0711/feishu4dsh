@@ -14,6 +14,8 @@ export type SheCommand =
   | { readonly kind: 'init_reset' }
   /** Read-only SHE/OpenCode/runtime diagnostics. */
   | { readonly kind: 'doctor' }
+  /** Sandbox prerequisite check / package generation / verification. */
+  | { readonly kind: 'need'; readonly action: 'status' | 'package' | 'verify' }
   /** Copy one task's report/patch/outputs into `<project>/she_returns/<task-id>/`. */
   | { readonly kind: 'return'; readonly reference: string }
   /** Apply a returned task bundle to the project working tree and stage affected paths. */
@@ -39,6 +41,7 @@ function helpTopicOf(raw: string): string {
   if (value === 'topic remove' || value === 'remove') return 'remove'
   if (value === 'init update' || value === 'update') return 'update'
   if (value === 'init reset' || value === 'reset') return 'reset'
+  if (value === 'need package' || value === 'need verify') return 'need'
   return value
 }
 
@@ -68,6 +71,10 @@ export function parseSheCommand(text: string): SheCommand {
   if (line === 'init reset') return { kind: 'init_reset' }
   if (line.startsWith('init ')) return { kind: 'invalid', reason: 'init_usage' }
   if (line === 'doctor') return { kind: 'doctor' }
+  if (line === 'need') return { kind: 'need', action: 'status' }
+  if (line === 'need package') return { kind: 'need', action: 'package' }
+  if (line === 'need verify') return { kind: 'need', action: 'verify' }
+  if (line.startsWith('need ')) return { kind: 'invalid', reason: 'need_usage' }
   if (line === 'return') return { kind: 'invalid', reason: 'return_usage' }
   if (line.startsWith('return ')) {
     const ref = line.slice(7).trim()

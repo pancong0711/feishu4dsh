@@ -1,5 +1,5 @@
 /**
- * Task return/accept: move OpenCode worktree results back into the bot2603
+ * Task return/accept: move OpenCode worktree results back into the channel-side
  * project as an inspectable bundle, then optionally apply that bundle to the
  * project working tree.
  *

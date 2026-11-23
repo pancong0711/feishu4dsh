@@ -109,6 +109,8 @@ dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操�
 | `secretaryAutoRestore` | `true` | 未手工启用时从状态文件自动恢复 |
 | `secretaryBootstrapFile` | `~/.local/state/feishu4dsh/she-bootstrap.json` | `/she init` 状态文件（无密钥） |
 | `secretarySandboxRoot` | `/srv/opencode-she/worktrees` | `/she init` 共享根 |
+| `secretarySandboxUser` | `opencode-she` | 专用沙箱用户（`/she need` 检测与安装包模板使用） |
+| `secretarySandboxDescriptor` | `/srv/opencode-she/worktrees/.she/sandbox.json` | she-sandbox 发布的服务/运行时 descriptor |
 | `secretarySandboxOpencodeUrl` | `http://127.0.0.1:49375` | `/she init` 探测的 loopback OpenCode |
 | `secretarySandboxPasswordFile` | `/srv/opencode-she/secrets/opencode-service.json` | HttpApi 密码 JSON |
 | `secretaryRoot` | `.feishu4dsh/secretary` | 状态根：SQLite 与 worktrees；需可写且 OpenCode 可解析 |

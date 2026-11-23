@@ -218,6 +218,8 @@ export function apply(ctx: Context, config: Config): void {
       secretaryWorkspaceFor: scopeKey => secretaryRuntime.workspaceFor(scopeKey),
       secretaryReturn: input => secretaryRuntime.returnTask(input),
       secretaryAccept: input => secretaryRuntime.acceptTask(input),
+      secretaryNeed: () => secretaryRuntime.needStatus(),
+      secretaryNeedPackage: projectRoot => secretaryRuntime.needPackage(projectRoot),
     }
     const disposeBridge = installBridge(host, resolved, port, authorization, internals.notify, hooks)
 

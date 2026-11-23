@@ -29,6 +29,8 @@ describe('resolveConfig', () => {
     expect(resolved.secretaryAutoRestore).toBe(true)
     expect(resolved.secretaryBootstrapFile).toBe('~/.local/state/feishu4dsh/she-bootstrap.json')
     expect(resolved.secretarySandboxRoot).toBe('/srv/opencode-she/worktrees')
+    expect(resolved.secretarySandboxUser).toBe('opencode-she')
+    expect(resolved.secretarySandboxDescriptor).toBe('/srv/opencode-she/worktrees/.she/sandbox.json')
     expect(resolved.secretarySandboxOpencodeUrl).toBe('http://127.0.0.1:49375')
     expect(resolved.secretarySandboxPasswordFile).toBe('/srv/opencode-she/secrets/opencode-service.json')
 

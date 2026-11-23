@@ -321,6 +321,11 @@ export interface Strings {
   sheDisabled: string
   sheNoPermission: string
   sheInitUnavailable: string
+  sheNeedTitle: string
+  sheNeedItem: (status: string, label: string, detail: string) => string
+  sheNeedReady: string
+  sheNeedNext: string
+  sheNeedPackageDone: (fileName: string, archivePath: string) => string
   sheInitOk: (shadowRepo: string, runtimeRoot: string, version: string) => string
   sheInitUpdateOk: (shadowRepo: string, head: string) => string
   sheInitResetOk: (shadowRepo: string) => string
@@ -380,9 +385,15 @@ function sheHelpZh(topic: string): string {
     ].join('\n'),
     reset: [
       '/she init reset — 清除当前 scope 的 shadow repo 映射',
+    '/she need [package|verify] — 检查/打包/验证 she-sandbox 执行面',
       '',
       '只删除状态文件中的 scope 映射，不删除 shadow repo 目录；',
       '用于误初始化后重新 /she init，或切换到其他源仓库。',
+    ].join('\n'),
+    need: [
+      '/she need — 检查 she-sandbox 前置条件与缺口',
+      '/she need package — 生成可转交的 she-sandbox 安装包（不含密钥）',
+      '/she need verify — 验证 descriptor/OpenCode/runtime 是否就绪',
     ].join('\n'),
     doctor: [
       '/she doctor — 查看 SHE 诊断信息',
@@ -438,6 +449,7 @@ function sheHelpEn(topic: string): string {
     ].join('\n'),
     update: '/she init update — fast-forward the current scope shadow repo from committed source HEAD; refuses with unfinished tasks, dirty shadow tree or non-FF updates.',
     reset: '/she init reset — forget the current scope→shadow mapping without deleting files; use before re-initializing or switching projects.',
+    need: '/she need — inspect she-sandbox prerequisites. /she need package — emit a secret-free handoff bundle. /she need verify — validate descriptor/OpenCode/runtime readiness.',
     doctor: '/she doctor — show source, state file, OpenCode health, runtime paths and current-scope shadow repo (admins only).',
     submit: [
       '/she submit <request> — create a Topic and enqueue a task',
@@ -710,6 +722,7 @@ const zhCN: Strings = {
     '/she init — 初始化共享 shadow repo、SHE runtime 与状态文件',
     '/she init update — 更新当前 scope 的 shadow repo',
     '/she init reset — 清除当前 scope 的 shadow repo 映射',
+    '/she need [package|verify] — 检查/打包/验证 she-sandbox 执行面',
     '/she doctor — 查看 SHE/OpenCode/共享目录诊断',
     '/she submit <原文> — 新建 Topic 并提交任务',
     '/she continue <Topic> <原文> — 在同一 Topic 追加串行任务',
@@ -726,6 +739,11 @@ const zhCN: Strings = {
   sheHelpTopic: sheHelpZh,
   sheDisabled: '秘书功能未启用：管理员发送 /she init 完成初始化，或在插件配置中设置 secretaryEnabled: true。',
   sheInitUnavailable: '当前运行环境不支持 /she init（未安装 R58 初始化控制器）。',
+  sheNeedTitle: 'SHE sandbox 就绪检查',
+  sheNeedItem: (status, label, detail) => `${status} ${label}：${detail}`,
+  sheNeedReady: 'she-sandbox 已就绪。下一步可执行 /she init。',
+  sheNeedNext: '存在缺失项：请执行 /she need package，把安装包交给宿主管理员/opencode-she 运维。',
+  sheNeedPackageDone: (fileName, archivePath) => `已生成 she-sandbox 交付包：${fileName}\n归档：${archivePath}`,
   sheInitOk: (shadowRepo, runtimeRoot, version) => `SHE 初始化完成（OpenCode ${version}）。\nShadow repo：${shadowRepo}\nRuntime：${runtimeRoot}\n下一步直接 /she submit。`,
   sheInitUpdateOk: (shadowRepo, head) => `Shadow repo 已更新：${shadowRepo}\nHEAD：${head}`,
   sheInitResetOk: shadowRepo => `已清除当前 scope 的 shadow repo 映射（目录保留）：${shadowRepo}\n现在可以重新执行 /she init。`,
@@ -969,6 +987,7 @@ const enUS: Strings = {
     '/she init — initialize the shared shadow repo, SHE runtime and state file',
     '/she init update — update the current scope shadow repo',
     '/she init reset — forget the current scope shadow repo mapping',
+    '/she need [package|verify] — inspect/package/verify the she-sandbox execution plane',
     '/she doctor — inspect SHE/OpenCode/shared-directory diagnostics',
     '/she submit <request> — create a Topic and enqueue a task',
     '/she continue <Topic> <request> — append a serial task',
@@ -985,6 +1004,11 @@ const enUS: Strings = {
   sheHelpTopic: sheHelpEn,
   sheDisabled: 'Secretary is disabled: ask an admin to run /she init, or set secretaryEnabled: true in the plugin config.',
   sheInitUnavailable: 'This runtime does not provide the R58 /she init controller.',
+  sheNeedTitle: 'SHE sandbox readiness',
+  sheNeedItem: (status, label, detail) => `${status} ${label}: ${detail}`,
+  sheNeedReady: 'she-sandbox is ready. Next: /she init.',
+  sheNeedNext: 'Missing prerequisites: run /she need package and hand the bundle to the host admin / opencode-she operator.',
+  sheNeedPackageDone: (fileName, archivePath) => `Generated she-sandbox handoff package: ${fileName}\nArchive: ${archivePath}`,
   sheInitOk: (shadowRepo, runtimeRoot, version) => `SHE initialized (OpenCode ${version}).\nShadow repo: ${shadowRepo}\nRuntime: ${runtimeRoot}\nNext: use /she submit.`,
   sheInitUpdateOk: (shadowRepo, head) => `Shadow repo updated: ${shadowRepo}\nHEAD: ${head}`,
   sheInitResetOk: shadowRepo => `Cleared the current scope's shadow repo mapping (directory retained): ${shadowRepo}\nYou can run /she init again.`,

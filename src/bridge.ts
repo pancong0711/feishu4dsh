@@ -44,6 +44,7 @@ import { SecretaryServiceError, type SecretaryService } from './secretary/servic
 import type { SecretaryAttachmentInput } from './secretary/types.js'
 import type { SecretaryDoctorReport, SecretaryRuntimeInitInput, SecretaryRuntimeInitResult, SecretaryRuntimeResetResult, SecretaryRuntimeUpdateResult } from './secretary/runtime.js'
 import type { TaskAcceptResult, TaskReturnResult } from './secretary/returns.js'
+import type { SheNeedPackageResult, SheNeedReport } from './secretary/need.js'
 
 /* ------------------------------------------------------------------ */
 /* Host surface the bridge needs (structurally satisfied by cordis ctx) */
@@ -270,6 +271,10 @@ export interface BridgeHooks {
   secretaryReturn?: (input: { scopeKey: string; taskRef: string; projectRoot: string }) => Promise<TaskReturnResult>
   /** `/she accept`: apply a returned bundle to the project working tree and stage it. */
   secretaryAccept?: (input: { scopeKey: string; taskRef: string; projectRoot: string }) => Promise<TaskAcceptResult>
+  /** `/she need` / `need verify`: read-only sandbox readiness report. */
+  secretaryNeed?: () => Promise<SheNeedReport>
+  /** `/she need package`: generate a secret-free handoff bundle. */
+  secretaryNeedPackage?: (projectRoot: string) => Promise<SheNeedPackageResult>
 }
 
 /**
@@ -5233,6 +5238,50 @@ async function sendSecretaryReportFile(
   }
 }
 
+/** Send a generated she-sandbox package with the same outbound-file approval boundary as SHE reports. */
+async function sendShePackageFile(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  replyTo: string | undefined,
+  bytes: Buffer,
+  fileName: string,
+): Promise<void> {
+  const options = anchorOptions(replyTo)
+  if (binding.chatType === 'p2p') {
+    await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
+    return
+  }
+  const token = randomUUID()
+  const cardObject = approvalCard({
+    title: state.copy.sendFileApprovalTitle,
+    body: state.copy.sendFileApprovalDetail(fileName, 'SHE sandbox package', formatBytes(bytes.byteLength)),
+    approveLabel: state.copy.approveButton,
+    denyLabel: state.copy.denyButton,
+    payload: { kind: 'file-send' as const, token, decision: 'deny' as const, chatId: binding.chatId },
+  })
+  const sent = await env.port.send(binding.chatId, { card: cardObject }, options)
+  const syntheticSession = `she-need-${token}`
+  const hadMapping = state.sessionScopes.has(syntheticSession)
+  if (!hadMapping) state.sessionScopes.set(syntheticSession, binding.scopeKey)
+  try {
+    const decision = await waitForCardDecision(env, state, {
+      token,
+      kind: 'file-send',
+      chatId: binding.chatId,
+      sessionId: syntheticSession,
+      messageId: sent.messageId,
+    })
+    if (decision !== 'approve') {
+      await safeSend(env, binding.chatId, state.copy.sheError('package_denied', 'group approval denied'), replyTo)
+      return
+    }
+    await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
+  } finally {
+    if (!hadMapping) state.sessionScopes.delete(syntheticSession)
+  }
+}
+
 function secretaryFailure(copy: Strings, error: unknown): string {
   if (error instanceof SecretaryServiceError) return copy.sheError(error.code, error.message)
   return copy.sheError('internal', describeError(error))
@@ -5304,6 +5353,35 @@ async function cmdShe(
       const result = await reset(binding.scopeKey)
       env.hooks.secretary = undefined
       await safeSend(env, binding.chatId, copy.sheInitResetOk(result.shadowRepo), replyTo)
+      return
+    }
+    if (command.kind === 'need') {
+      if (!mayApprove(env.authorization, senderId, true)) {
+        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
+        return
+      }
+      if (command.action === 'package') {
+        const pack = env.hooks.secretaryNeedPackage
+        if (pack === undefined) {
+          await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
+          return
+        }
+        const result = await pack(binding.workspacePath)
+        await safeSend(env, binding.chatId, copy.sheNeedPackageDone(result.archiveName, result.archivePath), replyTo)
+        await sendShePackageFile(env, state, binding, replyTo, result.archiveBytes, result.archiveName)
+        return
+      }
+      const need = env.hooks.secretaryNeed
+      if (need === undefined) {
+        await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
+        return
+      }
+      const report = await need()
+      const icon = (status: string): string => status === 'ok' ? '✓' : status === 'missing' ? '✗' : status === 'blocked' ? '!' : '?'
+      const lines = [copy.sheNeedTitle]
+      for (const item of report.items) lines.push(copy.sheNeedItem(icon(item.status), item.label, item.detail))
+      lines.push(report.ready ? copy.sheNeedReady : copy.sheNeedNext)
+      await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
       return
     }
     if (command.kind === 'doctor') {

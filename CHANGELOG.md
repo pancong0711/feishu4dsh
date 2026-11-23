@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.18.0 (2026-11-22)
+
+**R60：`/she need` she-sandbox 执行面检测与无密钥交付包**
+
+- **`/she need`**：只读检查频道侧运行时用户（不硬编码）、opencode-she 用户、subuid/subgid、linger、shared root、descriptor、password 文件、OpenCode health 与 runtime/repos/worktree 目录；不执行 sudo/Docker。
+- **`/she need package`**：生成 `she_setup/she-sandbox-need-<id>.tar.gz`，包含 NEED.md、need.json、bootstrap-host.sh（宿主 root 一次性审查执行）、install-sandbox.sh（opencode-she 非 root）、verify.sh、Dockerfile、compose.yaml、CHECKSUMS；包内零密钥。
+- **`/she need verify`**：验证 descriptor（schema/loopback/绝对路径）、OpenCode `/api/info` 与 runtime 路径；通过与失败均 fail-closed。
+- **非硬编码**：频道侧用户从 `os.userInfo().username` / `id -un` 获取；安装包内 `CHANNEL_USER` 参数化。`opencode-she` 作为默认沙箱用户保留在配置中（可覆盖）。
+- **descriptor 接入**：`/she init` 在缺少 bootstrap 状态时优先读取 `secretarySandboxDescriptor`，从中获得 service/runtime/model；descriptor 损坏时 fail-closed。
+- **配置**：新增 `secretarySandboxUser`、`secretarySandboxDescriptor`。
+- **测试**：409/409（/she need 解析、无密钥包生成、状态检测、bridge need 路由与安装包发送、配置默认值）。
+
 ## 0.17.0 (2026-11-22)
 
 **R59：SHE init 生命周期收敛 + two-stage 结果回收**

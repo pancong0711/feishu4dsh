@@ -37,6 +37,9 @@ secretaryEnabled: true（手工配置）
 /she init
 /she init update
 /she init reset
+/she need
+/she need package
+/she need verify
 /she doctor
 /she submit <原文>
 /she continue <Topic> <原文>
@@ -55,6 +58,13 @@ secretaryEnabled: true（手工配置）
 ```
 
 帮助形式等价：`/she help init`、`/she init --help`、`/she init -h`、`/she init help`。
+
+### she-sandbox 交付
+
+`/she need` 只读检查执行面缺口；`/she need package` 生成不含密钥的 she-sandbox
+交付包（host bootstrap、非 root 安装、verify、Dockerfile、descriptor 协议）；
+`/she need verify` 验证 descriptor、health 与 runtime。频道侧用户名从运行时获取，
+不硬编码；`opencode-she` 是默认沙箱用户。
 
 ### 结果回收
 

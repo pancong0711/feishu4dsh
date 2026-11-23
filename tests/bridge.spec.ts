@@ -6340,6 +6340,45 @@ describe('bridge: SHE secretary commands (R56)', () => {
     expect(port.sent.some(message => String(message.input.markdown ?? '').includes('已清除当前 scope'))).toBe(true)
   })
 
+  it('R60: /she need renders the sandbox report and /she need package sends the bundle in p2p', async () => {
+    let packaged = false
+    const report = {
+      schema: 1 as const,
+      deploymentId: 'need-1',
+      createdAt: '2026-11-22T00:00:00Z',
+      channelUser: 'runner',
+      sandboxUser: 'opencode-she',
+      sharedRoot: '/shared',
+      descriptorPath: '/shared/.she/sandbox.json',
+      opencodeUrl: 'http://127.0.0.1:49375',
+      passwordFile: '/shared/secrets/opencode-service.json',
+      items: [
+        { id: 'descriptor', label: 'descriptor', level: 'runtime' as const, status: 'missing' as const, detail: 'missing file' },
+        { id: 'opencode-health', label: 'OpenCode health', level: 'runtime' as const, status: 'blocked' as const, detail: 'refused' },
+      ],
+      ready: false,
+    }
+    const { port } = makeEnv({}, {
+      secretaryNeed: async () => report,
+      secretaryNeedPackage: async () => {
+        packaged = true
+        return {
+          deploymentId: 'need-1',
+          packageDir: '/tmp/need-1',
+          archivePath: '/tmp/need-1.tar.gz',
+          archiveName: 'need-1.tar.gz',
+          archiveBytes: Buffer.from('bundle'),
+        }
+      },
+    })
+    await textMessage(port, '/she need')
+    expect(String(port.sent.at(-1)?.input.markdown ?? '')).toContain('SHE sandbox 就绪检查')
+    expect(String(port.sent.at(-1)?.input.markdown ?? '')).toContain('descriptor')
+    await textMessage(port, '/she need package', { chatType: 'p2p', chatId: 'oc_dm_need' })
+    expect(packaged).toBe(true)
+    expect(port.sent.some(message => 'file' in message.input)).toBe(true)
+  })
+
   it('R59: /she return and accept route to runtime hooks with the project workspace', async () => {
     const calls: unknown[] = []
     const { workspace, port } = makeEnv({}, {
