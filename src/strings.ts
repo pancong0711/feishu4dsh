@@ -342,6 +342,8 @@ export interface Strings {
   sheSandboxToolLabel: (label: string, selected: boolean) => string
   sheSandboxImageRequired: (label: string) => string
   sheSandboxTargetUnavailable: string
+  sheSandboxTargetWarning: string
+  sheSandboxCardUpdateFailed: string
   sheSandboxPackageDone: (name: string, archivePath: string) => string
   sheSandboxUnavailable: string
   sheNeedAliasHint: string
@@ -794,6 +796,8 @@ const zhCN: Strings = {
   sheSandboxToolLabel: (label, selected) => `${selected ? '✅' : '⬜'} ${label}`,
   sheSandboxImageRequired: label => `${label} 需要显式镜像引用。请发送：/she sandbox build --agent custom --image <镜像>；本版不会猜测或静默回退为空白沙箱。`,
   sheSandboxTargetUnavailable: '当前用户 Docker 预检未通过，暂不能选择 current-user；可改用专用 rootless 账户生成 root bootstrap 包。',
+  sheSandboxTargetWarning: '当前用户 Docker 预检未完全通过；仍可生成安装包，但请在目标用户侧执行 host-preflight.sh 复核。',
+  sheSandboxCardUpdateFailed: '卡片状态更新失败。当前步骤已切换，但飞书卡片可能未刷新；请重新发送 /she sandbox，或查看服务日志。',
   sheSandboxPackageDone: (name, archivePath) => `已生成 sandbox 安装包：${name}\n归档：${archivePath}`,
   sheSandboxUnavailable: '当前运行环境不支持 build-sandbox（未装配 sandbox hook）。',
   sheNeedAliasHint: '兼容入口：/she need 已并入 /she sandbox status；后续请优先使用 /she sandbox。',
@@ -1079,6 +1083,8 @@ const enUS: Strings = {
   sheSandboxToolLabel: (label, selected) => `${selected ? '✅' : '⬜'} ${label}`,
   sheSandboxImageRequired: label => `${label} requires an explicit image reference. Send: /she sandbox build --agent custom --image <image>. This version never guesses or silently falls back to a blank sandbox.`,
   sheSandboxTargetUnavailable: 'Current-user Docker preflight failed; current-user cannot be selected. Use a dedicated rootless account to generate the root bootstrap package.',
+  sheSandboxTargetWarning: 'Current-user Docker preflight was not fully successful; package generation can continue, but run host-preflight.sh as the target user before creating the sandbox.',
+  sheSandboxCardUpdateFailed: 'Could not refresh the card. The wizard state advanced, but the Feishu card may be stale; send /she sandbox again or inspect service logs.',
   sheSandboxPackageDone: (name, archivePath) => `Generated sandbox package: ${name}\nArchive: ${archivePath}`,
   sheSandboxUnavailable: 'This runtime does not provide the build-sandbox hook.',
   sheNeedAliasHint: 'Compatibility: /she need now maps to /she sandbox status; prefer /she sandbox.',

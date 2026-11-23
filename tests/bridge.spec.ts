@@ -6380,6 +6380,48 @@ describe('bridge: SHE secretary commands (R56)', () => {
     expect(String(port.sent.at(-1)?.input.markdown ?? '')).toContain('sandbox_image_required')
   })
 
+  it('R61: sandbox target card advances when current-user is selected', async () => {
+    const host = {
+      schema: 1 as const,
+      checkedAt: new Date().toISOString(),
+      currentUser: 'alice',
+      dedicatedUser: 'feishu4dsh-sandbox',
+      checks: [{ id: 'docker-cli', label: 'Docker CLI', status: 'ok' as const, detail: 'Docker version 27' }],
+      currentDockerReady: true,
+      rootlessDocker: true,
+      recommendedTarget: 'current-user' as const,
+    }
+    const { port } = makeEnv({}, {
+      secretarySandboxPreflight: async () => host,
+      secretarySandboxPackage: async input => ({
+        sandboxId: 'sandbox-card',
+        sandboxName: input.spec.name,
+        packageDir: '/tmp/sandbox-card',
+        archivePath: '/tmp/sandbox-card.tar.gz',
+        archiveName: 'sandbox-card.tar.gz',
+        archiveBytes: Buffer.from('bundle'),
+      }),
+    })
+    await textMessage(port, '/she sandbox', { chatType: 'p2p', chatId: 'oc_dm_card' })
+    const first = [...port.sent].reverse().find(message => 'card' in message.input)?.input.card as {
+      elements: { actions?: { value?: Record<string, unknown>; text?: { content?: string } }[] }[]
+    }
+    const current = first.elements.flatMap(element => element.actions ?? [])
+      .find(action => String(action.text?.content ?? '').includes('当前用户'))
+    expect(current).toBeDefined()
+    port.emit('cardAction', {
+      messageId: 'om_sandbox_card',
+      chatId: 'oc_dm_card',
+      operator: { openId: 'ou_user', name: 'User' },
+      action: { value: current?.value, tag: 'button' },
+    })
+    await sleep(20)
+    const updated = port.cardUpdates.at(-1)?.card as { header?: { title?: { content?: string } }; elements: { text?: { content?: string } }[] }
+    expect(updated.header?.title?.content).toContain('选择 Agent')
+    expect(updated.elements.some(element => String(element.text?.content ?? '').includes('当前用户'))).toBe(true)
+    expect(port.sent.some(message => String(message.input.markdown ?? '').includes('卡片状态更新失败'))).toBe(false)
+  })
+
   it('R62: /she need is a compatibility view and /she need package aliases the unified builder', async () => {
     let packagedSpec: unknown
     const attach = {

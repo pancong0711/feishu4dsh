@@ -1276,7 +1276,12 @@ function wirePortEvents(env: BridgeEnv, state: BridgeState): void {
     void handleInboundMessage(env, state, args[0] as NormalizedMessage)
   })
   env.port.on('cardAction', (...args: unknown[]) => {
-    void handleCardAction(env, state, args[0] as CardActionEvent)
+    const event = args[0] as CardActionEvent
+    env.report(`feishu4dsh: card action received chat=${event.chatId} message=${event.messageId} tag=${event.action.tag}`)
+    void handleCardAction(env, state, event).catch(error => {
+      env.report(`feishu4dsh: card action failed: ${describeError(error)}`)
+      void safeSend(env, event.chatId, state.copy.sheError('card_action_failed', describeError(error))).catch(() => undefined)
+    })
   })
   env.port.on('reject', (...args: unknown[]) => {
     const event = args[0] as RejectEvent
@@ -3092,8 +3097,8 @@ function sandboxWizardLabelsFor(state: BridgeState): SandboxWizardLabels {
 }
 
 /** Re-render one paged/browse/sandbox card in place after a navigation click. */
-async function refreshMenuCard(env: BridgeEnv, state: BridgeState, menu: MenuState): Promise<void> {
-  if (menu.messageId === undefined) return
+async function refreshMenuCard(env: BridgeEnv, state: BridgeState, menu: MenuState): Promise<boolean> {
+  if (menu.messageId === undefined) return false
   // Model menus re-sync their options from the LIVE catalog so addcur/learn
   // reflect immediately (the send-time snapshot would go stale).
   if (menu.kind === 'model') {
@@ -3109,10 +3114,14 @@ async function refreshMenuCard(env: BridgeEnv, state: BridgeState, menu: MenuSta
       : menu.kind === 'sandbox'
         ? sandboxWizardCard(menu.chatId, menu, sandboxWizardLabelsFor(state))
         : undefined
-  if (cardObject === undefined) return
-  await env.port.updateCard(menu.messageId, cardObject).catch(error => {
+  if (cardObject === undefined) return false
+  try {
+    await env.port.updateCard(menu.messageId, cardObject)
+    return true
+  } catch (error) {
     env.report(`feishu4dsh: menu card update failed: ${describeError(error)}`)
-  })
+    return false
+  }
 }
 
 function modelMenuLabels(state: BridgeState): MenuLabels & { title: string } {
@@ -3172,6 +3181,13 @@ async function buildAndSendSandboxPackage(
   await sendShePackageFile(env, state, binding, replyTo, result.archiveBytes, result.archiveName)
 }
 
+/** Refresh a sandbox wizard card, with a plain-text fallback if Feishu rejects the update. */
+async function refreshSandboxCard(env: BridgeEnv, state: BridgeState, menu: MenuState, event: CardActionEvent): Promise<void> {
+  if (!(await refreshMenuCard(env, state, menu))) {
+    await safeSend(env, event.chatId, state.copy.sheSandboxCardUpdateFailed)
+  }
+}
+
 /** One sandbox-wizard click: target → agent → tool toggles → confirm/build. */
 async function handleSandboxMenuAction(
   env: BridgeEnv,
@@ -3186,6 +3202,7 @@ async function handleSandboxMenuAction(
     await safeSend(env, event.chatId, state.copy.menuGone)
     return
   }
+  env.report(`feishu4dsh: sandbox wizard action step=${wizard.step} act=${payload.act} idx=${payload.idx ?? '-'} menu=${menu.id}`)
   if (payload.act === 'cancel') {
     await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('target'), state.copy.sheSandboxCancel)
     return
@@ -3195,14 +3212,14 @@ async function handleSandboxMenuAction(
     else if (wizard.step === 'tools') wizard.step = 'agent'
     else if (wizard.step === 'confirm') wizard.step = 'tools'
     menu.options = sandboxMenuOptions(wizard, state.copy)
-    await refreshMenuCard(env, state, menu)
+    await refreshSandboxCard(env, state, menu, event)
     return
   }
   if (payload.act === 'ok') {
     if (wizard.step === 'tools') {
       wizard.step = 'confirm'
       menu.options = sandboxMenuOptions(wizard, state.copy)
-      await refreshMenuCard(env, state, menu)
+      await refreshSandboxCard(env, state, menu, event)
       return
     }
     if (wizard.step === 'confirm') {
@@ -3226,8 +3243,7 @@ async function handleSandboxMenuAction(
   if (wizard.step === 'target') {
     if (payload.idx === 1) {
       if (wizard.preflight?.currentDockerReady !== true) {
-        await safeSend(env, event.chatId, state.copy.sheSandboxTargetUnavailable)
-        return
+        await safeSend(env, event.chatId, state.copy.sheSandboxTargetWarning)
       }
       wizard.targetKind = 'current-user'
     } else {
@@ -3235,7 +3251,7 @@ async function handleSandboxMenuAction(
     }
     wizard.step = 'agent'
     menu.options = sandboxMenuOptions(wizard, state.copy)
-    await refreshMenuCard(env, state, menu)
+    await refreshSandboxCard(env, state, menu, event)
     return
   }
   if (wizard.step === 'agent') {
@@ -3248,7 +3264,7 @@ async function handleSandboxMenuAction(
     wizard.agentId = profile.id as SandboxAgentId
     wizard.step = 'tools'
     menu.options = sandboxMenuOptions(wizard, state.copy)
-    await refreshMenuCard(env, state, menu)
+    await refreshSandboxCard(env, state, menu, event)
     return
   }
   if (wizard.step === 'tools') {
@@ -3258,7 +3274,7 @@ async function handleSandboxMenuAction(
     if (at >= 0) wizard.tools.splice(at, 1)
     else wizard.tools.push(bundle.id)
     menu.options = sandboxMenuOptions(wizard, state.copy)
-    await refreshMenuCard(env, state, menu)
+    await refreshSandboxCard(env, state, menu, event)
   }
 }
 
@@ -3503,9 +3519,11 @@ async function sendSandboxWizard(
     sandbox: wizard,
   }
   registerMenu(env, state, menu)
+  env.report(`feishu4dsh: sandbox wizard opened currentDockerReady=${preflight.currentDockerReady} rootless=${preflight.rootlessDocker} target=${wizard.targetKind}`)
   const sent = await env.port.send(binding.chatId, { card: sandboxWizardCard(binding.chatId, menu, sandboxWizardLabelsFor(state)) },
     replyTo === undefined ? undefined : { replyTo, replyInThread: true }).catch(() => undefined)
   if (sent !== undefined) menu.messageId = sent.messageId
+  else env.report('feishu4dsh: sandbox wizard card send returned no message id')
 }
 
 /** Build a package from deterministic `/she sandbox build` flags. */
@@ -3680,7 +3698,10 @@ async function handleCardAction(env: BridgeEnv, state: BridgeState, event: CardA
   const action = event.action
   const raw = typeof action.option === 'string' && action.option !== '' ? action.option : action.value
   const payload = decodeActionValue(raw)
-  if (payload === null) return
+  if (payload === null) {
+    env.report(`feishu4dsh: card action ignored (unrecognized payload tag=${action.tag})`)
+    return
+  }
   if (payload.kind === 'menu') {
     await handleMenuAction(env, state, event, payload)
     return

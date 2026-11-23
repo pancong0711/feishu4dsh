@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.1 (2026-11-23)
+
+**R63：修复 `/she sandbox` 目标账户卡片点击异常**
+
+- 点击「当前用户」不再因 `currentDockerReady` 未通过而硬停：先显示 warning，然后继续进入 Agent 选择；真正执行前仍由 `host-preflight.sh` / `create-sandbox.sh` fail-closed。
+- `refreshMenuCard()` 返回更新成功/失败；sandbox 向导更新失败时发送纯文本回退提示，不再静默。
+- 增加 card action / sandbox wizard journal 诊断日志，便于区分“回调未到达、payload 未解码、updateCard 失败、处理函数抛错”。
+- 新增 current-user 目标点击回归测试；全量测试 419/419。
+
 ## 0.19.0 (2026-11-23)
 
 **`/she sandbox`：agent 沙箱供给面 MVP + 命令面合并**
@@ -12,7 +21,7 @@
 - 工具：core/node/python/build/data/search；用户态安装使用 /home/agent 下的 npm prefix、pip user、uv tool/cache。
 - 配置：新增 `secretarySandboxBuilderUser`（默认 `feishu4dsh-sandbox`）。
 - **R62 命令面合并**：`/she sandbox status` 统一输出主机预检 + descriptor/password/OpenCode/runtime 接入检查；`/she sandbox build` 成为唯一安装包生成入口；`need.ts` 删除旧 Dockerfile/compose/脚本生成器和 `needPackage` hook；`/she need` / `need verify` 保留兼容别名，`need package` 提示弃用并转交默认 OpenCode builder。
-- 测试：418/418（新增 sandbox spec/package/preflight、命令解析、wizard 卡、bridge 向导打包与 onboarding 脚本门禁；R62 别名/状态合并回归）。
+- 测试：419/419（新增 sandbox spec/package/preflight、命令解析、wizard 卡、bridge 向导打包与 onboarding 脚本门禁；R62 别名/状态合并回归）。
 
 ## 0.18.0 (2026-11-22)
 
