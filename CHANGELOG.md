@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.20.0 (2026-11-23)
+
+**R65：终端 sandbox onboarding**
+
+- 新增 `pnpm sandbox:onboard`：首次 clone 后交互式介绍 sandbox/agent 管理模型，探测 Docker/rootless/目标账户，生成可审查的 onboarding kit。
+- 生成固定目录 `~/.local/share/feishu4dsh/onboarding/<timestamp>-<sandbox>/`：README、manifest、preflight、root bootstrap、target-user rootless init、create/verify/destroy wrapper、完整 sandbox package 与 tools。
+- 严格拆分权限：`10-bootstrap-host-root.sh` 唯一 root 脚本；`00/20/30/40/90` 非 root，必须由目标用户执行；不自动 sudo、不自动创建容器、不写密钥。
+- 终端 CLI 支持交互模式与 `--yes` 非交互模式；支持 target/name/agent/image/tools/output 参数。
+- 增加 `scripts/sandbox-rootless-init.sh`，rootless Docker 初始化与 hello-world 自检独立于 root bootstrap。
+- `sandbox-bootstrap-host.sh` 新增 `--no-rootless-init`，用于 onboarding 的 root/rootless 两段式执行。
+- 当前用户模式明确警告：用户仍可删除自己的 sandbox 数据；生产推荐专用 rootless 账户；固定 XDG 路径不放项目仓库。
+- 全量测试 421/421。
+
 ## 0.19.4 (2026-11-23)
 
 **R63-c：安装包发送后补操作说明**

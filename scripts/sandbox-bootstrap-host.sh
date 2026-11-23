@@ -5,6 +5,7 @@
 # Usage:
 #   sudo ./scripts/sandbox-bootstrap-host.sh [--user feishu4dsh-sandbox] [--dry-run]
 #   sudo ./scripts/sandbox-bootstrap-host.sh --install-docker-ce
+#   sudo ./scripts/sandbox-bootstrap-host.sh --no-rootless-init   # onboarding split
 #
 # Environment overrides:
 #   SUBUID_START=100000 SUBUID_COUNT=65536
@@ -13,6 +14,7 @@ set -euo pipefail
 SANDBOX_USER="feishu4dsh-sandbox"
 DRY_RUN=0
 INSTALL_DOCKER_CE=0
+INIT_ROOTLESS=1
 SUBUID_START="${SUBUID_START:-100000}"
 SUBUID_COUNT="${SUBUID_COUNT:-65536}"
 
@@ -31,8 +33,12 @@ while [ "$#" -gt 0 ]; do
       INSTALL_DOCKER_CE=1
       shift
       ;;
+    --no-rootless-init)
+      INIT_ROOTLESS=0
+      shift
+      ;;
     -h|--help)
-      sed -n '2,14p' "$0"
+      sed -n '2,15p' "$0"
       exit 0
       ;;
     *)
@@ -122,23 +128,27 @@ fi
 run loginctl enable-linger "$SANDBOX_USER"
 UID_NUM="$(id -u "$SANDBOX_USER")"
 
-if [ -S "/run/user/$UID_NUM/docker.sock" ] || [ -S "/run/user/$UID_NUM/dockerd-rootless/api.sock" ]; then
-  echo "rootless Docker socket already present for $SANDBOX_USER"
-elif command -v dockerd-rootless-setuptool.sh >/dev/null 2>&1; then
-  run runuser -u "$SANDBOX_USER" -- env \
-    XDG_RUNTIME_DIR="/run/user/$UID_NUM" \
-    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$UID_NUM/bus" \
-    dockerd-rootless-setuptool.sh install
-else
-  echo "WARN: dockerd-rootless-setuptool.sh missing; rootless Docker was not initialized." >&2
-fi
-
-if [ "$DRY_RUN" = 0 ]; then
-  echo "smoke test (as $SANDBOX_USER):"
-  if runuser -u "$SANDBOX_USER" -- env XDG_RUNTIME_DIR="/run/user/$UID_NUM" docker run --rm hello-world >/dev/null 2>&1; then
-    echo "SANDBOX_BOOTSTRAP_OK"
+if [ "$INIT_ROOTLESS" = 1 ]; then
+  if [ -S "/run/user/$UID_NUM/docker.sock" ] || [ -S "/run/user/$UID_NUM/dockerd-rootless/api.sock" ]; then
+    echo "rootless Docker socket already present for $SANDBOX_USER"
+  elif command -v dockerd-rootless-setuptool.sh >/dev/null 2>&1; then
+    run runuser -u "$SANDBOX_USER" -- env \
+      XDG_RUNTIME_DIR="/run/user/$UID_NUM" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$UID_NUM/bus" \
+      dockerd-rootless-setuptool.sh install
   else
-    echo "bootstrap finished, but hello-world smoke test failed; inspect rootless Docker logs." >&2
-    exit 1
+    echo "WARN: dockerd-rootless-setuptool.sh missing; rootless Docker was not initialized." >&2
   fi
+
+  if [ "$DRY_RUN" = 0 ]; then
+    echo "smoke test (as $SANDBOX_USER):"
+    if runuser -u "$SANDBOX_USER" -- env XDG_RUNTIME_DIR="/run/user/$UID_NUM" docker run --rm hello-world >/dev/null 2>&1; then
+      echo "SANDBOX_BOOTSTRAP_OK"
+    else
+      echo "bootstrap finished, but hello-world smoke test failed; inspect rootless Docker logs." >&2
+      exit 1
+    fi
+  fi
+else
+  echo "rootless init skipped (--no-rootless-init); next run 20-init-rootless-target.sh as $SANDBOX_USER"
 fi

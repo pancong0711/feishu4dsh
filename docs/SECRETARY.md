@@ -5,6 +5,17 @@
 SHE = **S**ecretary **H**andoff **E**xecutor。它让飞书里的 `/she` 命令把用户原文按固定信封
 转交给本机 OpenCode 异步执行，并持久化 Topic/Task、串行队列、状态和报告。
 
+## 终端 onboarding
+
+首次使用建议：
+
+```sh
+pnpm install
+pnpm sandbox:onboard
+```
+
+程序只检测环境并生成 `~/.local/share/feishu4dsh/onboarding/...` 下的 onboarding kit，不自动 sudo、不写密钥、不自动建容器。按生成的 README 执行：root 脚本 → 目标用户 rootless 初始化 → 创建 → 验证。
+
 ## 快速启用
 
 前置条件：opencode-she 侧 OpenCode 已由独立 sandbox/运维启动；当前聊天在一个 git 仓库。
