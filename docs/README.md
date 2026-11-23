@@ -13,7 +13,7 @@
 | [FEISHU-SETUP.md](FEISHU-SETUP.md) | 飞书自建应用创建、事件订阅、权限申请 |
 | [PUBLISHING.md](PUBLISHING.md) | GitHub / npm 发布指南与推送前检查清单 |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | 故障排查手册（`has no provider/model`、会话假卡住、工作区紊乱、`/she`） |
-| [SECRETARY.md](SECRETARY.md) | 可选秘书子模块（SHE）：`/she`、Topic 串行队列、OpenCode、安全边界 |
+| [SECRETARY.md](SECRETARY.md) | 可选秘书子模块（SHE）：`/she`、Topic 串行队列、OpenCode、`/she sandbox` 安装包与安全边界 |
 
 ## 关联
 

@@ -123,6 +123,8 @@ export interface Config {
   secretarySandboxRoot?: string
   /** Dedicated OS user owned by the sandbox implementation (default opencode-she). */
   secretarySandboxUser?: string
+  /** Dedicated rootless account proposed by `/she sandbox` (default feishu4dsh-sandbox). */
+  secretarySandboxBuilderUser?: string
   /** JSON descriptor written by she-sandbox and consumed by `/she need verify` / `/she init`. */
   secretarySandboxDescriptor?: string
   /** OpenCode endpoint used by `/she init` (loopback only). */
@@ -202,6 +204,7 @@ export const Config = Schema.object({
   secretaryBootstrapFile: Schema.string().default('~/.local/state/feishu4dsh/she-bootstrap.json'),
   secretarySandboxRoot: Schema.string().default('/srv/opencode-she/worktrees'),
   secretarySandboxUser: Schema.string().default('opencode-she'),
+  secretarySandboxBuilderUser: Schema.string().default('feishu4dsh-sandbox'),
   secretarySandboxDescriptor: Schema.string().default('/srv/opencode-she/worktrees/.she/sandbox.json'),
   secretarySandboxOpencodeUrl: Schema.string().default('http://127.0.0.1:49375'),
   secretarySandboxPasswordFile: Schema.string().default('/srv/opencode-she/secrets/opencode-service.json'),
@@ -322,6 +325,7 @@ export function resolveConfig(config: Config): Required<Config> {
     secretarySandboxRoot: (config.secretarySandboxRoot ?? '/srv/opencode-she/worktrees').trim()
       || '/srv/opencode-she/worktrees',
     secretarySandboxUser: (config.secretarySandboxUser ?? 'opencode-she').trim() || 'opencode-she',
+    secretarySandboxBuilderUser: (config.secretarySandboxBuilderUser ?? 'feishu4dsh-sandbox').trim() || 'feishu4dsh-sandbox',
     secretarySandboxDescriptor: (config.secretarySandboxDescriptor ?? '/srv/opencode-she/worktrees/.she/sandbox.json').trim()
       || '/srv/opencode-she/worktrees/.she/sandbox.json',
     secretarySandboxOpencodeUrl: (config.secretarySandboxOpencodeUrl ?? 'http://127.0.0.1:49375').trim()

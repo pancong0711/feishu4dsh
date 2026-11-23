@@ -1,6 +1,6 @@
 # 秘书子模块（SHE）
 
-> 状态：可选能力，默认关闭。详细工作单不在公开快照内。
+> 状态：可选能力，默认关闭；`/she sandbox` MVP 已加入。详细工作单不在公开快照内。
 
 SHE = **S**ecretary **H**andoff **E**xecutor。它让飞书里的 `/she` 命令把用户原文按固定信封
 转交给本机 OpenCode 异步执行，并持久化 Topic/Task、串行队列、状态和报告。
@@ -37,9 +37,11 @@ secretaryEnabled: true（手工配置）
 /she init
 /she init update
 /she init reset
+/she sandbox
+/she sandbox status
+/she sandbox build [flags]
 /she need
 /she need package
-/she need verify
 /she doctor
 /she submit <原文>
 /she continue <Topic> <原文>
@@ -59,12 +61,23 @@ secretaryEnabled: true（手工配置）
 
 帮助形式等价：`/she help init`、`/she init --help`、`/she init -h`、`/she init help`。
 
-### she-sandbox 交付
+### 兼容入口
 
-`/she need` 只读检查执行面缺口；`/she need package` 生成不含密钥的 she-sandbox
-交付包（host bootstrap、非 root 安装、verify、Dockerfile、descriptor 协议）；
-`/she need verify` 验证 descriptor、health 与 runtime。频道侧用户名从运行时获取，
-不硬编码；`opencode-she` 是默认沙箱用户。
+`/she need` 与 `/she need verify` 是 `/she sandbox status` 的兼容别名；`/she need package`
+已弃用，会提示并转交 `/she sandbox build` 的默认 OpenCode 包。新部署主推 `/she sandbox`。
+
+### Agent sandbox 安装包
+
+`/she sandbox` 交互式选择目标账户（推荐专用 rootless 账户）、agent（OpenCode/空白/自定义镜像）和工具包（core/node/python/build/data/search），然后生成无密钥 tar.gz。固定路径：
+
+```text
+$HOME/.local/share/feishu4dsh/sandboxes/<sandbox-name>/
+  workspace/ home/ cache/ logs/ sandbox.json
+```
+
+包内包含 plan、host preflight、root bootstrap（专用账户模式）、create/verify/destroy 脚本、Dockerfile 与 CHECKSUMS。容器默认只读 rootfs、`cap-drop ALL`、`no-new-privileges`、独立网络，只挂 workspace/home/cache 三个叶子目录，禁止 Docker socket/host network/privileged。SHE 不执行 sudo 或容器创建；目标用户在飞书外审查执行。
+
+空机器可用 `scripts/sandbox-preflight.sh`（只读）和 `scripts/sandbox-bootstrap-host.sh`（root，支持 dry-run）准备专用 rootless 账户。
 
 ### 结果回收
 
@@ -90,7 +103,7 @@ manifest 中的 affectedPaths；不 commit/push。它不是单纯的 `git add`�
 
 ## 行为与安全
 
-- SHE 不管理 Docker、不访问 Docker socket；容器/provider 凭据由 opencode-she 侧负责；
+- SHE 不访问 Docker socket；`/she sandbox` 只生成无密钥安装包，不执行 sudo/Docker；容器/provider 凭据由目标 sandbox 账户侧负责；
 - 同一 Topic 严格串行；失败、中断、报告缺失或执行器不可达会暂停 Topic；
 - 每个 Topic 使用独立 OpenCode session 与 git worktree；
 - 数据库只保存请求 hash、20 字摘录与执行器引用；排队原文仅临时 spool，提交后删除；

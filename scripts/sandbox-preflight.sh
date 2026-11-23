@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Read-only sandbox host preflight. Never installs packages or creates users.
+# Usage: ./scripts/sandbox-preflight.sh [--user <dedicated-user>] [--json]
+set -euo pipefail
+
+SANDBOX_USER="feishu4dsh-sandbox"
+JSON=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --user)
+      [ "$#" -ge 2 ] || { echo "--user requires a value" >&2; exit 2; }
+      SANDBOX_USER="$2"
+      shift 2
+      ;;
+    --json)
+      JSON=1
+      shift
+      ;;
+    -h|--help)
+      echo "usage: $0 [--user <dedicated-user>] [--json]"
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if ! printf '%s' "$SANDBOX_USER" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$'; then
+  echo "invalid sandbox user: $SANDBOX_USER" >&2
+  exit 2
+fi
+
+FAIL=0
+declare -a CHECKS=()
+add() {
+  local status="$1" label="$2" detail="$3"
+  [ "$status" = "missing" ] && FAIL=1
+  CHECKS+=("$status|$label|$detail")
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+CURRENT_USER="$(id -un)"
+add ok "current user" "$CURRENT_USER"
+add ok "host" "$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")"
+add ok "kernel" "$(uname -r)"
+
+if have docker; then
+  add ok "docker CLI" "$(docker --version 2>/dev/null || echo present)"
+  if docker info >/dev/null 2>&1; then
+    add ok "docker daemon" "reachable"
+    if docker info --format '{{json .SecurityOptions}}' 2>/dev/null | grep -qi rootless; then
+      add ok "rootless Docker" "rootless security option detected"
+    else
+      add warn "rootless Docker" "not detected; rootful Docker is not the recommended isolation profile"
+    fi
+  else
+    add missing "docker daemon" "unreachable in current user context"
+  fi
+else
+  add missing "docker CLI" "not installed or not on PATH"
+  add missing "docker daemon" "cannot check without Docker CLI"
+  add missing "rootless Docker" "cannot check without Docker CLI"
+fi
+
+for bin in newuidmap newgidmap slirp4netns fuse-overlayfs dockerd-rootless-setuptool.sh; do
+  if have "$bin"; then add ok "$bin" "$(command -v "$bin")"; else add warn "$bin" "missing (required for a typical rootless Docker setup)"; fi
+done
+
+if [ -f /proc/sys/kernel/unprivileged_userns_clone ]; then
+  if [ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" = "1" ]; then
+    add ok "unprivileged userns" "enabled"
+  else
+    add missing "unprivileged userns" "disabled"
+  fi
+fi
+
+if id -u "$SANDBOX_USER" >/dev/null 2>&1; then
+  add ok "dedicated user" "$SANDBOX_USER exists"
+  grep -qs "^$SANDBOX_USER:" /etc/subuid && add ok "subuid" "$(grep "^$SANDBOX_USER:" /etc/subuid)" || add missing "subuid" "missing /etc/subuid:$SANDBOX_USER"
+  grep -qs "^$SANDBOX_USER:" /etc/subgid && add ok "subgid" "$(grep "^$SANDBOX_USER:" /etc/subgid)" || add missing "subgid" "missing /etc/subgid:$SANDBOX_USER"
+  if have loginctl && loginctl show-user "$SANDBOX_USER" 2>/dev/null | grep -q 'Linger=yes'; then
+    add ok "linger" "enabled"
+  else
+    add warn "linger" "disabled or unreadable"
+  fi
+  TARGET_UID="$(id -u "$SANDBOX_USER")"
+  if [ -S "/run/user/$TARGET_UID/docker.sock" ] || [ -S "/run/user/$TARGET_UID/dockerd-rootless/api.sock" ]; then
+    add ok "dedicated rootless Docker" "socket present for $SANDBOX_USER"
+  else
+    add warn "dedicated rootless Docker" "socket not visible from current user; verify as $SANDBOX_USER"
+  fi
+else
+  add warn "dedicated user" "$SANDBOX_USER not created; root bootstrap can create it"
+  add warn "subuid" "pending dedicated user creation"
+  add warn "subgid" "pending dedicated user creation"
+  add warn "linger" "pending dedicated user creation"
+fi
+
+if [ "$JSON" = 1 ]; then
+  printf '{'
+  printf '"sandboxUser":"%s","currentUser":"%s","ok":%s,"checks":[' "$SANDBOX_USER" "$CURRENT_USER" "$([ "$FAIL" -eq 0 ] && echo true || echo false)"
+  first=1
+  while IFS='|' read -r st lb dt; do
+    [ "$first" -eq 1 ] || printf ','
+    first=0
+    printf '{"id":"%s","status":"%s","detail":"%s"}' "$(printf '%s' "$lb" | sed 's/"/\\"/g')" "$st" "$(printf '%s' "$dt" | sed 's/"/\\"/g')"
+  done < <(printf '%s\n' "${CHECKS[@]}")
+  printf ']}\n'
+else
+  echo "SHE sandbox host preflight"
+  for line in "${CHECKS[@]}"; do
+    IFS='|' read -r status label detail <<<"$line"
+    case "$status" in
+      ok) icon="✓" ;;
+      missing) icon="✗" ;;
+      warn) icon="!" ;;
+      *) icon="?" ;;
+    esac
+    printf '%s %s: %s\n' "$icon" "$label" "$detail"
+  done
+  if [ "$FAIL" -eq 0 ]; then
+    echo "PREFLIGHT_OK"
+  else
+    echo "PREFLIGHT_FAILED: run scripts/sandbox-bootstrap-host.sh for a dedicated rootless account, or install missing Docker/rootless dependencies." >&2
+    exit 1
+  fi
+fi

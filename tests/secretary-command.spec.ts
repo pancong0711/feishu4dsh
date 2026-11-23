@@ -25,6 +25,19 @@ describe('secretary command parser', () => {
     expect(parseSheCommand('need package')).toEqual({ kind: 'need', action: 'package' })
     expect(parseSheCommand('need verify')).toEqual({ kind: 'need', action: 'verify' })
     expect(parseSheCommand('need other')).toEqual({ kind: 'invalid', reason: 'need_usage' })
+    expect(parseSheCommand('sandbox')).toEqual({ kind: 'sandbox', action: 'wizard' })
+    expect(parseSheCommand('sandbox status')).toEqual({ kind: 'sandbox', action: 'status' })
+    expect(parseSheCommand('sandbox build')).toEqual({ kind: 'sandbox', action: 'wizard' })
+    expect(parseSheCommand('sandbox build --agent opencode --tools core,node --target current-user')).toEqual({
+      kind: 'sandbox', action: 'build',
+      options: { agentId: 'opencode', tools: ['core', 'node'], targetKind: 'current-user' },
+    })
+    expect(parseSheCommand('sandbox build --agent custom')).toEqual({ kind: 'invalid', reason: 'sandbox_image_required' })
+    expect(parseSheCommand('sandbox build --agent custom --image registry.example/agent:1')).toEqual({
+      kind: 'sandbox', action: 'build', options: { agentId: 'custom', image: 'registry.example/agent:1' },
+    })
+    expect(parseSheCommand('sandbox nope')).toEqual({ kind: 'invalid', reason: 'sandbox_usage' })
+    expect(parseSheCommand('sandbox build --agent nope')).toEqual({ kind: 'invalid', reason: 'sandbox_usage' })
     expect(parseSheCommand('return 1.2')).toEqual({ kind: 'return', reference: '1.2' })
     expect(parseSheCommand('accept 1.2')).toEqual({ kind: 'accept', reference: '1.2' })
     expect(parseSheCommand('return')).toEqual({ kind: 'invalid', reason: 'return_usage' })
@@ -38,6 +51,9 @@ describe('secretary command parser', () => {
     expect(parseSheCommand('init -h')).toEqual({ kind: 'help', topic: 'init' })
     expect(parseSheCommand('submit help')).toEqual({ kind: 'help', topic: 'submit' })
     expect(parseSheCommand('topic rename --help')).toEqual({ kind: 'help', topic: 'rename' })
+    expect(parseSheCommand('sandbox --help')).toEqual({ kind: 'help', topic: 'sandbox' })
+    expect(parseSheCommand('sandbox build --help')).toEqual({ kind: 'help', topic: 'sandbox' })
+    expect(parseSheCommand('sandbox status --help')).toEqual({ kind: 'help', topic: 'sandbox' })
     expect(parseSheCommand('help unknown-topic')).toEqual({ kind: 'help', topic: 'unknown-topic' })
   })
 

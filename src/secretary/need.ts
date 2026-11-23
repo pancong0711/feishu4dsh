@@ -1,6 +1,7 @@
 /**
- * `/she need`: detect SHE execution-plane prerequisites and emit a portable,
- * secret-free handoff package for a host admin / opencode-she operator.
+ * `/she need`: read-only SHE attach-readiness checks (descriptor, password,
+ * OpenCode health, runtime directories). R62 merged package generation into
+ * `/she sandbox`; this module no longer emits Dockerfiles or install bundles.
  *
  * The channel-side username is always read from the running process; only the
  * dedicated sandbox user is a deployment constant (`opencode-she` by default).
@@ -8,9 +9,9 @@
  * @module feishu4dsh/secretary/need
  */
 
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { access, readFile } from 'node:fs/promises'
 import { userInfo } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -19,7 +20,7 @@ import type { ResolvedConfig } from '../config.js'
 const execFileAsync = promisify(execFile)
 
 export class SheNeedError extends Error {
-  constructor(readonly code: 'project_invalid'|'descriptor_invalid'|'package_failed', message: string) {
+  constructor(readonly code: 'descriptor_invalid', message: string) {
     super(message)
     this.name = 'SheNeedError'
   }
@@ -74,14 +75,6 @@ export interface SheNeedReport {
   readonly passwordFile: string
   readonly items: readonly SheNeedItem[]
   readonly ready: boolean
-}
-
-export interface SheNeedPackageResult {
-  readonly deploymentId: string
-  readonly packageDir: string
-  readonly archivePath: string
-  readonly archiveName: string
-  readonly archiveBytes: Buffer
 }
 
 export interface SheNeedProbeDeps {
@@ -307,188 +300,5 @@ export async function inspectSheNeed(config: ResolvedConfig, deps: SheNeedProbeD
     passwordFile,
     items,
     ready,
-  }
-}
-
-function needMarkdown(report: SheNeedReport): string {
-  const lines = [
-    '# SHE Sandbox Need',
-    '',
-    `- deploymentId: ${report.deploymentId}`,
-    `- channel user: ${report.channelUser}`,
-    `- sandbox user: ${report.sandboxUser}`,
-    `- shared root: ${report.sharedRoot}`,
-    `- descriptor: ${report.descriptorPath}`,
-    `- OpenCode: ${report.opencodeUrl}`,
-    '',
-    '## Checks',
-    '',
-  ]
-  for (const item of report.items) lines.push(`- [${item.status}] ${item.label} (${item.level}): ${item.detail}`)
-  lines.push('', '## Handoff', '', '1. 宿主管理员审查并执行 `bootstrap-host.sh`；', '2. opencode-she 运维执行 `install-sandbox.sh`；', '3. 执行 `verify.sh`；', '4. 回飞书执行 `/she need verify` 和 `/she init`。', '')
-  return lines.join('\n')
-}
-
-function rootBootstrapScript(report: SheNeedReport): string {
-  return [
-    '#!/usr/bin/env bash',
-    '# One-time root bootstrap for SHE sandbox. Review before execution.',
-    'set -euo pipefail',
-    '[ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 1; }',
-    `CHANNEL_USER="\${CHANNEL_USER:-${report.channelUser}}"`,
-    `SANDBOX_USER="\${SANDBOX_USER:-${report.sandboxUser}}"`,
-    `SHARED_ROOT="\${SHARED_ROOT:-${report.sharedRoot}}"`,
-    'SHE_SHARED_GROUP="${SHE_SHARED_GROUP:-she-shared}"',
-    'SUBUID_START="${SUBUID_START:?set SUBUID_START to a free subordinate UID range}"',
-    'SUBUID_COUNT="${SUBUID_COUNT:-65536}"',
-    'DRY_RUN=0',
-    '[ "${1:-}" = "--dry-run" ] && DRY_RUN=1',
-    'run() { if [ "$DRY_RUN" = 1 ]; then printf "+ "; printf "%q " "$@"; echo; else "$@"; fi; }',
-    'getent group "$SHE_SHARED_GROUP" >/dev/null || run groupadd "$SHE_SHARED_GROUP"',
-    'id -u "$SANDBOX_USER" >/dev/null 2>&1 || run useradd -m -s /bin/bash "$SANDBOX_USER"',
-    'run usermod -aG "$SHE_SHARED_GROUP" "$CHANNEL_USER"',
-    'run usermod -aG "$SHE_SHARED_GROUP" "$SANDBOX_USER"',
-    'grep -q "^${SANDBOX_USER}:" /etc/subuid || run usermod --add-subuids "${SUBUID_START}-$((SUBUID_START + SUBUID_COUNT - 1))" "$SANDBOX_USER"',
-    'grep -q "^${SANDBOX_USER}:" /etc/subgid || run usermod --add-subgids "${SUBUID_START}-$((SUBUID_START + SUBUID_COUNT - 1))" "$SANDBOX_USER"',
-    'run loginctl enable-linger "$SANDBOX_USER"',
-    'run install -d -m 2770 -o "$SANDBOX_USER" -g "$SHE_SHARED_GROUP" "$SHARED_ROOT"',
-    'echo "bootstrap done. Re-login channel user or refresh supplementary groups."',
-    'echo "next: sudo -iu ${SANDBOX_USER} bash install-sandbox.sh"',
-  ].join('\n') + '\n'
-}
-
-function sandboxInstallScript(report: SheNeedReport): string {
-  return [
-    '#!/usr/bin/env bash',
-    '# Run as the dedicated sandbox user (no root required). Review before execution.',
-    'set -euo pipefail',
-    `CHANNEL_USER="\${CHANNEL_USER:-${report.channelUser}}"`,
-    `SHARED_ROOT="\${SHARED_ROOT:-${report.sharedRoot}}"`,
-    `SANDBOX_USER="\${SANDBOX_USER:-${report.sandboxUser}}"`,
-    `DESCRIPTOR="\${DESCRIPTOR:-${report.descriptorPath}}"`,
-    `OPENCODE_URL="\${OPENCODE_URL:-${report.opencodeUrl}}"`,
-    'HOME_DIR="$HOME"',
-    'SECRETS_DIR="$HOME/.local/share/she-sandbox/secrets"',
-    'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"',
-    'export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"',
-    'id -un',
-    'command -v docker >/dev/null || { echo "docker CLI missing" >&2; exit 1; }',
-    'docker info >/dev/null || { echo "rootless docker not reachable" >&2; exit 1; }',
-    'install -d -m 2700 "$SECRETS_DIR"',
-    'install -d -m 2770 "$SHARED_ROOT/she-runtime" "$SHARED_ROOT/she-runtime/worktrees" "$SHARED_ROOT/repos"',
-    'setfacl -m u:${SANDBOX_USER:-opencode-she}:rwx,u:${CHANNEL_USER}:rwx "$SHARED_ROOT/she-runtime" "$SHARED_ROOT/she-runtime/worktrees" "$SHARED_ROOT/repos"',
-    'setfacl -d -m u:${SANDBOX_USER:-opencode-she}:rwx,u:${CHANNEL_USER}:rwx "$SHARED_ROOT/she-runtime" "$SHARED_ROOT/she-runtime/worktrees" "$SHARED_ROOT/repos"',
-    'if [ ! -f "$SECRETS_DIR/opencode-service.json" ]; then PASS="$(openssl rand -base64 32)"; printf \'{"password":"%s"}\\n\' "$PASS" > "$SECRETS_DIR/opencode-service.json"; chmod 600 "$SECRETS_DIR/opencode-service.json"; fi',
-    'echo "Build image from the included Dockerfile and authenticate the provider before starting the container."',
-    'echo "Use read-only container flags, loopback port 49375, and mount $SHARED_ROOT RW."',
-    'echo "After health check, write descriptor $DESCRIPTOR (see NEED.md/need.json) and ACL it for $CHANNEL_USER."',
-  ].join('\n') + '\n'
-}
-
-function verifyScript(report: SheNeedReport): string {
-  return [
-    '#!/usr/bin/env bash',
-    'set -euo pipefail',
-    `DESCRIPTOR="\${DESCRIPTOR:-${report.descriptorPath}}"`,
-    'python3 - "$DESCRIPTOR" <<\'PY\'',
-    'import json,sys',
-    'd=json.load(open(sys.argv[1]))',
-    'assert d.get("schema")==1',
-    'print(d["service"]["url"])',
-    'PY',
-    `PASS="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[\"password\"])' '${report.passwordFile}' 2>/dev/null || true)"`,
-    '[ -n "$PASS" ] || { echo "password file not readable; verify path manually" >&2; exit 1; }',
-    'URL="$(python3 - "$DESCRIPTOR" <<\'PY\'',
-    'import json,sys',
-    'print(json.load(open(sys.argv[1]))["service"]["url"])',
-    'PY',
-    ')"',
-    'curl -fsS -u "opencode:$PASS" "$URL/api/info" >/dev/null',
-    'echo SHE_SANDBOX_READY',
-  ].join('\n') + '\n'
-}
-
-function dockerfile(): string {
-  return [
-    'FROM node:22-bookworm-slim',
-    'ARG OPENCODE_VERSION=2.3.2',
-    'ARG PNPM_VERSION=11.22.0',
-    'RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git ripgrep && rm -rf /var/lib/apt/lists/*',
-    'RUN npm install -g --no-fund --no-audit "@opencode/cli@${OPENCODE_VERSION}" "pnpm@${PNPM_VERSION}" && npm cache clean --force',
-    'ENV HOME=/home/opencode XDG_CONFIG_HOME=/home/opencode/.config XDG_STATE_HOME=/home/opencode/.local/state XDG_DATA_HOME=/home/opencode/.local/share OPENCODE_DISABLE_AUTOUPDATE=1',
-    'RUN mkdir -p /home/opencode/.config/opencode /home/opencode/.local/share/opencode /home/opencode/.local/state/opencode',
-    'WORKDIR /home/opencode',
-    'EXPOSE 49374',
-    'ENTRYPOINT ["opencode","serve","--hostname","0.0.0.0","--port","49374"]',
-  ].join('\n') + '\n'
-}
-
-function compose(report: SheNeedReport): string {
-  return [
-    'services:',
-    '  opencode-she:',
-    '    image: opencode-she:2.3.2',
-    '    container_name: opencode-she',
-    '    restart: unless-stopped',
-    '    read_only: true',
-    '    cap_drop: ["ALL"]',
-    '    security_opt: ["no-new-privileges:true"]',
-    '    tmpfs: ["/tmp:rw,noexec,nosuid,size=1g"]',
-    '    env_file:',
-    '      - /srv/opencode-she/secrets/opencode-password.env',
-    '    ports:',
-    '      - "127.0.0.1:49375:49374"',
-    '    volumes:',
-    '      - /srv/opencode-she/opencode/home:/home/opencode',
-    '      - /srv/opencode-she/secrets/auth.json:/home/opencode/.local/share/opencode/auth.json:ro',
-    `      - ${report.sharedRoot}:/srv/opencode-she/worktrees:rw`,
-  ].join('\n') + '\n'
-}
-
-async function sha256(path: string): Promise<string> {
-  return createHash('sha256').update(await readFile(path)).digest('hex')
-}
-
-/** Generate a secret-free handoff package under the current project. */
-export async function buildSheNeedPackage(input: {
-  readonly report: SheNeedReport
-  readonly projectRoot: string
-}): Promise<SheNeedPackageResult> {
-  const projectRoot = resolve(input.projectRoot)
-  if (!(await exists(projectRoot))) throw new SheNeedError('project_invalid', `project root not found: ${projectRoot}`)
-  const root = join(projectRoot, 'she_setup')
-  const dirName = `she-sandbox-need-${input.report.deploymentId.replace(/[^A-Za-z0-9._-]/g, '-')}`
-  const packageDir = join(root, dirName)
-  const archivePath = join(root, `${dirName}.tar.gz`)
-  await mkdir(packageDir, { recursive: true, mode: 0o700 })
-  try {
-    const files: Record<string, string> = {
-      'NEED.md': needMarkdown(input.report),
-      'need.json': `${JSON.stringify(input.report, null, 2)}\n`,
-      'bootstrap-host.sh': rootBootstrapScript(input.report),
-      'install-sandbox.sh': sandboxInstallScript(input.report),
-      'verify.sh': verifyScript(input.report),
-      'Dockerfile': dockerfile(),
-      'compose.yaml': compose(input.report),
-    }
-    for (const [name, content] of Object.entries(files)) {
-      await writeFile(join(packageDir, name), content, { mode: name.endsWith('.sh') ? 0o700 : 0o600 })
-    }
-    const checksums: string[] = []
-    for (const name of Object.keys(files).sort()) checksums.push(`${await sha256(join(packageDir, name))}  ${name}`)
-    await writeFile(join(packageDir, 'CHECKSUMS'), `${checksums.join('\n')}\n`, { mode: 0o600 })
-    await execFileAsync('tar', ['-czf', archivePath, '-C', root, dirName], { maxBuffer: 8 * 1024 * 1024 })
-    const bytes = await readFile(archivePath)
-    return {
-      deploymentId: input.report.deploymentId,
-      packageDir,
-      archivePath,
-      archiveName: `${dirName}.tar.gz`,
-      archiveBytes: bytes,
-    }
-  } catch (error) {
-    throw error instanceof SheNeedError
-      ? error
-      : new SheNeedError('package_failed', error instanceof Error ? error.message : String(error))
   }
 }

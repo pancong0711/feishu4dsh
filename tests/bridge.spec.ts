@@ -6340,9 +6340,49 @@ describe('bridge: SHE secretary commands (R56)', () => {
     expect(port.sent.some(message => String(message.input.markdown ?? '').includes('已清除当前 scope'))).toBe(true)
   })
 
-  it('R60: /she need renders the sandbox report and /she need package sends the bundle in p2p', async () => {
-    let packaged = false
-    const report = {
+  it('R61: /she sandbox build routes direct flags and rejects a missing custom image', async () => {
+    const specs: unknown[] = []
+    const host = {
+      schema: 1 as const,
+      checkedAt: new Date().toISOString(),
+      currentUser: 'alice',
+      dedicatedUser: 'feishu4dsh-sandbox',
+      checks: [{ id: 'docker-cli', label: 'Docker CLI', status: 'ok' as const, detail: 'Docker version 27' }],
+      currentDockerReady: true,
+      rootlessDocker: true,
+      recommendedTarget: 'current-user' as const,
+    }
+    const { port } = makeEnv({}, {
+      secretarySandboxPreflight: async () => host,
+      secretarySandboxPackage: async input => {
+        specs.push(input.spec)
+        return {
+          sandboxId: 'sandbox-direct',
+          sandboxName: input.spec.name,
+          packageDir: '/tmp/sandbox-direct',
+          archivePath: '/tmp/sandbox-direct.tar.gz',
+          archiveName: 'sandbox-direct.tar.gz',
+          archiveBytes: Buffer.from('bundle'),
+        }
+      },
+    })
+    await textMessage(port, '/she sandbox build --agent blank --name direct-box --tools core,node --target current-user', {
+      chatType: 'p2p', chatId: 'oc_dm_direct',
+    })
+    expect(specs).toHaveLength(1)
+    expect(specs[0]).toMatchObject({
+      name: 'direct-box',
+      target: { kind: 'current-user', user: 'alice' },
+      agent: { id: 'blank' },
+      tools: ['core', 'node'],
+    })
+    await textMessage(port, '/she sandbox build --agent custom', { chatType: 'p2p', chatId: 'oc_dm_direct' })
+    expect(String(port.sent.at(-1)?.input.markdown ?? '')).toContain('sandbox_image_required')
+  })
+
+  it('R62: /she need is a compatibility view and /she need package aliases the unified builder', async () => {
+    let packagedSpec: unknown
+    const attach = {
       schema: 1 as const,
       deploymentId: 'need-1',
       createdAt: '2026-11-22T00:00:00Z',
@@ -6358,24 +6398,47 @@ describe('bridge: SHE secretary commands (R56)', () => {
       ],
       ready: false,
     }
+    const host = {
+      schema: 1 as const,
+      checkedAt: new Date().toISOString(),
+      currentUser: 'alice',
+      dedicatedUser: 'feishu4dsh-sandbox',
+      checks: [
+        { id: 'docker-cli', label: 'Docker CLI', status: 'ok' as const, detail: 'Docker version 27' },
+      ],
+      currentDockerReady: true,
+      rootlessDocker: true,
+      recommendedTarget: 'current-user' as const,
+    }
     const { port } = makeEnv({}, {
-      secretaryNeed: async () => report,
-      secretaryNeedPackage: async () => {
-        packaged = true
+      secretaryNeed: async () => attach,
+      secretarySandboxPreflight: async () => host,
+      secretarySandboxPackage: async input => {
+        packagedSpec = input.spec
         return {
-          deploymentId: 'need-1',
-          packageDir: '/tmp/need-1',
-          archivePath: '/tmp/need-1.tar.gz',
-          archiveName: 'need-1.tar.gz',
+          sandboxId: 'sandbox-1',
+          sandboxName: input.spec.name,
+          packageDir: '/tmp/sandbox-1',
+          archivePath: '/tmp/sandbox-1.tar.gz',
+          archiveName: 'sandbox-1.tar.gz',
           archiveBytes: Buffer.from('bundle'),
         }
       },
     })
     await textMessage(port, '/she need')
-    expect(String(port.sent.at(-1)?.input.markdown ?? '')).toContain('SHE sandbox 就绪检查')
-    expect(String(port.sent.at(-1)?.input.markdown ?? '')).toContain('descriptor')
+    const rendered = String(port.sent.at(-1)?.input.markdown ?? '')
+    expect(rendered).toContain('Sandbox 执行面预检')
+    expect(rendered).toContain('SHE sandbox 就绪检查')
+    expect(rendered).toContain('descriptor')
+    expect(rendered).toContain('兼容入口')
+    await textMessage(port, '/she sandbox status')
+    const canonical = String(port.sent.at(-1)?.input.markdown ?? '')
+    expect(canonical).toContain('Sandbox 执行面预检')
+    expect(canonical).toContain('SHE sandbox 就绪检查')
+    expect(canonical).not.toContain('兼容入口')
     await textMessage(port, '/she need package', { chatType: 'p2p', chatId: 'oc_dm_need' })
-    expect(packaged).toBe(true)
+    expect(packagedSpec).toMatchObject({ agent: { id: 'opencode' }, target: { kind: 'dedicated-user' } })
+    expect(port.sent.some(message => String(message.input.markdown ?? '').includes('已并入 /she sandbox'))).toBe(true)
     expect(port.sent.some(message => 'file' in message.input)).toBe(true)
   })
 
@@ -6475,5 +6538,81 @@ describe('bridge: SHE secretary commands (R56)', () => {
     expect(String(port.sent.at(-3)?.input.markdown)).toContain('1  [active]')
     expect(String(port.sent.at(-2)?.input.markdown)).toContain('1.1  [queued]')
     expect(String(port.sent.at(-1)?.input.markdown)).toContain('OpenCode session：ses_1')
+  })
+
+  it('R61: /she sandbox status and the wizard generate a package through hooks', async () => {
+    const report = {
+      schema: 1 as const,
+      checkedAt: new Date().toISOString(),
+      currentUser: 'alice',
+      dedicatedUser: 'feishu4dsh-sandbox',
+      checks: [
+        { id: 'docker-cli', label: 'Docker CLI', status: 'ok' as const, detail: 'Docker version 27' },
+        { id: 'rootless-docker', label: 'rootless Docker', status: 'ok' as const, detail: 'rootless security option detected' },
+      ],
+      currentDockerReady: true,
+      rootlessDocker: true,
+      recommendedTarget: 'current-user' as const,
+    }
+    const specs: unknown[] = []
+    const { port } = makeEnv({}, {
+      secretarySandboxPreflight: async () => report,
+      secretarySandboxPackage: async input => {
+        specs.push(input.spec)
+        return {
+          sandboxId: 'sandbox-test',
+          sandboxName: input.spec.name,
+          packageDir: '/tmp/pkg',
+          archivePath: '/tmp/pkg.tar.gz',
+          archiveName: 'pkg.tar.gz',
+          archiveBytes: Buffer.from('fake-package'),
+        }
+      },
+    })
+    const chat = { chatType: 'p2p', chatId: 'oc_dm_sandbox' }
+    await textMessage(port, '/she sandbox status', chat)
+    expect(String(port.sent.at(-1)?.input.markdown)).toContain('Sandbox 执行面预检')
+    expect(String(port.sent.at(-1)?.input.markdown)).toContain('rootless Docker')
+
+    await textMessage(port, '/she sandbox', chat)
+    const latestCard = (): { elements: { actions?: { value?: Record<string, unknown>; text?: { content?: string } }[] }[] } => {
+      const updated = port.cardUpdates.at(-1)?.card
+      const sent = [...port.sent].reverse().find(message => 'card' in message.input)?.input.card
+      return (updated ?? sent) as { elements: { actions?: { value?: Record<string, unknown>; text?: { content?: string } }[] }[] }
+    }
+    const click = (value: unknown): void => {
+      port.emit('cardAction', {
+        messageId: 'om_sandbox',
+        chatId: 'oc_dm_sandbox',
+        operator: { openId: 'ou_user', name: 'User' },
+        action: { value, tag: 'button' },
+      })
+    }
+    const findButton = (act: string, label: string): Record<string, unknown> | undefined =>
+      latestCard().elements.flatMap(element => element.actions ?? [])
+        .find(action => action.value?.act === act && String(action.text?.content ?? '').includes(label))?.value
+
+    // target: dedicated account
+    click(findButton('sel', '专用 rootless 账户'))
+    await sleep(10)
+    // agent: OpenCode
+    click(findButton('sel', 'OpenCode'))
+    await sleep(10)
+    // tools: add Node bundle, then advance to confirmation
+    click(findButton('sel', 'Node.js'))
+    await sleep(10)
+    click(findButton('ok', '下一步'))
+    await sleep(10)
+    // final confirmation builds and (p2p) sends the archive directly
+    click(findButton('ok', '生成安装包'))
+    await sleep(20)
+
+    expect(specs).toHaveLength(1)
+    expect(specs[0]).toMatchObject({
+      target: { kind: 'dedicated-user', user: 'feishu4dsh-sandbox' },
+      agent: { id: 'opencode' },
+      tools: ['core', 'node'],
+    })
+    expect(port.sent.some(message => 'file' in message.input)).toBe(true)
   })
 })

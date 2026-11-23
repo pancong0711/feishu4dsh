@@ -63,7 +63,7 @@
 | `src/card-menu.ts` | 交互菜单纯逻辑：菜单注册表（每 scope×kind 一张活卡/TTL）、分页、四类选择卡构建（R32） | Hermes 交互卡片 |
 | `src/host.ts` | dsh 宿主服务的窄契约（唯一适配面） | —（dsh 特有） |
 | `src/runtime.ts` | Cordis `apply`：bootstrap、settings、端口装配、拆卸 | —（dsh 特有） |
-| `src/secretary/` | 可选 SHE 子模块：确定性 `/she` 命令、`/she init update/reset` 生命周期、0600 bootstrap 状态、Topic/Task 状态机、SQLite、串行队列/watcher、OpenCode adapter、worktree、报告校验、`return/accept` 结果回收、`/she need` 执行面检测与 she-sandbox 交付包；不依赖飞书 SDK/dsh 类型 | 秘书转发层 |
+| `src/secretary/` | 可选 SHE 子模块：确定性 `/she` 命令、`/she init update/reset` 生命周期、0600 bootstrap 状态、Topic/Task 状态机、SQLite、串行队列/watcher、OpenCode adapter、worktree、报告校验、`return/accept` 结果回收、`/she need` 执行面检测、`/she sandbox` 固定路径/agent catalog/rootless 预检/无密钥安装包；不依赖飞书 SDK/dsh 类型 | 秘书转发层 + sandbox 供给入口 |
 
 ## 4. 能力映射：Hermes 飞书适配器 → 本插件
 
@@ -186,3 +186,25 @@ SHE 是 feishu4dsh 的可选、默认关闭的能力，不是第二个自由发�
 - 报告必须由执行器写到约定路径；SHE 只校验存在与大小，然后原样回传。
 
 部署与 G1 技术验证记录见 [SECRETARY.md](SECRETARY.md) 与 [R56 工作单](20261119-需求-r56-秘书子模块SHE.md)。
+
+## 11. build-sandbox：控制面与执行面的下一步（R61）
+
+R61 把 sandbox 配置从“手写 Docker 命令”收敛为确定性规格：
+
+```text
+Feishu 卡片 / 文本命令
+  → SandboxSpec（目标账户 / agent / 工具 / 固定路径 / 安全策略）
+  → 无密钥安装包（plan + preflight + bootstrap + create + verify + destroy）
+  → 目标用户在飞书外审查执行
+  → verify-sandbox.sh 用 docker inspect 与实际写探针验收
+```
+
+边界：
+
+- SHE 进程不 sudo、不访问 Docker socket、不创建容器；
+- 安装包只允许固定 XDG 路径，不接受用户自定义挂载根；
+- 容器只挂 workspace/home/cache 三个叶子目录，不挂父目录/Docker socket；
+- 默认 rootless Docker、只读 rootfs、`cap-drop ALL`、`no-new-privileges`、独立网络、资源限额；
+- 自定义镜像只做引用/存在性检查，协议兼容性必须由后续 adapter 校验；
+- 未来多 sandbox 调度采用 host-side broker + sibling container，禁止把 Docker socket 放进 dsh/agent 容器。
+- R62 起 `/she need` 只保留为 `/she sandbox status` 的兼容入口；安装包生成器唯一实现位于 `src/secretary/sandbox.ts`。

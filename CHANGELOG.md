@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.19.0 (2026-11-23)
+
+**`/she sandbox`：agent 沙箱供给面 MVP + 命令面合并**
+
+- 交互式向导：专用 rootless 账户/当前用户 → agent（OpenCode / 空白 / Hermes/dsh 显式镜像 / 自定义）→ 工具包多选 → 确认生成；支持 `/she sandbox status` 只读预检和 `/she sandbox build --agent … --image …` 非交互路径。
+- 固定路径：目标用户 `$HOME/.local/share/feishu4dsh/sandboxes/<name>/{workspace,home,cache,logs}`；仅 workspace/home/cache 三个叶子目录挂入容器；包输出固定 XDG 路径。
+- 安装包：plan.json、host-preflight、bootstrap-host（专用账户 root）、create/verify/destroy、Dockerfile、CHECKSUMS；不含密钥，SHE 不执行 sudo/Docker。
+- 安全：rootless Docker 优先、只读 rootfs、`cap-drop ALL`、`no-new-privileges`、独立网络、资源限制；禁止 Docker socket/host network/privileged；verify 用 docker inspect + 工作区写探针/rootfs 拒绝写探针。
+- 空机器 onboarding：`scripts/sandbox-preflight.sh`（只读）与 `scripts/sandbox-bootstrap-host.sh`（root/dry-run/可选 Debian-Ubuntu Docker CE 安装）。
+- 工具：core/node/python/build/data/search；用户态安装使用 /home/agent 下的 npm prefix、pip user、uv tool/cache。
+- 配置：新增 `secretarySandboxBuilderUser`（默认 `feishu4dsh-sandbox`）。
+- **R62 命令面合并**：`/she sandbox status` 统一输出主机预检 + descriptor/password/OpenCode/runtime 接入检查；`/she sandbox build` 成为唯一安装包生成入口；`need.ts` 删除旧 Dockerfile/compose/脚本生成器和 `needPackage` hook；`/she need` / `need verify` 保留兼容别名，`need package` 提示弃用并转交默认 OpenCode builder。
+- 测试：418/418（新增 sandbox spec/package/preflight、命令解析、wizard 卡、bridge 向导打包与 onboarding 脚本门禁；R62 别名/状态合并回归）。
+
 ## 0.18.0 (2026-11-22)
 
 **R60：`/she need` she-sandbox 执行面检测与无密钥交付包**

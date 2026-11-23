@@ -25,7 +25,8 @@ import { GitWorktreeAllocator } from './worktree.js'
 import { SecretaryService } from './service.js'
 import { SHE_PERMISSION_RULES } from './permissions.js'
 import { acceptTaskReturn, buildTaskReturn, SecretaryReturnError, type TaskAcceptResult, type TaskReturnResult } from './returns.js'
-import { buildSheNeedPackage, inspectSheNeed, readSandboxDescriptor, type SandboxDescriptor, type SheNeedPackageResult, type SheNeedReport } from './need.js'
+import { inspectSheNeed, readSandboxDescriptor, type SandboxDescriptor, type SheNeedReport } from './need.js'
+import { buildSandboxPackage, inspectSandboxHost, type SandboxHostReport, type SandboxPackageResult, type SandboxSpec } from './sandbox.js'
 import type { SecretaryTask, SecretaryTopic } from './types.js'
 import {
   bootstrapWorkspaceOf,
@@ -448,10 +449,14 @@ export class SecretaryRuntime {
     return inspectSheNeed(this.config)
   }
 
-  /** Generate a secret-free she-sandbox handoff package into the project. */
-  async needPackage(projectRoot: string): Promise<SheNeedPackageResult> {
-    const report = await inspectSheNeed(this.config)
-    return buildSheNeedPackage({ report, projectRoot })
+  /** Read-only `/she sandbox status` preflight; no sudo and no container create. */
+  async sandboxPreflight(): Promise<SandboxHostReport> {
+    return inspectSandboxHost(this.config.secretarySandboxBuilderUser)
+  }
+
+  /** Generate a secret-free build-sandbox package outside the chat process. */
+  async sandboxPackage(input: { readonly spec: SandboxSpec; readonly preflight?: SandboxHostReport }): Promise<SandboxPackageResult> {
+    return buildSandboxPackage(input)
   }
 
   /** Fast-forward the current scope's shadow repo from its committed source HEAD. */

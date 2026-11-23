@@ -15,9 +15,10 @@
  */
 
 import { actionRow, card, encodeMenuValue, markdownElement, noteElement, type CardButton, type MenuAct } from './cards.js'
+import type { SandboxWizardState } from './secretary/sandbox.js'
 
 /** What a menu drives. */
-export type MenuKind = 'ws' | 'model' | 'session' | 'browse'
+export type MenuKind = 'ws' | 'model' | 'session' | 'browse' | 'sandbox'
 
 /** How long a menu card stays clickable. */
 export const MENU_TTL_MS = 15 * 60_000
@@ -62,6 +63,8 @@ export interface MenuState {
   readonly indexMap?: readonly number[]
   /** model menus only: the session's effective `provider/model` (drives ➕). */
   readonly currentModel?: string
+  /** sandbox menus only: server-side wizard state. */
+  sandbox?: SandboxWizardState
   page: number
   /** Filled by the bridge once the card message has been sent. */
   messageId?: string
@@ -277,6 +280,56 @@ export function browseCard(
   elements.push(actionRow(navButtons))
   elements.push(noteElement(labels.note))
   return card({ title: labels.title(cwd), template: 'green' }, elements)
+}
+
+/** Labels and content for one step of the `/she sandbox` wizard. */
+export interface SandboxWizardLabels {
+  readonly title: (step: SandboxWizardState['step']) => string
+  readonly targetNote: string
+  readonly agentNote: string
+  readonly toolsNote: string
+  readonly confirmNote: string
+  readonly back: string
+  readonly next: string
+  readonly build: string
+  readonly cancel?: string
+  readonly summary: (wizard: SandboxWizardState) => string
+  readonly toolLabel: (label: string, selected: boolean) => string
+}
+
+/**
+ * The `/she sandbox` builder card. Wizard state lives in MenuState.sandbox;
+ * the card only carries {menuId, act, idx, chatId}. Tool selections are
+ * server-side toggles, and the final build button is an explicit confirmation.
+ */
+export function sandboxWizardCard(
+  chatId: string,
+  menu: MenuState,
+  labels: SandboxWizardLabels,
+): object {
+  const wizard = menu.sandbox
+  if (wizard === undefined) return card({ title: labels.title('target'), template: 'grey' }, [markdownElement(labels.targetNote)])
+  const elements: object[] = [markdownElement(labels.summary(wizard))]
+  const buttons = menu.options.map((option, i) =>
+    menuButton(option.label, menuButtonValue(chatId, menu.id, 'sel', i), false))
+  if (buttons.length > 0) elements.push(...chunkButtons(buttons))
+  const nav: CardButton[] = []
+  if (wizard.step !== 'target') nav.push({ label: labels.back, value: menuButtonValue(chatId, menu.id, 'up') })
+  if (wizard.step === 'tools') nav.push({ label: labels.next, value: menuButtonValue(chatId, menu.id, 'ok'), style: 'primary' })
+  if (wizard.step === 'confirm') nav.push({ label: labels.build, value: menuButtonValue(chatId, menu.id, 'ok'), style: 'primary' })
+  if (wizard.step === 'target' && labels.cancel !== undefined) {
+    nav.push({ label: labels.cancel, value: menuButtonValue(chatId, menu.id, 'cancel'), style: 'default' })
+  }
+  if (nav.length > 0) elements.push(actionRow(nav))
+  const note = wizard.step === 'target'
+    ? labels.targetNote
+    : wizard.step === 'agent'
+      ? labels.agentNote
+      : wizard.step === 'tools'
+        ? labels.toolsNote
+        : labels.confirmNote
+  elements.push(noteElement(note))
+  return card({ title: labels.title(wizard.step), template: wizard.step === 'confirm' ? 'orange' : 'blue' }, elements)
 }
 
 /** The settled card replacing a menu after a successful action. */

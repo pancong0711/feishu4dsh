@@ -153,7 +153,7 @@ export function actionRow(buttons: CardButton[]): object {
 export type CardActionKind = 'approval' | 'file-send' | 'menu' | 'question'
 
 /** Actions a menu card supports (`R32`). */
-export type MenuAct = 'sel' | 'page' | 'up' | 'ok' | 'addcur'
+export type MenuAct = 'sel' | 'page' | 'up' | 'ok' | 'addcur' | 'cancel'
 
 /** The decoded payload behind one approval-style card click. */
 export interface ApprovalActionPayload {
@@ -215,7 +215,7 @@ export function parseMenuValue(value: string): MenuActionPayload | null {
   const actText = parts[2]
   const idxText = parts[3]
   const chatId = parts[4]
-  const acts: MenuAct[] = ['sel', 'page', 'up', 'ok', 'addcur']
+  const acts: MenuAct[] = ['sel', 'page', 'up', 'ok', 'addcur', 'cancel']
   if (menuId === undefined || actText === undefined || idxText === undefined || chatId === undefined) return null
   if (menuId === '' || chatId === '' || !acts.includes(actText as MenuAct)) return null
   const idx = idxText === '-' ? undefined : Number(idxText)
@@ -248,7 +248,7 @@ export function decodeActionValue(value: unknown): CardActionPayload | null {
     const menuId = record.menuId
     const act = record.act
     const chatId = record.chatId
-    const acts: MenuAct[] = ['sel', 'page', 'up', 'ok', 'addcur']
+    const acts: MenuAct[] = ['sel', 'page', 'up', 'ok', 'addcur', 'cancel']
     if (typeof menuId !== 'string' || menuId === ''
       || typeof act !== 'string' || !acts.includes(act as MenuAct)
       || typeof chatId !== 'string' || chatId === '') {

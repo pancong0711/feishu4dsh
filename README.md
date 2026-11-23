@@ -25,6 +25,19 @@ dsh --profile feishu4dsh    # 日志出现 `feishu4dsh: connected as <机器人>
 
 本插件自带 Agent 预设声明（`standard` = 完整工具集 / `minimal` = 仅持久 shell）与宿主工具面让位 patch，**为专用 profile 设计**：请让它独占一个 profile 进程（`dsh web` 如需控制台可另起一个 profile，二者共享 `$DSH_HOME`）。默认 **WebSocket 长连接**，无需公网/回调 URL。在飞书私聊机器人或在群里 @它即可。
 
+### 从空机器初始化 agent sandbox（可选）
+
+`/she sandbox` 只生成无密钥安装包；新机器先用仓库脚本检查/准备专用 rootless 账户。默认推荐专用账户，不建议把 agent 与 dsh/飞书凭据放在同一 home。
+
+```sh
+./scripts/sandbox-preflight.sh --user feishu4dsh-sandbox
+sudo ./scripts/sandbox-bootstrap-host.sh --user feishu4dsh-sandbox --dry-run
+sudo ./scripts/sandbox-bootstrap-host.sh --user feishu4dsh-sandbox --install-docker-ce
+# 飞书： /she sandbox
+```
+
+固定路径为 `$HOME/.local/share/feishu4dsh/sandboxes/<sandbox-name>/{workspace,home,cache,logs}`。容器只挂 workspace/home/cache 三个叶子目录，不挂 Docker socket、home 父目录或 `/srv` 根；详见 [docs/SECRETARY.md](docs/SECRETARY.md)。
+
 ## 进程管理（systemd 推荐）
 
 仓库部署环境已配置 user 级 systemd unit：
@@ -62,7 +75,7 @@ journalctl --user -u dsh-feishu4dsh.service -f
 | 交互选择卡 | `/ws` `/model` `/session` 均有点选卡片（当前项标 ✅，`/model` 支持分页下拉）；点击以点击者身份过审批 ACL，菜单 15 分钟自动失效 |
 | 授权 | 应用可用范围 + 发送人/群白名单 + 审批人名单（只收窄） |
 | 命令 | `/help` `/new` `/mode` `/reasoning` `/session` `/stop` `/status` `/ws` `/cd` `/model`（含 effort、清单增删与点选卡片） |
-| **秘书（SHE，可选）** | 默认关闭。审批人可用 `/she init` 一键创建共享 shadow repo/runtime/ACL 与 0600 状态文件，`/she init update/reset` 管理仓库生命周期；`/she need [package|verify]` 检查并生成不含密钥的 she-sandbox 交付包；`/she return` 把结果复制到项目 `she_returns/`，`/she accept` 应用并 stage（不 commit）；`/she submit/continue/list/status/report/stop/resume/topic …` 把任务确定性转交本机 OpenCode；Topic 独立 session + git worktree + 串行队列，SQLite 持久化、重启恢复、报告原样回传。启用见 [docs/SECRETARY.md](docs/SECRETARY.md) |
+| **秘书（SHE，可选）** | 默认关闭。审批人可用 `/she init` 一键创建共享 shadow repo/runtime/ACL 与 0600 状态文件；`/she need` 保留为兼容入口（等同 `/she sandbox status`）；**`/she sandbox` 是唯一沙箱供给入口（`status` 合并主机预检与 SHE 接入检查，`build` 生成固定路径、最小挂载、无密钥安装包）**；`/she return` / `/she accept` 负责结果回收与 stage；`/she submit/continue/list/status/report/stop/resume/topic …` 把任务确定性转交本机 OpenCode。详见 [docs/SECRETARY.md](docs/SECRETARY.md) |
 | 文件 | 入站进 `.feishu4dsh/inbox/`；`send_file` 回传，群聊逐次审批 |
 | i18n | `locale: auto` 跟随读者语言，默认中文 |
 
@@ -77,6 +90,7 @@ journalctl --user -u dsh-feishu4dsh.service -f
 - **群聊出站必审批**：无关闭项（防提示注入外泄）。
 - **工作区切换准入**：仅默认 / 已注册 / `/ws add` / `workspaceRoots` 之内。
 - **会话单写入方约定**：请勿在 dsh web 中打开/驱动飞书通道创建的会话（`feishu-*` 前缀）——双写入方会导致输出错乱乃至会话日志损坏、飞书端中断；宿主暂无归属排他能力，此项为长期修复目标（详见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) §4）。
+- **Agent sandbox 隔离**：`/she sandbox` 不执行 sudo/Docker；生成脚本使用 rootless Docker、只读 rootfs、`cap-drop ALL`、`no-new-privileges`，只挂 workspace/home/cache 三个叶子目录，禁止 Docker socket/host network/privileged。
 
 ## 开发
 
@@ -105,7 +119,7 @@ pnpm build        # tsc 产出 lib/
 
 ## 路线图
 
-原生思考过程消息 · 提问卡片（对接 `ask_user_question`）· 多机器人 @ 交接 · 斜杠命令面板同步。
+原生思考过程消息 · 提问卡片（对接 `ask_user_question`）· 多机器人 @ 交接 · 斜杠命令面板同步 · sandbox broker（兄弟容器调度）· 多 agent adapter 与显式共享卷。
 
 ## License
 

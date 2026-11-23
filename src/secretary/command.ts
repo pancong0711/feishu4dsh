@@ -3,6 +3,19 @@
  * @module feishu4dsh/secretary/command
  */
 
+import type { SandboxAgentId, SandboxNetworkMode, SandboxTargetKind, SandboxToolId } from './sandbox.js'
+
+/** Optional non-interactive `/she sandbox build` selections. */
+export interface SheSandboxBuildOptions {
+  readonly name?: string
+  readonly targetKind?: SandboxTargetKind
+  readonly agentId?: SandboxAgentId
+  readonly image?: string
+  readonly tools?: readonly SandboxToolId[]
+  readonly networkMode?: SandboxNetworkMode
+  readonly hostPort?: number
+}
+
 export type SheCommand =
   /** Help query; `topic` absent means the global command list. */
   | { readonly kind: 'help'; readonly topic?: string }
@@ -16,6 +29,8 @@ export type SheCommand =
   | { readonly kind: 'doctor' }
   /** Sandbox prerequisite check / package generation / verification. */
   | { readonly kind: 'need'; readonly action: 'status' | 'package' | 'verify' }
+  /** Build-sandbox wizard, read-only host status, or non-interactive build. */
+  | { readonly kind: 'sandbox'; readonly action: 'wizard' | 'status' | 'build'; readonly options?: SheSandboxBuildOptions }
   /** Copy one task's report/patch/outputs into `<project>/she_returns/<task-id>/`. */
   | { readonly kind: 'return'; readonly reference: string }
   /** Apply a returned task bundle to the project working tree and stage affected paths. */
@@ -42,7 +57,69 @@ function helpTopicOf(raw: string): string {
   if (value === 'init update' || value === 'update') return 'update'
   if (value === 'init reset' || value === 'reset') return 'reset'
   if (value === 'need package' || value === 'need verify') return 'need'
+  if (value === 'sandbox' || value === 'sandbox build' || value === 'sandbox status') return 'sandbox'
   return value
+}
+
+
+function parseSandboxBuildOptions(raw: string): SheSandboxBuildOptions | { readonly error: string } {
+  const tokens = raw.trim() === '' ? [] : raw.trim().split(/\s+/)
+  const options: {
+    name?: string
+    targetKind?: SandboxTargetKind
+    agentId?: SandboxAgentId
+    image?: string
+    tools?: SandboxToolId[]
+    networkMode?: SandboxNetworkMode
+    hostPort?: number
+  } = {}
+  const toolIds = new Set<SandboxToolId>(['core', 'node', 'python', 'build', 'data', 'search'])
+  const agentIds = new Set<SandboxAgentId>(['opencode', 'hermes', 'deepseek-harness', 'blank', 'custom'])
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]
+    if (token === undefined) return { error: 'sandbox_usage' }
+    const takeValue = (): string | undefined => {
+      const value = tokens[i + 1]
+      if (value === undefined) return undefined
+      i += 1
+      return value
+    }
+    if (token === '--name') {
+      const value = takeValue()
+      if (value === undefined) return { error: 'sandbox_usage' }
+      options.name = value
+    } else if (token === '--target') {
+      const value = takeValue()
+      if (value !== 'current-user' && value !== 'dedicated-user') return { error: 'sandbox_usage' }
+      options.targetKind = value
+    } else if (token === '--agent') {
+      const value = takeValue()
+      if (value === undefined || !agentIds.has(value as SandboxAgentId)) return { error: 'sandbox_usage' }
+      options.agentId = value as SandboxAgentId
+    } else if (token === '--image') {
+      const value = takeValue()
+      if (value === undefined) return { error: 'sandbox_usage' }
+      options.image = value
+    } else if (token === '--tools') {
+      const value = takeValue()
+      if (value === undefined) return { error: 'sandbox_usage' }
+      const ids = value.split(',').map(item => item.trim()).filter(item => item !== '')
+      if (ids.length === 0 || ids.some(id => !toolIds.has(id as SandboxToolId))) return { error: 'sandbox_usage' }
+      options.tools = ids as SandboxToolId[]
+    } else if (token === '--network') {
+      const value = takeValue()
+      if (value !== 'none' && value !== 'egress') return { error: 'sandbox_usage' }
+      options.networkMode = value
+    } else if (token === '--host-port') {
+      const value = takeValue()
+      const port = value === undefined ? NaN : Number(value)
+      if (!Number.isInteger(port) || port < 1024 || port > 65535) return { error: 'sandbox_usage' }
+      options.hostPort = port
+    } else {
+      return { error: 'sandbox_usage' }
+    }
+  }
+  return options
 }
 
 function helpFor(topic: string | undefined): SheCommand {
@@ -75,6 +152,18 @@ export function parseSheCommand(text: string): SheCommand {
   if (line === 'need package') return { kind: 'need', action: 'package' }
   if (line === 'need verify') return { kind: 'need', action: 'verify' }
   if (line.startsWith('need ')) return { kind: 'invalid', reason: 'need_usage' }
+  if (line === 'sandbox') return { kind: 'sandbox', action: 'wizard' }
+  if (line === 'sandbox status') return { kind: 'sandbox', action: 'status' }
+  if (line === 'sandbox build') return { kind: 'sandbox', action: 'wizard' }
+  if (line.startsWith('sandbox build ')) {
+    const parsed = parseSandboxBuildOptions(line.slice('sandbox build '.length))
+    if ('error' in parsed) return { kind: 'invalid', reason: parsed.error }
+    if (parsed.agentId === 'custom' && (parsed.image === undefined || parsed.image.trim() === '')) {
+      return { kind: 'invalid', reason: 'sandbox_image_required' }
+    }
+    return { kind: 'sandbox', action: 'build', options: parsed }
+  }
+  if (line.startsWith('sandbox ')) return { kind: 'invalid', reason: 'sandbox_usage' }
   if (line === 'return') return { kind: 'invalid', reason: 'return_usage' }
   if (line.startsWith('return ')) {
     const ref = line.slice(7).trim()
