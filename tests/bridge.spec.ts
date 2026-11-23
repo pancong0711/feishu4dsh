@@ -6416,9 +6416,9 @@ describe('bridge: SHE secretary commands (R56)', () => {
       action: { value: current?.value, tag: 'button' },
     })
     await sleep(20)
-    const updated = port.cardUpdates.at(-1)?.card as { header?: { title?: { content?: string } }; elements: { text?: { content?: string } }[] }
-    expect(updated.header?.title?.content).toContain('选择 Agent')
-    expect(updated.elements.some(element => String(element.text?.content ?? '').includes('当前用户'))).toBe(true)
+    const nextCard = [...port.sent].reverse().find(message => 'card' in message.input)?.input.card as { header?: { title?: { content?: string } }; elements: { text?: { content?: string } }[] }
+    expect(nextCard.header?.title?.content).toContain('选择 Agent')
+    expect(nextCard.elements.some(element => String(element.text?.content ?? '').includes('当前用户'))).toBe(true)
     expect(port.sent.some(message => String(message.input.markdown ?? '').includes('卡片状态更新失败'))).toBe(false)
   })
 
@@ -6618,9 +6618,8 @@ describe('bridge: SHE secretary commands (R56)', () => {
 
     await textMessage(port, '/she sandbox', chat)
     const latestCard = (): { elements: { actions?: { value?: Record<string, unknown>; text?: { content?: string } }[] }[] } => {
-      const updated = port.cardUpdates.at(-1)?.card
       const sent = [...port.sent].reverse().find(message => 'card' in message.input)?.input.card
-      return (updated ?? sent) as { elements: { actions?: { value?: Record<string, unknown>; text?: { content?: string } }[] }[] }
+      return sent as { elements: { actions?: { value?: Record<string, unknown>; text?: { content?: string } }[] }[] }
     }
     const click = (value: unknown): void => {
       port.emit('cardAction', {

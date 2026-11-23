@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.2 (2026-11-23)
+
+**R63-a：`/she sandbox` 改为逐步新卡片**
+
+- 真机日志确认 card action 已到达、`currentDockerReady=true`、handler 未抛错，但原卡片的 `im.v1.message.patch` 在客户端没有可见刷新。
+- 向导从“原地 patch 当前卡片”改为“发送下一步新卡片”：每次目标/Agent/工具步骤推进都发送一张新卡，并 retire 旧菜单；旧卡按钮点击只会得到 menu-gone 提示。
+- 新卡优先作为原卡片消息的线程回复发送；失败则回退为普通聊天发送。
+- 保留 current-user 预检 warning 后继续、updateCard 失败文本回退与 card action 诊断日志。
+- 全量测试 419/419。
+
 ## 0.19.1 (2026-11-23)
 
 **R63：修复 `/she sandbox` 目标账户卡片点击异常**

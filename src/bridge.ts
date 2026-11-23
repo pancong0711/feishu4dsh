@@ -3181,11 +3181,53 @@ async function buildAndSendSandboxPackage(
   await sendShePackageFile(env, state, binding, replyTo, result.archiveBytes, result.archiveName)
 }
 
-/** Refresh a sandbox wizard card, with a plain-text fallback if Feishu rejects the update. */
-async function refreshSandboxCard(env: BridgeEnv, state: BridgeState, menu: MenuState, event: CardActionEvent): Promise<void> {
-  if (!(await refreshMenuCard(env, state, menu))) {
-    await safeSend(env, event.chatId, state.copy.sheSandboxCardUpdateFailed)
+/**
+ * Send the NEXT sandbox wizard card as a new message instead of patching the
+ * current one. Feishu card patches were observed to return success while some
+ * clients did not visibly refresh; a new card gives the user an unambiguous
+ * next step. The old menu is retired, so its stale buttons resolve to
+ * "menu gone" rather than acting on the new state.
+ */
+async function sendSandboxStepCard(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  wizard: SandboxWizardState,
+  event: CardActionEvent,
+): Promise<boolean> {
+  const menu: MenuState = {
+    id: createMenuId(),
+    kind: 'sandbox',
+    chatId: binding.chatId,
+    scopeKey: binding.scopeKey,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + MENU_TTL_MS,
+    page: 0,
+    options: sandboxMenuOptions(wizard, state.copy),
+    sandbox: wizard,
   }
+  const cardObject = sandboxWizardCard(binding.chatId, menu, sandboxWizardLabelsFor(state))
+  let sent = await env.port.send(binding.chatId, { card: cardObject },
+    { replyTo: event.messageId, replyInThread: true }).catch(error => {
+      env.report(`feishu4dsh: sandbox next-card threaded send failed: ${describeError(error)}`)
+      return undefined
+    })
+  if (sent === undefined) {
+    // Do not leave the user without a next card if replying inside the thread
+    // is rejected by the client/API; fall back to an ordinary chat message.
+    sent = await env.port.send(binding.chatId, { card: cardObject }).catch(error => {
+      env.report(`feishu4dsh: sandbox next-card fallback send failed: ${describeError(error)}`)
+      return undefined
+    })
+  }
+  if (sent === undefined) {
+    await safeSend(env, event.chatId, state.copy.sheSandboxCardUpdateFailed)
+    return false
+  }
+  menu.messageId = sent.messageId
+  registerMenu(env, state, menu)
+  env.report(`feishu4dsh: sandbox wizard advanced step=${wizard.step} menu=${menu.id}`)
+  return true
 }
 
 /** One sandbox-wizard click: target → agent → tool toggles → confirm/build. */
@@ -3211,15 +3253,15 @@ async function handleSandboxMenuAction(
     if (wizard.step === 'agent') wizard.step = 'target'
     else if (wizard.step === 'tools') wizard.step = 'agent'
     else if (wizard.step === 'confirm') wizard.step = 'tools'
-    menu.options = sandboxMenuOptions(wizard, state.copy)
-    await refreshSandboxCard(env, state, menu, event)
+    await sendSandboxStepCard(env, state, binding, wizard, event)
+    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle(wizard.step), state.copy.sheSandboxNext)
     return
   }
   if (payload.act === 'ok') {
     if (wizard.step === 'tools') {
       wizard.step = 'confirm'
-      menu.options = sandboxMenuOptions(wizard, state.copy)
-      await refreshSandboxCard(env, state, menu, event)
+      await sendSandboxStepCard(env, state, binding, wizard, event)
+      await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('confirm'), state.copy.sheSandboxNext)
       return
     }
     if (wizard.step === 'confirm') {
@@ -3250,8 +3292,8 @@ async function handleSandboxMenuAction(
       wizard.targetKind = 'dedicated-user'
     }
     wizard.step = 'agent'
-    menu.options = sandboxMenuOptions(wizard, state.copy)
-    await refreshSandboxCard(env, state, menu, event)
+    await sendSandboxStepCard(env, state, binding, wizard, event)
+    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('agent'), state.copy.sheSandboxNext)
     return
   }
   if (wizard.step === 'agent') {
@@ -3263,8 +3305,8 @@ async function handleSandboxMenuAction(
     }
     wizard.agentId = profile.id as SandboxAgentId
     wizard.step = 'tools'
-    menu.options = sandboxMenuOptions(wizard, state.copy)
-    await refreshSandboxCard(env, state, menu, event)
+    await sendSandboxStepCard(env, state, binding, wizard, event)
+    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('tools'), state.copy.sheSandboxNext)
     return
   }
   if (wizard.step === 'tools') {
@@ -3273,8 +3315,8 @@ async function handleSandboxMenuAction(
     const at = wizard.tools.indexOf(bundle.id)
     if (at >= 0) wizard.tools.splice(at, 1)
     else wizard.tools.push(bundle.id)
-    menu.options = sandboxMenuOptions(wizard, state.copy)
-    await refreshSandboxCard(env, state, menu, event)
+    await sendSandboxStepCard(env, state, binding, wizard, event)
+    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('tools'), state.copy.sheSandboxNext)
   }
 }
 

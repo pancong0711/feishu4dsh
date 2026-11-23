@@ -51,6 +51,7 @@
 | 0.15.2 | 2026-10-24 | **R53 修复每轮直接失败**：preset persona 残留 0.2.0 时代的 `suffix: Your working directory is {{cwd}}.`，而 dsh 0.2.1 的提示词插值器只注册 `provider`/`model` 且对未知变量严格抛错（组装期、任何模型请求之前），删该行并加变量白名单门禁 |
 | 0.15.3 | 2026-10-24 | **R54 preset 真实性门禁**：R52/R53 同类缺陷本机均复现不了（70/77 会话跑 minimal、`standard` 路径零流量，且缺陷在运行时非组合期、单测跑手写桩）；补两条防线——patch 生效值里的 `{{var}}` 必须在宿主注册集合内、两个 preset 的 persona 交给真实 `renderPrompt` 渲染（宿主不可达自动 skip）；逐 id 对账上游 preset 确认其余差异均为有意设计 |
 | 0.15.4 | 2026-11-19 | **R55 effort 生命周期加固**：真机确认精确键存在时 opencode-go/deepseek-v4.1-flash high 已生效；修复历史 header effort 粘滞（改档/清档不生效）、`default` 清键被 settings deep-merge 保留（重启回魂）、持久化失败仍谎报成功；档位改为宿主能力驱动且不再放过 `max`；`/status` 分列偏好与最近请求实测；本地安装器补齐 dsh 同款模型切换 notice |
+| 0.19.2 | 2026-11-23 | **R63-a `/she sandbox` 逐步新卡片**：服务端日志确认 click 已到达且 handler 未抛错，但原卡片 patch 在客户端不可见；改为每步发送新卡并 retire 旧菜单，优先线程回复发送、失败回退普通发送；419/419 |
 | 0.19.1 | 2026-11-23 | **R63 `/she sandbox` 目标账户点击修复**：current-user 预检未通过时改为 warning 后继续；卡片更新失败发送文本回退；补齐 card action/wizard 诊断日志；419/419 |
 | 0.19.0 | 2026-11-23 | **R61/R62 agent sandbox 供给面**：`/she sandbox` 交互式目标账户/agent/工具选择，固定 XDG 路径、最小叶子挂载、只读 rootfs/cap-drop/no-new-privileges、无 Docker socket 的无密钥安装包；空机器 preflight/bootstrap 脚本；`/she need` 并入 `sandbox status`，删除旧安装包生成器，`need` 仅保留兼容别名；418/418 |
 | 0.18.0 | 2026-11-22 | **R60 `/she need`**：执行面只读检测 + 无密钥 she-sandbox 交付包（host bootstrap/non-root install/verify/Dockerfile/compose）；频道侧用户运行时获取；descriptor 接入 init；409/409 |
