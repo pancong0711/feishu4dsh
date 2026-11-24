@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.20.2 (2026-11-24)
+
+**R66：开发环境检测与 pnpm 非 root 安装**
+
+- 新增 `scripts/bootstrap-dev-env.sh`：
+  - `--check` 只读检测 Node/pnpm/npm/corepack/node_modules/lib；
+  - `--install-pnpm` 优先 corepack，必要时用户级 npm prefix 安装 pnpm；不使用 sudo。
+- 不自动安装 Node/Docker/agent，不创建容器，不读取密钥。
+- README/onboarding 测试清单补充首次 clone 的前置检查步骤。
+- 新增局域网只读 artifact share 设计稿，明确其定位是“最小仓库/产物分发”，不替代可写 `/srv` 共享卷。
+- 全量测试 422/422。
+
 ## 0.20.1 (2026-11-24)
 
 **R65-a：onboarding 与安装包文档命令逐行说明**

@@ -23,6 +23,16 @@ const hostReport = {
 }
 
 describe('terminal sandbox onboarding (R65)', () => {
+  it('checks development prerequisites and points to the non-root pnpm installer', () => {
+    const script = join(repoRoot, 'scripts', 'bootstrap-dev-env.sh')
+    execFileSync('bash', ['-n', script])
+    const output = execFileSync('bash', [script, '--check'], { encoding: 'utf8' })
+    expect(output).toContain('Node.js')
+    expect(output).toContain('pnpm')
+    expect(output).toContain('pnpm install --frozen-lockfile')
+    expect(output).toContain('bootstrap-dev-env.sh --install-pnpm')
+  })
+
   it('generates a self-contained current-user kit with ordered non-root scripts', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'she-onboard-'))
     try {

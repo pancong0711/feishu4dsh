@@ -4,7 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ ! -f lib/secretary/onboard.js ] || [ ! -f lib/secretary/sandbox.js ]; then
   if [ ! -x node_modules/.bin/tsc ]; then
-    echo "dependencies are not installed; run: pnpm install" >&2
+    echo "Node dependencies are not installed; run: pnpm install --frozen-lockfile" >&2
+    echo "This installs TypeScript/Feishu SDK/Cordis/Vitest into node_modules; it does not install Docker or agents." >&2
     exit 1
   fi
   echo "building feishu4dsh for onboarding..."
