@@ -6417,9 +6417,39 @@ describe('bridge: SHE secretary commands (R56)', () => {
     })
     await sleep(20)
     const nextCard = [...port.sent].reverse().find(message => 'card' in message.input)?.input.card as { header?: { title?: { content?: string } }; elements: { text?: { content?: string } }[] }
-    expect(nextCard.header?.title?.content).toContain('选择 Agent')
+    expect(nextCard.header?.title?.content).toContain('选择角色')
     expect(nextCard.elements.some(element => String(element.text?.content ?? '').includes('当前用户'))).toBe(true)
     expect(port.sent.some(message => String(message.input.markdown ?? '').includes('卡片状态更新失败'))).toBe(false)
+  })
+
+  it('R69: /she sandbox management routes list/info/stats/actions through broker hooks', async () => {
+    const calls: unknown[] = []
+    const record = {
+      name: 'sbx-0001', role: 'worker', containerName: 'feishu4dsh-sbx-0001', networkName: 'feishu4dsh-sbx-0001-net',
+      root: '/tmp/sbx-0001', workspace: '/tmp/sbx-0001/workspace', inbox: '/tmp/sbx-0001/inbox', outbox: '/tmp/sbx-0001/outbox',
+      descriptor: '/tmp/sbx-0001/sandbox.json', allowedCallers: ['main'], allowedTargets: [],
+      createdAt: '2026-11-24T00:00:00Z', updatedAt: '2026-11-24T00:00:00Z',
+      spec: { name: 'sbx-0001', role: 'worker', agent: { label: '空白基础沙箱', id: 'blank' }, target: { kind: 'current-user', user: 'alice' } },
+      status: { state: 'running' as const },
+    }
+    const { port } = makeEnv({}, {
+      secretarySandboxList: async () => [record as never],
+      secretarySandboxInfo: async name => name === 'sbx-0001' ? record as never : undefined,
+      secretarySandboxStats: async () => ({ cpuPercent: '2%', memoryUsage: '10MiB / 1GiB', pids: '4', sampledAt: 'now' }),
+      secretarySandboxAction: async (action, name) => { calls.push({ action, name }) },
+    })
+    await textMessage(port, '/she sandbox list')
+    expect(String(port.sent.at(-1)?.input.markdown)).toContain('sbx-0001  [worker]  running')
+    await textMessage(port, '/she sandbox info sbx-0001')
+    expect(String(port.sent.at(-1)?.input.markdown)).toContain('container：feishu4dsh-sbx-0001')
+    await textMessage(port, '/she sandbox stats sbx-0001')
+    expect(String(port.sent.at(-1)?.input.markdown)).toContain('CPU：2%')
+    await textMessage(port, '/she sandbox start sbx-0001')
+    expect(calls).toEqual([{ action: 'start', name: 'sbx-0001' }])
+    await textMessage(port, '/she sandbox destroy sbx-0001')
+    expect(String(port.sent.at(-1)?.input.markdown)).toContain('--yes')
+    await textMessage(port, '/she sandbox destroy sbx-0001 --yes')
+    expect(calls).toEqual([{ action: 'start', name: 'sbx-0001' }, { action: 'destroy', name: 'sbx-0001' }])
   })
 
   it('R62: /she need is a compatibility view and /she need package aliases the unified builder', async () => {
@@ -6636,6 +6666,9 @@ describe('bridge: SHE secretary commands (R56)', () => {
     // target: dedicated account
     click(findButton('sel', '专用 rootless 账户'))
     await sleep(10)
+    // role: standalone
+    click(findButton('sel', 'standalone'))
+    await sleep(10)
     // agent: OpenCode
     click(findButton('sel', 'OpenCode'))
     await sleep(10)
@@ -6651,6 +6684,7 @@ describe('bridge: SHE secretary commands (R56)', () => {
     expect(specs).toHaveLength(1)
     expect(specs[0]).toMatchObject({
       target: { kind: 'dedicated-user', user: 'feishu4dsh-sandbox' },
+      role: 'standalone',
       agent: { id: 'opencode' },
       tools: ['core', 'node'],
     })

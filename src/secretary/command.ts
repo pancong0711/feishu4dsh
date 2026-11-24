@@ -3,11 +3,15 @@
  * @module feishu4dsh/secretary/command
  */
 
-import type { SandboxAgentId, SandboxNetworkMode, SandboxTargetKind, SandboxToolId } from './sandbox.js'
+import type { SandboxAgentId, SandboxNetworkMode, SandboxRole, SandboxTargetKind, SandboxToolId } from './sandbox.js'
 
 /** Optional non-interactive `/she sandbox build` selections. */
 export interface SheSandboxBuildOptions {
   readonly name?: string
+  readonly suffix?: string
+  readonly role?: SandboxRole
+  readonly allowedCallers?: readonly string[]
+  readonly allowedTargets?: readonly string[]
   readonly targetKind?: SandboxTargetKind
   readonly agentId?: SandboxAgentId
   readonly image?: string
@@ -30,7 +34,13 @@ export type SheCommand =
   /** Sandbox prerequisite check / package generation / verification. */
   | { readonly kind: 'need'; readonly action: 'status' | 'package' | 'verify' }
   /** Build-sandbox wizard, read-only host status, or non-interactive build. */
-  | { readonly kind: 'sandbox'; readonly action: 'wizard' | 'status' | 'build'; readonly options?: SheSandboxBuildOptions }
+  | {
+      readonly kind: 'sandbox'
+      readonly action: 'wizard' | 'status' | 'build' | 'list' | 'info' | 'stats' | 'start' | 'stop' | 'restart' | 'destroy'
+      readonly options?: SheSandboxBuildOptions
+      readonly reference?: string
+      readonly confirm?: boolean
+    }
   /** Copy one task's report/patch/outputs into `<project>/she_returns/<task-id>/`. */
   | { readonly kind: 'return'; readonly reference: string }
   /** Apply a returned task bundle to the project working tree and stage affected paths. */
@@ -66,6 +76,10 @@ function parseSandboxBuildOptions(raw: string): SheSandboxBuildOptions | { reado
   const tokens = raw.trim() === '' ? [] : raw.trim().split(/\s+/)
   const options: {
     name?: string
+    suffix?: string
+    role?: SandboxRole
+    allowedCallers?: string[]
+    allowedTargets?: string[]
     targetKind?: SandboxTargetKind
     agentId?: SandboxAgentId
     image?: string
@@ -88,6 +102,22 @@ function parseSandboxBuildOptions(raw: string): SheSandboxBuildOptions | { reado
       const value = takeValue()
       if (value === undefined) return { error: 'sandbox_usage' }
       options.name = value
+    } else if (token === '--suffix') {
+      const value = takeValue()
+      if (value === undefined) return { error: 'sandbox_usage' }
+      options.suffix = value
+    } else if (token === '--role') {
+      const value = takeValue()
+      if (value !== 'standalone' && value !== 'main' && value !== 'worker' && value !== 'observer' && value !== 'utility') return { error: 'sandbox_usage' }
+      options.role = value
+    } else if (token === '--allowed-callers') {
+      const value = takeValue()
+      if (value === undefined) return { error: 'sandbox_usage' }
+      options.allowedCallers = value.split(',').map(item => item.trim()).filter(Boolean)
+    } else if (token === '--allowed-targets') {
+      const value = takeValue()
+      if (value === undefined) return { error: 'sandbox_usage' }
+      options.allowedTargets = value.split(',').map(item => item.trim()).filter(Boolean)
     } else if (token === '--target') {
       const value = takeValue()
       if (value !== 'current-user' && value !== 'dedicated-user') return { error: 'sandbox_usage' }
@@ -155,6 +185,27 @@ export function parseSheCommand(text: string): SheCommand {
   if (line === 'sandbox') return { kind: 'sandbox', action: 'wizard' }
   if (line === 'sandbox status') return { kind: 'sandbox', action: 'status' }
   if (line === 'sandbox build') return { kind: 'sandbox', action: 'wizard' }
+  if (line === 'sandbox list') return { kind: 'sandbox', action: 'list' }
+  if (line === 'sandbox stats') return { kind: 'sandbox', action: 'stats' }
+  if (line.startsWith('sandbox stats ')) {
+    const reference = line.slice('sandbox stats '.length).trim()
+    return reference === '' ? { kind: 'invalid', reason: 'sandbox_usage' } : { kind: 'sandbox', action: 'stats', reference }
+  }
+  if (line.startsWith('sandbox info ')) {
+    const reference = line.slice('sandbox info '.length).trim()
+    return reference === '' ? { kind: 'invalid', reason: 'sandbox_usage' } : { kind: 'sandbox', action: 'info', reference }
+  }
+  for (const action of ['start', 'stop', 'restart', 'destroy'] as const) {
+    const prefix = `sandbox ${action} `
+    if (line.startsWith(prefix)) {
+      const parts = line.slice(prefix.length).trim().split(/\s+/)
+      const reference = parts[0]
+      if (reference === undefined || reference === '') return { kind: 'invalid', reason: 'sandbox_usage' }
+      const confirm = action === 'destroy' ? parts.includes('--yes') : true
+      if (action === 'destroy' && parts.length > 1 && !confirm) return { kind: 'invalid', reason: 'sandbox_usage' }
+      return { kind: 'sandbox', action, reference, confirm }
+    }
+  }
   if (line.startsWith('sandbox build ')) {
     const parsed = parseSandboxBuildOptions(line.slice('sandbox build '.length))
     if ('error' in parsed) return { kind: 'invalid', reason: parsed.error }

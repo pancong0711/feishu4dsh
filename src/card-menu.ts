@@ -286,6 +286,7 @@ export function browseCard(
 export interface SandboxWizardLabels {
   readonly title: (step: SandboxWizardState['step']) => string
   readonly targetNote: string
+  readonly roleNote: string
   readonly agentNote: string
   readonly toolsNote: string
   readonly confirmNote: string
@@ -323,7 +324,9 @@ export function sandboxWizardCard(
   if (nav.length > 0) elements.push(actionRow(nav))
   const note = wizard.step === 'target'
     ? labels.targetNote
-    : wizard.step === 'agent'
+    : wizard.step === 'role'
+      ? labels.roleNote
+      : wizard.step === 'agent'
       ? labels.agentNote
       : wizard.step === 'tools'
         ? labels.toolsNote

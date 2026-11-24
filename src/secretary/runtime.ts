@@ -14,7 +14,7 @@
 
 import { execFile } from 'node:child_process'
 import { availableParallelism, homedir, userInfo } from 'node:os'
-import { access, chmod, mkdir, readFile, realpath, stat } from 'node:fs/promises'
+import { access, chmod, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -26,7 +26,9 @@ import { SecretaryService } from './service.js'
 import { SHE_PERMISSION_RULES } from './permissions.js'
 import { acceptTaskReturn, buildTaskReturn, SecretaryReturnError, type TaskAcceptResult, type TaskReturnResult } from './returns.js'
 import { inspectSheNeed, readSandboxDescriptor, type SandboxDescriptor, type SheNeedReport } from './need.js'
-import { buildSandboxPackage, inspectSandboxHost, type SandboxHostReport, type SandboxPackageResult, type SandboxSpec } from './sandbox.js'
+import { buildSandboxPackage, inspectSandboxHost, nextSandboxName, type SandboxHostReport, type SandboxPackageResult, type SandboxSpec } from './sandbox.js'
+import { SandboxBrokerClient } from './broker-client.js'
+import { defaultMainActorId, type BrokerDockerStats, type BrokerSandboxView } from './broker.js'
 import type { SecretaryTask, SecretaryTopic } from './types.js'
 import {
   bootstrapWorkspaceOf,
@@ -457,6 +459,72 @@ export class SecretaryRuntime {
   /** Generate a secret-free build-sandbox package outside the chat process. */
   async sandboxPackage(input: { readonly spec: SandboxSpec; readonly preflight?: SandboxHostReport }): Promise<SandboxPackageResult> {
     return buildSandboxPackage(input)
+  }
+
+  private brokerClient(): SandboxBrokerClient {
+    const socketPath = join(homedir(), '.local', 'share', 'feishu4dsh', 'broker', 'broker.sock')
+    return new SandboxBrokerClient({ socketPath })
+  }
+
+  /** Register the dsh/Feishu control plane as the broker's main actor. */
+  private async registerBrokerMain(): Promise<void> {
+    await this.brokerClient().registerMain(defaultMainActorId())
+  }
+
+  /** Next fixed sbx-<suffix> / sbx-000N name; prefer broker registry, then local scan. */
+  async sandboxNextName(suffix?: string): Promise<string> {
+    try {
+      await this.registerBrokerMain()
+      const result = await this.brokerClient().nextName(suffix) as { name?: unknown }
+      if (typeof result.name === 'string' && result.name !== '') return result.name
+    } catch {
+      // Broker may not be running yet; fall back to the local fixed directory.
+    }
+    const root = join(homedir(), '.local', 'share', 'feishu4dsh', 'sandboxes')
+    let names: string[] = []
+    try {
+      names = (await readdir(root, { withFileTypes: true })).filter(item => item.isDirectory()).map(item => item.name)
+    } catch {
+      // Missing root means nothing exists yet.
+    }
+    return nextSandboxName(names, suffix)
+  }
+
+  async sandboxList(): Promise<readonly BrokerSandboxView[]> {
+    await this.registerBrokerMain()
+    const result = await this.brokerClient().list() as { sandboxes?: BrokerSandboxView[] }
+    return result.sandboxes ?? []
+  }
+
+  async sandboxInfo(name: string): Promise<BrokerSandboxView | undefined> {
+    try {
+      await this.registerBrokerMain()
+      const result = await this.brokerClient().info(name) as { sandbox?: BrokerSandboxView }
+      return result.sandbox
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('404')) return undefined
+      throw error
+    }
+  }
+
+  async sandboxStats(name: string): Promise<BrokerDockerStats | undefined> {
+    try {
+      await this.registerBrokerMain()
+      const result = await this.brokerClient().stats(name) as { stats?: BrokerDockerStats }
+      return result.stats
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('404')) return undefined
+      throw error
+    }
+  }
+
+  async sandboxAction(action: 'start' | 'stop' | 'restart' | 'destroy', name: string): Promise<void> {
+    await this.registerBrokerMain()
+    const client = this.brokerClient()
+    if (action === 'start') await client.start(name)
+    else if (action === 'stop') await client.stop(name)
+    else if (action === 'restart') await client.restart(name)
+    else await client.destroy(name)
   }
 
   /** Fast-forward the current scope's shadow repo from its committed source HEAD. */

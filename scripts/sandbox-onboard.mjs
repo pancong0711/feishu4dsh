@@ -11,8 +11,9 @@ import { stdin as input, stdout as output } from 'node:process'
 import { homedir, userInfo } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
+import { readdir } from 'node:fs/promises'
 import {
-  SANDBOX_AGENT_PROFILES, SANDBOX_TOOL_BUNDLES, inspectSandboxHost, makeSandboxName,
+  SANDBOX_AGENT_PROFILES, SANDBOX_TOOL_BUNDLES, inspectSandboxHost, nextSandboxName,
 } from '../lib/secretary/sandbox.js'
 import { buildSandboxOnboarding } from '../lib/secretary/onboard.js'
 
@@ -21,12 +22,14 @@ function usage() {
 
 Usage:
   pnpm sandbox:onboard                 # interactive
-  pnpm sandbox:onboard -- --yes --target dedicated-user --name demo --agent blank --tools core
+  pnpm sandbox:onboard -- --yes --target dedicated-user --suffix demo --role worker --agent blank --tools core
 
 Options:
   --target dedicated-user|current-user   Target mode (default: dedicated-user)
   --user <name>                         Dedicated account (default: feishu4dsh-sandbox)
-  --name <name>                         Sandbox name (default: generated)
+  --suffix <suffix>                     Suffix after fixed sbx- prefix
+  --name <name>                         Full sandbox name override (advanced)
+  --role standalone|main|worker|observer|utility
   --agent opencode|blank|hermes|deepseek-harness|custom
   --image <ref>                         Required for hermes/deepseek-harness/custom
   --tools core,node,python,build,data,search
@@ -44,7 +47,9 @@ function parseArgs(argv) {
     yes: false,
     targetKind: 'dedicated-user',
     dedicatedUser: 'feishu4dsh-sandbox',
+    suffix: undefined,
     name: undefined,
+    role: 'standalone',
     agentId: 'blank',
     image: undefined,
     tools: ['core'],
@@ -66,8 +71,14 @@ function parseArgs(argv) {
       options.targetKind = value
     } else if (arg === '--user') {
       options.dedicatedUser = take()
+    } else if (arg === '--suffix') {
+      options.suffix = take()
     } else if (arg === '--name') {
       options.name = take()
+    } else if (arg === '--role') {
+      const value = take()
+      if (!['standalone', 'main', 'worker', 'observer', 'utility'].includes(value)) throw new Error('invalid --role')
+      options.role = value
     } else if (arg === '--agent') {
       const value = take()
       if (!SANDBOX_AGENT_PROFILES.some(profile => profile.id === value)) throw new Error('invalid --agent')
@@ -104,9 +115,10 @@ function printIntro() {
 
 交互会依次询问：
   1. 目标账户：专用 rootless 账户 / 当前用户
-  2. Sandbox 名称
-  3. Agent：空白 / OpenCode / Hermes / dsh / 自定义镜像
-  4. 工具包：core / node / python / build / data / search
+  2. 角色：standalone / main / worker / observer / utility
+  3. Sandbox 后缀（自动加 sbx-；留空则 sbx-0001 递增）
+  4. Agent：空白 / OpenCode / Hermes / dsh / 自定义镜像
+  5. 工具包：core / node / python / build / data / search
 
 核心模型：
   飞书 / SHE  = 控制面：任务、审批、状态
@@ -130,6 +142,15 @@ function printIntro() {
 async function ask(rl, question, fallback) {
   const answer = (await rl.question(`${question}${fallback === undefined ? '' : ` [${fallback}]`}: `)).trim()
   return answer === '' && fallback !== undefined ? fallback : answer
+}
+
+async function existingSandboxNames() {
+  const root = join(homedir(), '.local', 'share', 'feishu4dsh', 'sandboxes')
+  try {
+    return (await readdir(root, { withFileTypes: true })).filter(item => item.isDirectory()).map(item => item.name)
+  } catch {
+    return []
+  }
 }
 
 async function askChoice(rl, question, choices, fallback) {
@@ -163,7 +184,18 @@ async function interactive(options) {
     if (options.targetKind === 'dedicated-user') {
       options.dedicatedUser = await ask(rl, '专用账户名（不要使用现有个人账户）', options.dedicatedUser)
     }
-    options.name = await ask(rl, 'Sandbox 名称（小写字母/数字/连字符；不要包含路径）', options.name ?? makeSandboxName())
+    options.role = await askChoice(rl, '\nSandbox 角色：', [
+      { label: 'standalone（手工使用，默认）', value: 'standalone', detail: '不参与自动委派，适合手工任务。' },
+      { label: 'main（协调者）', value: 'main', detail: '可向 broker 请求分派任务；不能直接写其他 sandbox inbox。' },
+      { label: 'worker（执行者）', value: 'worker', detail: '只接受被分派的任务，不允许继续委派。' },
+      { label: 'observer（观察者）', value: 'observer', detail: '只读观察/报告，不参与委派。' },
+      { label: 'utility（单次工具）', value: 'utility', detail: '单次工具型任务，不参与委派。' },
+    ], 1)
+    const existing = await existingSandboxNames()
+    const currentDefault = options.name ?? nextSandboxName(existing, options.suffix)
+    const suffixInput = await ask(rl, `Sandbox 后缀（自动加 sbx-；当前 ${currentDefault}）`, '')
+    if (suffixInput !== '') options.suffix = suffixInput
+    options.name = options.name ?? nextSandboxName(existing, options.suffix)
     const agentChoices = [
       {
         label: '空白基础沙箱（推荐首次测试）',
@@ -208,6 +240,7 @@ async function interactive(options) {
       `target: ${options.targetKind}`,
       `user: ${options.targetKind === 'current-user' ? 'current user' : options.dedicatedUser}`,
       `sandbox: ${options.name}`,
+      `role: ${options.role}`,
       `agent: ${options.agentId}`,
       `tools: ${options.tools.join(',')}`,
       `output: ${options.outputRoot}`,
@@ -230,7 +263,8 @@ async function nonInteractive(options) {
   if (options.agentId === 'hermes' || options.agentId === 'deepseek-harness' || options.agentId === 'custom') {
     if (options.image === undefined || options.image.trim() === '') throw new Error(`${options.agentId} requires --image`)
   }
-  options.name = options.name ?? makeSandboxName()
+  const existing = await existingSandboxNames()
+  options.name = options.name ?? nextSandboxName(existing, options.suffix)
   options.host = await inspectSandboxHost(options.dedicatedUser)
   printHostReport(options.host)
   return options
@@ -263,6 +297,7 @@ async function main() {
     outputRoot: selected.outputRoot,
     sandboxName: selected.name,
     targetKind: selected.targetKind,
+    role: selected.role,
     currentUser: userInfo().username,
     dedicatedUser: selected.dedicatedUser,
     agentId: selected.agentId,
@@ -274,6 +309,7 @@ async function main() {
   console.log(`   README: ${result.readmePath}`)
   console.log(`   manifest: ${result.manifestPath}`)
   console.log(`   package: ${result.package.archivePath}`)
+  console.log(`   role: ${selected.role}`)
   console.log('\n执行顺序：')
   for (const command of result.commands) console.log(`  ${command}`)
   console.log('\n注意：10-bootstrap-host-root.sh 是唯一的 root 脚本；其余生命周期脚本必须由目标用户非 root 执行。')

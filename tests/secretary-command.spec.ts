@@ -27,6 +27,12 @@ describe('secretary command parser', () => {
     expect(parseSheCommand('need other')).toEqual({ kind: 'invalid', reason: 'need_usage' })
     expect(parseSheCommand('sandbox')).toEqual({ kind: 'sandbox', action: 'wizard' })
     expect(parseSheCommand('sandbox status')).toEqual({ kind: 'sandbox', action: 'status' })
+    expect(parseSheCommand('sandbox list')).toEqual({ kind: 'sandbox', action: 'list' })
+    expect(parseSheCommand('sandbox info sbx-0001')).toEqual({ kind: 'sandbox', action: 'info', reference: 'sbx-0001' })
+    expect(parseSheCommand('sandbox stats sbx-0001')).toEqual({ kind: 'sandbox', action: 'stats', reference: 'sbx-0001' })
+    expect(parseSheCommand('sandbox start sbx-0001')).toEqual({ kind: 'sandbox', action: 'start', reference: 'sbx-0001', confirm: true })
+    expect(parseSheCommand('sandbox destroy sbx-0001')).toEqual({ kind: 'sandbox', action: 'destroy', reference: 'sbx-0001', confirm: false })
+    expect(parseSheCommand('sandbox destroy sbx-0001 --yes')).toEqual({ kind: 'sandbox', action: 'destroy', reference: 'sbx-0001', confirm: true })
     expect(parseSheCommand('sandbox build')).toEqual({ kind: 'sandbox', action: 'wizard' })
     expect(parseSheCommand('sandbox build --agent opencode --tools core,node --target current-user')).toEqual({
       kind: 'sandbox', action: 'build',
@@ -35,6 +41,10 @@ describe('secretary command parser', () => {
     expect(parseSheCommand('sandbox build --agent custom')).toEqual({ kind: 'invalid', reason: 'sandbox_image_required' })
     expect(parseSheCommand('sandbox build --agent custom --image registry.example/agent:1')).toEqual({
       kind: 'sandbox', action: 'build', options: { agentId: 'custom', image: 'registry.example/agent:1' },
+    })
+    expect(parseSheCommand('sandbox build --suffix demo --role worker --allowed-callers main --allowed-targets sbx-next')).toEqual({
+      kind: 'sandbox', action: 'build',
+      options: { suffix: 'demo', role: 'worker', allowedCallers: ['main'], allowedTargets: ['sbx-next'] },
     })
     expect(parseSheCommand('sandbox nope')).toEqual({ kind: 'invalid', reason: 'sandbox_usage' })
     expect(parseSheCommand('sandbox build --agent nope')).toEqual({ kind: 'invalid', reason: 'sandbox_usage' })

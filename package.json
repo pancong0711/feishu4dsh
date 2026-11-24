@@ -1,7 +1,7 @@
 {
   "name": "feishu4dsh",
   "description": "Feishu/Lark IM channel for DeepSeek Harness: chats drive dsh agents, replies stream as cards, approvals and questions return as interactive buttons",
-  "version": "0.20.2",
+  "version": "0.21.0",
   "type": "module",
   "keywords": [
     "dsh",
@@ -26,7 +26,8 @@
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "sandbox:onboard": "bash scripts/sandbox-onboard.sh",
-    "bootstrap:dev": "bash scripts/bootstrap-dev-env.sh"
+    "bootstrap:dev": "bash scripts/bootstrap-dev-env.sh",
+    "sandbox:broker": "bash scripts/sandbox-broker.sh"
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -51,7 +52,10 @@
     "scripts/sandbox-preflight.sh",
     "scripts/sandbox-bootstrap-host.sh",
     "scripts/sandbox-rootless-init.sh",
-    "scripts/bootstrap-dev-env.sh"
+    "scripts/bootstrap-dev-env.sh",
+    "scripts/sandbox-broker.sh",
+    "scripts/sandbox-broker.mjs",
+    "scripts/feishu4dsh-sandbox-broker.service.example"
   ],
   "repository": {
     "type": "git",

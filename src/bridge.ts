@@ -45,9 +45,10 @@ import type { SecretaryAttachmentInput } from './secretary/types.js'
 import type { SecretaryDoctorReport, SecretaryRuntimeInitInput, SecretaryRuntimeInitResult, SecretaryRuntimeResetResult, SecretaryRuntimeUpdateResult } from './secretary/runtime.js'
 import type { TaskAcceptResult, TaskReturnResult } from './secretary/returns.js'
 import type { SheNeedReport } from './secretary/need.js'
+import type { BrokerDockerStats, BrokerSandboxView } from './secretary/broker.js'
 import {
-  SANDBOX_AGENT_PROFILES, SANDBOX_TOOL_BUNDLES, SandboxError, buildSandboxSpec, sandboxAgentProfile,
-  type SandboxAgentId, type SandboxHostReport, type SandboxPackageResult, type SandboxSpec,
+  SANDBOX_AGENT_PROFILES, SANDBOX_TOOL_BUNDLES, SandboxError, buildSandboxSpec, makeSandboxName, nextSandboxName, sandboxAgentProfile,
+  type SandboxAgentId, type SandboxHostReport, type SandboxPackageResult, type SandboxRole, type SandboxSpec,
   type SandboxTargetKind, type SandboxToolId, type SandboxWizardState,
 } from './secretary/sandbox.js'
 import type { SheSandboxBuildOptions } from './secretary/command.js'
@@ -283,6 +284,13 @@ export interface BridgeHooks {
   secretarySandboxPreflight?: () => Promise<SandboxHostReport>
   /** `/she sandbox build`: generate a secret-free sandbox package. */
   secretarySandboxPackage?: (input: { readonly spec: SandboxSpec; readonly preflight?: SandboxHostReport }) => Promise<SandboxPackageResult>
+  /** `/she sandbox`: next fixed sbx-<suffix>/sbx-000N name. */
+  secretarySandboxNextName?: (suffix?: string) => Promise<string>
+  /** Broker-backed sandbox management (host-local service). */
+  secretarySandboxList?: () => Promise<readonly BrokerSandboxView[]>
+  secretarySandboxInfo?: (name: string) => Promise<BrokerSandboxView | undefined>
+  secretarySandboxStats?: (name: string) => Promise<BrokerDockerStats | undefined>
+  secretarySandboxAction?: (action: 'start' | 'stop' | 'restart' | 'destroy', name: string) => Promise<void>
 }
 
 /**
@@ -3053,6 +3061,11 @@ function sandboxMenuOptions(wizard: SandboxWizardState, copy: Strings): MenuOpti
       { label: '👤 当前用户（需 Docker 预检通过）' },
     ]
   }
+  if (wizard.step === 'role') {
+    return (['standalone', 'main', 'worker', 'observer', 'utility'] as const).map(role => ({
+      label: copy.sheSandboxRoleOption(role),
+    }))
+  }
   if (wizard.step === 'agent') {
     return SANDBOX_AGENT_PROFILES.map(profile => ({
       label: profile.requiresImage ? `${profile.label}（需 --image）` : `${profile.label} · ${profile.version || 'custom'}`,
@@ -3072,7 +3085,7 @@ function sandboxSummaryOf(wizard: SandboxWizardState, copy: Strings): string {
   return copy.sheSandboxWizardSummary(
     wizard.name,
     sandboxTargetText(wizard),
-    profile?.label ?? wizard.agentId,
+    `${profile?.label ?? wizard.agentId} · role=${wizard.role}`,
     wizard.tools.join(', '),
     wizard.preflight === undefined ? 'unknown' : 'egress（独立网络；代理白名单后置）',
   )
@@ -3084,6 +3097,7 @@ function sandboxWizardLabelsFor(state: BridgeState): SandboxWizardLabels {
   return {
     title: step => copy.sheSandboxWizardTitle(step),
     targetNote: copy.sheSandboxTargetNote,
+    roleNote: copy.sheSandboxRoleNote,
     agentNote: copy.sheSandboxAgentNote,
     toolsNote: copy.sheSandboxToolsNote,
     confirmNote: copy.sheSandboxConfirmNote,
@@ -3159,6 +3173,7 @@ function sandboxSpecFromWizard(wizard: SandboxWizardState, preflight: SandboxHos
     agentId: wizard.agentId,
     customImage: wizard.customImage,
     tools: wizard.tools,
+    role: wizard.role,
   })
 }
 
@@ -3256,7 +3271,8 @@ async function handleSandboxMenuAction(
     return
   }
   if (payload.act === 'up') {
-    if (wizard.step === 'agent') wizard.step = 'target'
+    if (wizard.step === 'role') wizard.step = 'target'
+    else if (wizard.step === 'agent') wizard.step = 'role'
     else if (wizard.step === 'tools') wizard.step = 'agent'
     else if (wizard.step === 'confirm') wizard.step = 'tools'
     await sendSandboxStepCard(env, state, binding, wizard, event)
@@ -3297,6 +3313,16 @@ async function handleSandboxMenuAction(
     } else {
       wizard.targetKind = 'dedicated-user'
     }
+    wizard.step = 'role'
+    await sendSandboxStepCard(env, state, binding, wizard, event)
+    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('role'), state.copy.sheSandboxNext)
+    return
+  }
+  if (wizard.step === 'role') {
+    const roles: readonly SandboxRole[] = ['standalone', 'main', 'worker', 'observer', 'utility']
+    const role = roles[payload.idx]
+    if (role === undefined) return
+    wizard.role = role
     wizard.step = 'agent'
     await sendSandboxStepCard(env, state, binding, wizard, event)
     await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('agent'), state.copy.sheSandboxNext)
@@ -3333,6 +3359,27 @@ function formatSandboxPreflight(report: SandboxHostReport, copy: Strings): strin
   for (const check of report.checks) lines.push(copy.sheNeedItem(icon(check.status), check.label, check.detail))
   lines.push(report.currentDockerReady ? copy.sheSandboxReady : copy.sheSandboxNotReady)
   return lines.join('\n')
+}
+
+/** Format a broker-managed sandbox for `/she sandbox info`. */
+function formatSandboxInfo(record: BrokerSandboxView, copy: Strings): string {
+  return [
+    copy.sheSandboxInfoLine('name', record.name),
+    copy.sheSandboxInfoLine('role', record.role),
+    copy.sheSandboxInfoLine('state', record.status.state),
+    copy.sheSandboxInfoLine('container', record.containerName),
+    copy.sheSandboxInfoLine('agent', `${record.spec.agent.label} (${record.spec.agent.id})`),
+    copy.sheSandboxInfoLine('target', `${record.spec.target.kind} / ${record.spec.target.user}`),
+    copy.sheSandboxInfoLine('inbox', record.inbox),
+    copy.sheSandboxInfoLine('outbox', record.outbox),
+    ...(record.status.detail === undefined ? [] : [copy.sheSandboxInfoLine('detail', record.status.detail)]),
+  ].join('\n')
+}
+
+/** Format the broker list without leaking full host paths. */
+function formatSandboxList(records: readonly BrokerSandboxView[], copy: Strings): string {
+  if (records.length === 0) return copy.sheSandboxListTitle + '\n' + copy.sheListEmpty
+  return [copy.sheSandboxListTitle, ...records.map(record => copy.sheSandboxListEntry(record.name, record.role, record.status.state))].join('\n')
 }
 
 /** Combined `/she sandbox status` + legacy `/she need` report. */
@@ -3547,10 +3594,17 @@ async function sendSandboxWizard(
   preflight: SandboxHostReport,
   replyTo?: string,
 ): Promise<void> {
+  let nextName: string | undefined
+  try {
+    nextName = await env.hooks.secretarySandboxNextName?.()
+  } catch (error) {
+    env.report(`feishu4dsh: sandbox next-name hook failed: ${describeError(error)}`)
+  }
   const wizard: SandboxWizardState = {
     step: 'target',
-    name: `sbx-${Date.now().toString(36).slice(-6)}`,
+    name: nextName ?? nextSandboxName([]),
     targetKind: 'dedicated-user',
+    role: 'standalone',
     agentId: 'opencode',
     tools: ['core'],
     preflight,
@@ -3583,14 +3637,21 @@ async function directSandboxBuild(
   options: SheSandboxBuildOptions,
   replyTo?: string,
 ): Promise<void> {
+  const hookedName = await env.hooks.secretarySandboxNextName?.(options.suffix)
+  const name = options.name
+    ?? hookedName
+    ?? (options.suffix === undefined ? makeSandboxName() : nextSandboxName([], options.suffix))
   const spec = buildSandboxSpec({
-    name: options.name,
+    name,
     targetKind: options.targetKind,
     currentUser: preflight.currentUser,
     dedicatedUser: preflight.dedicatedUser,
     agentId: options.agentId ?? 'opencode',
     customImage: options.image,
     tools: options.tools,
+    role: options.role ?? 'standalone',
+    allowedCallers: options.allowedCallers,
+    allowedTargets: options.allowedTargets,
     networkMode: options.networkMode,
     hostPort: options.hostPort,
   })
@@ -5657,14 +5718,71 @@ async function cmdShe(
         return
       }
       const preflightHook = env.hooks.secretarySandboxPreflight
-      if (preflightHook === undefined) {
-        await safeSend(env, binding.chatId, copy.sheSandboxUnavailable, replyTo)
-        return
-      }
       if (command.action === 'status') {
+        if (preflightHook === undefined) {
+          await safeSend(env, binding.chatId, copy.sheSandboxUnavailable, replyTo)
+          return
+        }
         const report = await preflightHook()
         const attach = env.hooks.secretaryNeed === undefined ? undefined : await env.hooks.secretaryNeed()
         await safeSend(env, binding.chatId, formatSandboxStatus(report, attach, copy), replyTo)
+        return
+      }
+      if (command.action === 'list') {
+        if (env.hooks.secretarySandboxList === undefined) {
+          await safeSend(env, binding.chatId, copy.sheSandboxBrokerUnavailable, replyTo)
+          return
+        }
+        const records = await env.hooks.secretarySandboxList()
+        await safeSend(env, binding.chatId, formatSandboxList(records, copy), replyTo)
+        return
+      }
+      if (command.action === 'info' || command.action === 'stats') {
+        const name = command.reference ?? ''
+        if (command.action === 'info') {
+          if (env.hooks.secretarySandboxInfo === undefined) {
+            await safeSend(env, binding.chatId, copy.sheSandboxBrokerUnavailable, replyTo)
+            return
+          }
+          const record = await env.hooks.secretarySandboxInfo(name)
+          await safeSend(env, binding.chatId, record === undefined ? copy.sheSandboxNotFound(name) : formatSandboxInfo(record, copy), replyTo)
+          return
+        }
+        if (env.hooks.secretarySandboxStats === undefined) {
+          await safeSend(env, binding.chatId, copy.sheSandboxBrokerUnavailable, replyTo)
+          return
+        }
+        const stats = await env.hooks.secretarySandboxStats(name)
+        if (stats === undefined) {
+          await safeSend(env, binding.chatId, copy.sheSandboxNotFound(name), replyTo)
+          return
+        }
+        const lines = [copy.sheSandboxStatsTitle]
+        if (stats.cpuPercent !== undefined) lines.push(copy.sheSandboxStatsLine('CPU', stats.cpuPercent))
+        if (stats.memoryUsage !== undefined) lines.push(copy.sheSandboxStatsLine('memory', stats.memoryUsage))
+        if (stats.pids !== undefined) lines.push(copy.sheSandboxStatsLine('pids', stats.pids))
+        if (stats.networkRx !== undefined) lines.push(copy.sheSandboxStatsLine('network', stats.networkRx))
+        if (stats.blockRead !== undefined) lines.push(copy.sheSandboxStatsLine('block', stats.blockRead))
+        lines.push(copy.sheSandboxStatsLine('sampledAt', stats.sampledAt))
+        await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
+        return
+      }
+      if (command.action === 'start' || command.action === 'stop' || command.action === 'restart' || command.action === 'destroy') {
+        const name = command.reference ?? ''
+        if (command.action === 'destroy' && command.confirm !== true) {
+          await safeSend(env, binding.chatId, copy.sheSandboxDestroyConfirm(name), replyTo)
+          return
+        }
+        if (env.hooks.secretarySandboxAction === undefined) {
+          await safeSend(env, binding.chatId, copy.sheSandboxBrokerUnavailable, replyTo)
+          return
+        }
+        await env.hooks.secretarySandboxAction(command.action, name)
+        await safeSend(env, binding.chatId, copy.sheSandboxActionDone(command.action, name), replyTo)
+        return
+      }
+      if (preflightHook === undefined) {
+        await safeSend(env, binding.chatId, copy.sheSandboxUnavailable, replyTo)
         return
       }
       if (env.hooks.secretarySandboxPackage === undefined) {

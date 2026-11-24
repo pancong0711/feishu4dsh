@@ -30,6 +30,7 @@ export const SANDBOX_CONTAINER_PREFIX = 'feishu4dsh'
 export const SANDBOX_PACKAGE_ROOT_NAME = 'sandbox-packages'
 
 export type SandboxTargetKind = 'current-user' | 'dedicated-user'
+export type SandboxRole = 'standalone' | 'main' | 'worker' | 'observer' | 'utility'
 export type SandboxAgentId = 'opencode' | 'hermes' | 'deepseek-harness' | 'blank' | 'custom'
 export type SandboxToolId = 'core' | 'node' | 'python' | 'build' | 'data' | 'search'
 export type SandboxNetworkMode = 'none' | 'egress'
@@ -165,13 +166,24 @@ export interface SandboxPaths {
   readonly dataRoot: string
   readonly root: string
   readonly workspace: string
+  readonly inbox: string
+  readonly outbox: string
   readonly home: string
   readonly cache: string
   readonly logs: string
   readonly descriptor: string
   readonly containerWorkspace: string
+  readonly containerInbox: string
+  readonly containerOutbox: string
   readonly containerHome: string
   readonly containerCache: string
+}
+
+export interface SandboxMailboxPolicy {
+  /** Symbolic 'main' or a concrete sandbox name allowed to target this inbox via broker. */
+  readonly allowedCallers: readonly string[]
+  /** Sandbox names this sandbox may hand off to through the broker. */
+  readonly allowedTargets: readonly string[]
 }
 
 export interface SandboxSecurity {
@@ -209,6 +221,8 @@ export interface SandboxSpec {
     readonly agentPort?: number
   }
   readonly tools: readonly SandboxToolId[]
+  readonly role: SandboxRole
+  readonly mailbox: SandboxMailboxPolicy
   readonly paths: SandboxPaths
   readonly container: {
     readonly name: string
@@ -227,6 +241,9 @@ export interface BuildSandboxSpecInput {
   readonly agentId: SandboxAgentId
   readonly customImage?: string
   readonly tools?: readonly SandboxToolId[]
+  readonly role?: SandboxRole
+  readonly allowedCallers?: readonly string[]
+  readonly allowedTargets?: readonly string[]
   readonly networkMode?: SandboxNetworkMode
   readonly hostPort?: number
   readonly now?: number
@@ -253,9 +270,10 @@ export interface SandboxHostReport {
 
 /** Server-side state of one interactive /she sandbox wizard (card values stay tiny). */
 export interface SandboxWizardState {
-  step: 'target' | 'agent' | 'tools' | 'confirm'
+  step: 'target' | 'role' | 'agent' | 'tools' | 'confirm'
   readonly name: string
   targetKind: SandboxTargetKind
+  role: SandboxRole
   agentId: SandboxAgentId
   readonly tools: SandboxToolId[]
   readonly preflight?: SandboxHostReport
@@ -324,6 +342,29 @@ export function makeSandboxName(now = Date.now(), suffix = randomUUID().slice(0,
   return `sbx-${now.toString(36).slice(-6)}-${suffix.replace(/[^a-z0-9]/g, '').slice(0, 6)}`
 }
 
+/**
+ * Resolve a user-supplied suffix into the fixed `sbx-<suffix>` namespace.
+ * Empty suffix picks the next free numeric name (`sbx-0001`, `sbx-0002`, ...).
+ * Existing names are compared case-sensitively; this is deliberate because
+ * Docker names and fixed XDG paths should be unique as written.
+ */
+export function nextSandboxName(existingNames: readonly string[], suffix?: string): string {
+  const raw = (suffix ?? '').trim().toLowerCase()
+  if (raw !== '') {
+    const stripped = raw.startsWith('sbx-') ? raw.slice(4) : raw
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,26}[a-z0-9])?$/.test(stripped)) {
+      throw new SandboxError('invalid_name', 'sandbox suffix must use lowercase letters, digits and hyphens; max 28 chars')
+    }
+    const name = `sbx-${stripped}`
+    if (existingNames.includes(name)) throw new SandboxError('invalid_name', `sandbox already exists: ${name}`)
+    return name
+  }
+  const used = new Set(existingNames)
+  let n = 1
+  while (used.has(`sbx-${String(n).padStart(4, '0')}`)) n += 1
+  return `sbx-${String(n).padStart(4, '0')}`
+}
+
 function uniqueTools(tools: readonly SandboxToolId[] | undefined): SandboxToolId[] {
   const input = tools === undefined || tools.length === 0 ? DEFAULT_SANDBOX_TOOLS : tools
   const seen = new Set<SandboxToolId>()
@@ -347,6 +388,21 @@ export function buildSandboxSpec(input: BuildSandboxSpecInput): SandboxSpec {
   }
   const targetKind = input.targetKind ?? 'dedicated-user'
   const dedicatedUser = input.dedicatedUser?.trim() || DEFAULT_DEDICATED_SANDBOX_USER
+  const role = input.role ?? 'standalone'
+  if (!['standalone', 'main', 'worker', 'observer', 'utility'].includes(role)) {
+    throw new SandboxError('invalid_target', `unknown sandbox role: ${role}`)
+  }
+  const allowedCallers = input.allowedCallers === undefined
+    ? ['main']
+    : [...new Set(input.allowedCallers.map(value => value.trim()).filter(value => value !== ''))]
+  const allowedTargets = input.allowedTargets === undefined
+    ? []
+    : [...new Set(input.allowedTargets.map(value => value.trim()).filter(value => value !== ''))]
+  for (const value of [...allowedCallers, ...allowedTargets]) {
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(value)) {
+      throw new SandboxError('invalid_name', `invalid mailbox peer: ${value}`)
+    }
+  }
   if (!isValidSandboxUser(input.currentUser)) throw new SandboxError('invalid_user', `invalid current user: ${input.currentUser}`)
   if (targetKind === 'dedicated-user' && !isValidSandboxUser(dedicatedUser)) {
     throw new SandboxError('invalid_user', `invalid dedicated sandbox user: ${dedicatedUser}`)
@@ -404,15 +460,21 @@ export function buildSandboxSpec(input: BuildSandboxSpecInput): SandboxSpec {
       ...(profile.agentPort === undefined ? {} : { agentPort: profile.agentPort }),
     },
     tools,
+    role,
+    mailbox: { allowedCallers, allowedTargets },
     paths: {
       dataRoot: SANDBOX_DATA_ROOT_TEMPLATE,
       root,
       workspace: `${root}/workspace`,
+      inbox: `${root}/inbox`,
+      outbox: `${root}/outbox`,
       home: `${root}/home`,
       cache: `${root}/cache`,
       logs: `${root}/logs`,
       descriptor: `${root}/sandbox.json`,
       containerWorkspace: '/workspace',
+      containerInbox: '/inbox',
+      containerOutbox: '/outbox',
       containerHome: '/home/agent',
       containerCache: '/home/agent/.cache',
     },
@@ -618,7 +680,7 @@ function dockerfileFor(spec: SandboxSpec): string {
     lines.push(`RUN python3 -m pip install --no-cache-dir --break-system-packages ${pip.join(' ')}`)
   }
   lines.push(
-    'RUN install -d -m 0755 /workspace /home/agent /home/agent/.cache /home/agent/.config /home/agent/.local/share /home/agent/.local/state /home/agent/.npm-global/bin /home/agent/.local/bin',
+    'RUN install -d -m 0755 /workspace /inbox /outbox /home/agent /home/agent/.cache /home/agent/.config /home/agent/.local/share /home/agent/.local/state /home/agent/.npm-global/bin /home/agent/.local/bin',
     'ENV HOME=/home/agent \\',
     '    XDG_CACHE_HOME=/home/agent/.cache \\',
     '    XDG_CONFIG_HOME=/home/agent/.config \\',
@@ -745,6 +807,8 @@ function createSandboxScript(spec: SandboxSpec): string {
     'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
     'ROOT="$HOME/.local/share/feishu4dsh/sandboxes/$SANDBOX_NAME"',
     'WORKSPACE="$ROOT/workspace"',
+    'INBOX="$ROOT/inbox"',
+    'OUTBOX="$ROOT/outbox"',
     'AGENT_HOME="$ROOT/home"',
     'CACHE="$ROOT/cache"',
     'LOGS="$ROOT/logs"',
@@ -753,6 +817,7 @@ function createSandboxScript(spec: SandboxSpec): string {
     '  exit 1',
     'fi',
     'install -d -m 0700 "$ROOT" "$WORKSPACE" "$AGENT_HOME" "$CACHE" "$LOGS"',
+    'install -d -m 0700 "$INBOX" "$OUTBOX"',
     'if [ "$SOURCE_IMAGE" != "" ] && ! docker image inspect "$SOURCE_IMAGE" >/dev/null 2>&1; then',
     '  if command -v docker >/dev/null 2>&1 && docker manifest inspect "$SOURCE_IMAGE" >/dev/null 2>&1; then',
     '    echo "image manifest found remotely: $SOURCE_IMAGE"',
@@ -785,6 +850,8 @@ function createSandboxScript(spec: SandboxSpec): string {
     '  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1g',
     '  --tmpfs /run:rw,noexec,nosuid,nodev,size=64m',
     '  --mount "type=bind,src=$WORKSPACE,dst=/workspace,rw,bind-propagation=rprivate"',
+    '  --mount "type=bind,src=$INBOX,dst=/inbox,ro,bind-propagation=rprivate"',
+    '  --mount "type=bind,src=$OUTBOX,dst=/outbox,rw,bind-propagation=rprivate"',
     '  --mount "type=bind,src=$AGENT_HOME,dst=/home/agent,rw,bind-propagation=rprivate"',
     '  --mount "type=bind,src=$CACHE,dst=/home/agent/.cache,rw,bind-propagation=rprivate"',
     '  --env HOME=/home/agent',
@@ -848,7 +915,7 @@ function verifySandboxScript(spec: SandboxSpec): string {
     'while IFS= read -r src; do',
     '  [ -z "$src" ] && continue',
     '  case "$src" in',
-    '    "$ROOT/workspace"|"$ROOT/home"|"$ROOT/cache") ok "allowed mount: $src" ;;',
+    '    "$ROOT/workspace"|"$ROOT/inbox"|"$ROOT/outbox"|"$ROOT/home"|"$ROOT/cache") ok "allowed mount: $src" ;;',
     '    *) bad "unexpected host mount: $src" ;;',
     '  esac',
     'done <<< "$MOUNTS"',
@@ -902,7 +969,9 @@ function packageReadme(spec: SandboxSpec, preflight: SandboxHostReport | undefin
     '',
     '```text',
     '$HOME/.local/share/feishu4dsh/sandboxes/<sandbox-name>/',
-    '  workspace/   # 唯一业务数据 RW → /workspace',
+    '  workspace/   # agent 私有业务工作树 RW → /workspace',
+    '  inbox/       # 控制面/broker 写，容器只读 → /inbox',
+    '  outbox/      # agent 写，控制面收集 → /outbox',
     '  home/        # agent HOME RW → /home/agent',
     '  cache/       # 包缓存 RW → /home/agent/.cache',
     '  logs/        # 宿主侧日志，不挂入容器',

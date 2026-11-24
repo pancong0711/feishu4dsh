@@ -221,6 +221,11 @@ export function apply(ctx: Context, config: Config): void {
       secretaryNeed: () => secretaryRuntime.needStatus(),
       secretarySandboxPreflight: () => secretaryRuntime.sandboxPreflight(),
       secretarySandboxPackage: input => secretaryRuntime.sandboxPackage(input),
+      secretarySandboxNextName: suffix => secretaryRuntime.sandboxNextName(suffix),
+      secretarySandboxList: () => secretaryRuntime.sandboxList(),
+      secretarySandboxInfo: name => secretaryRuntime.sandboxInfo(name),
+      secretarySandboxStats: name => secretaryRuntime.sandboxStats(name),
+      secretarySandboxAction: (action, name) => secretaryRuntime.sandboxAction(action, name),
     }
     const disposeBridge = installBridge(host, resolved, port, authorization, internals.notify, hooks)
 

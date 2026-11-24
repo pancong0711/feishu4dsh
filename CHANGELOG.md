@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.21.0 (2026-11-24)
+
+**R69：Sandbox Broker 与 sandbox 管理 MVP**
+
+- 新增宿主侧 Unix-socket broker：`sandbox-broker.sh serve`；不监听 TCP/LAN。
+- 新增固定 registry `~/.local/share/feishu4dsh/broker/registry.json` 与 0600 socket/audit。
+- 新增 sandbox 命名：固定 `sbx-` 前缀；空 suffix 自动 `sbx-0001` 递增；用户可通过 `/she sandbox build --suffix` 或 onboarding 输入 suffix。
+- `SandboxSpec` 新增 `role`、`mailbox.allowedCallers/allowedTargets` 与 `inbox`/`outbox` 固定路径；创建脚本挂载 `/inbox:ro`、`/outbox:rw`。
+- 新增 broker API：main actor、list/info/stats、start/stop/restart/destroy、message inbox routing、next-name、descriptor 注册。
+- 新增 `/she sandbox list|info|stats|start|stop|restart|destroy`（broker hook）。
+- 通过 feishu4dsh 启动的 broker 默认登记 `main:<host>:<user>` 控制面 actor。
+- 消息路由只允许 main/白名单 sender；fromOutbox 只允许源 sandbox outbox；拒绝绝对路径/`..`/symlink 逃逸。
+- 新增 broker 单测（registry、生命周期、消息路由、Unix socket）与 sandbox inbox/outbox 回归；全量 427/427。
+
 ## 0.20.2 (2026-11-24)
 
 **R66：开发环境检测与 pnpm 非 root 安装**

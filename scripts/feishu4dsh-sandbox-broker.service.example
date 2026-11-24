@@ -1,0 +1,17 @@
+[Unit]
+Description=feishu4dsh sandbox broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace with the target user's home and deployment/source path.
+WorkingDirectory=%h/feishu4dsh
+ExecStart=/usr/bin/env bash %h/feishu4dsh/scripts/sandbox-broker.sh serve
+Environment=HOME=%h
+Environment=PATH=%h/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

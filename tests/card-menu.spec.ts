@@ -151,7 +151,7 @@ describe('sandbox wizard card (R61)', () => {
     })
     const cardObject = sandboxWizardCard('oc_chat1', menu, {
       title: step => `step:${step}`,
-      targetNote: 'target-note', agentNote: 'agent-note', toolsNote: 'tools-note', confirmNote: 'confirm-note',
+      targetNote: 'target-note', roleNote: 'role-note', agentNote: 'agent-note', toolsNote: 'tools-note', confirmNote: 'confirm-note',
       back: 'back', next: 'next', build: 'build', cancel: 'cancel',
       summary: wizard => `summary:${wizard.name}`,
       toolLabel: (label, selected) => `${selected ? '✅' : '⬜'} ${label}`,

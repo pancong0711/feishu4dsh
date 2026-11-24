@@ -17,6 +17,7 @@ import {
   type SandboxAgentId,
   type SandboxHostReport,
   type SandboxPackageResult,
+  type SandboxRole,
   type SandboxTargetKind,
   type SandboxToolId,
 } from './sandbox.js'
@@ -28,6 +29,7 @@ export interface SandboxOnboardingInput {
   readonly outputRoot: string
   readonly sandboxName: string
   readonly targetKind: SandboxTargetKind
+  readonly role?: SandboxRole
   readonly currentUser: string
   readonly dedicatedUser?: string
   readonly agentId: SandboxAgentId
@@ -57,6 +59,7 @@ function executable(name: string): string {
 function renderReadme(input: {
   readonly targetKind: SandboxTargetKind
   readonly targetUser: string
+  readonly role: SandboxRole
   readonly sandboxName: string
   readonly agentLabel: string
   readonly tools: readonly string[]
@@ -104,6 +107,7 @@ function renderReadme(input: {
     '',
     `- sandbox: \`${input.sandboxName}\``,
     `- target: ${dedicated ? '专用 rootless 账户' : '当前用户'} (\`${input.targetUser}\`)`,
+    `- role: \`${input.role}\``,
     `- agent: ${input.agentLabel}`,
     `- tools: ${input.tools.join(', ')}`,
     `- package: \`${input.packageRel}\``,
@@ -301,6 +305,7 @@ export async function buildSandboxOnboarding(input: SandboxOnboardingInput): Pro
   const spec = buildSandboxSpec({
     name: input.sandboxName,
     targetKind: input.targetKind,
+    role: input.role,
     currentUser: input.currentUser,
     dedicatedUser: input.dedicatedUser,
     agentId: input.agentId,
@@ -324,6 +329,7 @@ export async function buildSandboxOnboarding(input: SandboxOnboardingInput): Pro
   const readme = renderReadme({
     targetKind: spec.target.kind,
     targetUser,
+    role: spec.role,
     sandboxName: spec.name,
     agentLabel: spec.agent.label,
     tools: spec.tools,

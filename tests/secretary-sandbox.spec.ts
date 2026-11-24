@@ -39,6 +39,12 @@ describe('SHE sandbox catalog and spec (R61)', () => {
     expect(spec.paths.root).toBe('$HOME/.local/share/feishu4dsh/sandboxes/demo-sbx')
     expect(spec.paths.workspace).toBe('$HOME/.local/share/feishu4dsh/sandboxes/demo-sbx/workspace')
     expect(spec.paths.containerWorkspace).toBe('/workspace')
+    expect(spec.paths.inbox).toBe('$HOME/.local/share/feishu4dsh/sandboxes/demo-sbx/inbox')
+    expect(spec.paths.outbox).toBe('$HOME/.local/share/feishu4dsh/sandboxes/demo-sbx/outbox')
+    expect(spec.paths.containerInbox).toBe('/inbox')
+    expect(spec.paths.containerOutbox).toBe('/outbox')
+    expect(spec.role).toBe('standalone')
+    expect(spec.mailbox.allowedCallers).toEqual(['main'])
     expect(spec.container.name).toBe('feishu4dsh-demo-sbx')
     expect(spec.security).toMatchObject({
       readOnlyRootfs: true,
@@ -124,6 +130,8 @@ describe('SHE sandbox package (R61)', () => {
       expect(create).toContain('no-new-privileges:true')
       expect(create).toContain('src=$WORKSPACE,dst=/workspace')
       expect(create).toContain('src=$AGENT_HOME,dst=/home/agent')
+      expect(create).toContain('src=$INBOX,dst=/inbox,ro')
+      expect(create).toContain('src=$OUTBOX,dst=/outbox,rw')
       expect(create).toContain('src=$CACHE,dst=/home/agent/.cache')
       expect(create).toContain('NPM_CONFIG_PREFIX=/home/agent/.npm-global')
       expect(create).not.toContain('docker.sock')

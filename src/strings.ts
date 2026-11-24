@@ -333,6 +333,8 @@ export interface Strings {
   sheSandboxWizardSummary: (name: string, target: string, agent: string, tools: string, network: string) => string
   sheSandboxTargetNote: string
   sheSandboxAgentNote: string
+  sheSandboxRoleNote: string
+  sheSandboxRoleOption: (role: string) => string
   sheSandboxToolsNote: string
   sheSandboxConfirmNote: string
   sheSandboxBack: string
@@ -347,6 +349,15 @@ export interface Strings {
   sheSandboxPackageDone: (name: string, archivePath: string) => string
   sheSandboxUsageGuide: (name: string, requiresRootBootstrap: boolean, targetUser: string) => string
   sheSandboxUnavailable: string
+  sheSandboxBrokerUnavailable: string
+  sheSandboxListTitle: string
+  sheSandboxListEntry: (name: string, role: string, state: string) => string
+  sheSandboxInfoLine: (label: string, value: string) => string
+  sheSandboxStatsTitle: string
+  sheSandboxStatsLine: (label: string, value: string) => string
+  sheSandboxActionDone: (action: string, name: string) => string
+  sheSandboxDestroyConfirm: (name: string) => string
+  sheSandboxNotFound: (name: string) => string
   sheNeedAliasHint: string
   sheNeedPackageDeprecated: string
   sheInitOk: (shadowRepo: string, runtimeRoot: string, version: string) => string
@@ -423,12 +434,18 @@ function sheHelpZh(topic: string): string {
       '/she sandbox — 打开 build-sandbox 交互式构建向导',
       '/she sandbox status — 合并只读检查：主机预检 + descriptor/OpenCode/runtime 接入检查',
       '/she sandbox build [flags] — 非交互生成安装包',
+      '/she sandbox list — 查看已注册 sandbox',
+      '/she sandbox info <name> — 查看 sandbox 详情',
+      '/she sandbox stats <name> — 查看 CPU/内存/PIDs 快照',
+      '/she sandbox start|stop|restart <name> — 容器生命周期',
+      '/she sandbox destroy <name> --yes — 删除容器和网络（数据默认保留）',
       '',
-      'flags: --target current-user|dedicated-user --agent opencode|hermes|deepseek-harness|blank|custom',
-      '       --image <ref> --tools core,node,python,build,data,search --network none|egress --name <name>',
+      'flags: --suffix <suffix> --name <name> --role standalone|main|worker|observer|utility',
+      '       --target current-user|dedicated-user --agent opencode|hermes|deepseek-harness|blank|custom',
+      '       --image <ref> --tools core,node,python,build,data,search --network none|egress',
       '',
-      '生成包固定使用 $HOME/.local/share/feishu4dsh/sandboxes/<name>/；',
-      '工作区只挂载 workspace/home/cache 三个叶子目录，不挂 Docker socket 或父目录。',
+      '固定前缀 sbx-；suffix 留空自动 sbx-0001、sbx-0002。',
+      '工作区只挂载 workspace/inbox/outbox/home/cache 具体叶子目录，不挂 Docker socket 或父目录。',
       '专用账户模式会另带 root bootstrap 脚本，必须在飞书外审查执行。',
     ].join('\n'),
     doctor: [
@@ -486,7 +503,7 @@ function sheHelpEn(topic: string): string {
     update: '/she init update — fast-forward the current scope shadow repo from committed source HEAD; refuses with unfinished tasks, dirty shadow tree or non-FF updates.',
     reset: '/she init reset — forget the current scope→shadow mapping without deleting files; use before re-initializing or switching projects.',
     need: '/she need and /she need verify are compatibility aliases for /she sandbox status. /she need package is deprecated and maps to the default OpenCode /she sandbox build path.',
-    sandbox: '/she sandbox — open the interactive build-sandbox wizard. /she sandbox status — read-only Docker/rootless/user/subuid/linger checks. /she sandbox build [flags] — generate a package non-interactively.',
+    sandbox: '/she sandbox — interactive builder. /she sandbox status — preflight. /she sandbox build [--suffix x] [--role worker] — package. /she sandbox list|info|stats|start|stop|restart|destroy — broker-managed sandbox operations.',
     doctor: '/she doctor — show source, state file, OpenCode health, runtime paths and current-scope shadow repo (admins only).',
     submit: [
       '/she submit <request> — create a Topic and enqueue a task',
@@ -760,7 +777,7 @@ const zhCN: Strings = {
     '/she init update — 更新当前 scope 的 shadow repo',
     '/she init reset — 清除当前 scope 的 shadow repo 映射',
     '/she need — 兼容入口，等同 /she sandbox status',
-    '/she sandbox [status|build] — 交互式生成 agent sandbox 安装包（无密钥）',
+    '/she sandbox [status|build|list|info|stats|start|stop|restart|destroy] — sandbox 构建与 broker 管理',
     '/she doctor — 查看 SHE/OpenCode/共享目录诊断',
     '/she submit <原文> — 新建 Topic 并提交任务',
     '/she continue <Topic> <原文> — 在同一 Topic 追加串行任务',
@@ -784,10 +801,12 @@ const zhCN: Strings = {
   sheSandboxStatusTitle: 'Sandbox 执行面预检',
   sheSandboxReady: '当前用户 Docker 可用；可继续选择沙箱配置。',
   sheSandboxNotReady: '当前用户 Docker 不可用或未确认 rootless：建议选择专用 rootless 账户并生成 root bootstrap 包。',
-  sheSandboxWizardTitle: step => ({ target: 'Sandbox · 选择目标账户', agent: 'Sandbox · 选择 Agent', tools: 'Sandbox · 选择基础工具', confirm: 'Sandbox · 确认生成' } as Record<string, string>)[step] ?? 'Sandbox 构建',
+  sheSandboxWizardTitle: step => ({ target: 'Sandbox · 选择目标账户', role: 'Sandbox · 选择角色', agent: 'Sandbox · 选择 Agent', tools: 'Sandbox · 选择基础工具', confirm: 'Sandbox · 确认生成' } as Record<string, string>)[step] ?? 'Sandbox 构建',
   sheSandboxWizardSummary: (name, target, agent, tools, network) => `名称：\`${name}\`\n目标：${target}\nAgent：${agent}\n工具：${tools}\n网络：${network}`,
   sheSandboxTargetNote: '推荐专用 rootless 账户。当前用户模式只在本机 Docker 可达且可接受同账户风险时使用；本版不枚举任意系统用户。',
   sheSandboxAgentNote: '内置 OpenCode 使用固定版本；Hermes/dsh 需显式镜像，不会猜测官方镜像名；镜像存在不等于协议兼容。',
+  sheSandboxRoleNote: '角色会写入 sandbox descriptor；worker 默认不能继续委派，main 通过 broker 分派任务，inbox 的写入由 broker 独占。',
+  sheSandboxRoleOption: role => ({ standalone: 'standalone · 手工沙箱', main: 'main · 协调者', worker: 'worker · 执行者', observer: 'observer · 只读观察', utility: 'utility · 单次工具' } as Record<string, string>)[role] ?? role,
   sheSandboxToolsNote: '工具包可多选；用户态工具装到 /home/agent，系统包写入镜像。Docker CLI 与 socket 永不安装/挂载。',
   sheSandboxConfirmNote: '点击生成后只产出无密钥安装包，不执行 sudo、不创建容器；请由目标用户在飞书外审查执行。',
   sheSandboxBack: '⬅️ 上一步',
@@ -825,6 +844,15 @@ const zhCN: Strings = {
     ].join('\n')
   },
   sheSandboxUnavailable: '当前运行环境不支持 build-sandbox（未装配 sandbox hook）。',
+  sheSandboxBrokerUnavailable: 'Sandbox broker 不可用：请确认 sandbox-broker.service 已启动，且使用同一目标账户。',
+  sheSandboxListTitle: 'Sandbox 列表',
+  sheSandboxListEntry: (name, role, state) => `${name}  [${role}]  ${state}`,
+  sheSandboxInfoLine: (label, value) => `${label}：${value}`,
+  sheSandboxStatsTitle: 'Sandbox 资源快照',
+  sheSandboxStatsLine: (label, value) => `${label}：${value}`,
+  sheSandboxActionDone: (action, name) => `sandbox ${name} 已执行 ${action}。`,
+  sheSandboxDestroyConfirm: name => `销毁 ${name} 需要确认。请发送：/she sandbox destroy ${name} --yes。数据默认保留，--purge 不在本版实现。`,
+  sheSandboxNotFound: name => `sandbox 不存在：${name}`,
   sheNeedAliasHint: '兼容入口：/she need 已并入 /she sandbox status；后续请优先使用 /she sandbox。',
   sheNeedPackageDeprecated: '/she need package 已并入 /she sandbox；本次按默认 OpenCode 方案继续生成。后续请使用 /she sandbox build。',
   sheInitOk: (shadowRepo, runtimeRoot, version) => `SHE 初始化完成（OpenCode ${version}）。\nShadow repo：${shadowRepo}\nRuntime：${runtimeRoot}\n下一步直接 /she submit。`,
@@ -1071,7 +1099,7 @@ const enUS: Strings = {
     '/she init update — update the current scope shadow repo',
     '/she init reset — forget the current scope shadow repo mapping',
     '/she need — compatibility alias for /she sandbox status',
-    '/she sandbox [status|build] — interactive secret-free agent-sandbox package builder',
+    '/she sandbox [status|build|list|info|stats|start|stop|restart|destroy] — sandbox builder and broker management',
     '/she doctor — inspect SHE/OpenCode/shared-directory diagnostics',
     '/she submit <request> — create a Topic and enqueue a task',
     '/she continue <Topic> <request> — append a serial task',
@@ -1095,10 +1123,12 @@ const enUS: Strings = {
   sheSandboxStatusTitle: 'Sandbox execution-plane preflight',
   sheSandboxReady: 'Current-user Docker is reachable; continue with sandbox configuration.',
   sheSandboxNotReady: 'Current-user Docker is unavailable or rootless is unconfirmed: use a dedicated rootless account and review the root bootstrap package.',
-  sheSandboxWizardTitle: step => ({ target: 'Sandbox · target account', agent: 'Sandbox · agent', tools: 'Sandbox · tools', confirm: 'Sandbox · confirm' } as Record<string, string>)[step] ?? 'Sandbox builder',
+  sheSandboxWizardTitle: step => ({ target: 'Sandbox · target account', role: 'Sandbox · role', agent: 'Sandbox · agent', tools: 'Sandbox · tools', confirm: 'Sandbox · confirm' } as Record<string, string>)[step] ?? 'Sandbox builder',
   sheSandboxWizardSummary: (name, target, agent, tools, network) => `Name: \`${name}\`\nTarget: ${target}\nAgent: ${agent}\nTools: ${tools}\nNetwork: ${network}`,
   sheSandboxTargetNote: 'Dedicated rootless account is recommended. Current-user mode is only for an accessible local Docker and accepted same-account risk; arbitrary system users are not enumerated.',
   sheSandboxAgentNote: 'OpenCode is pinned. Hermes/dsh require an explicit image; official image names are not guessed. Image existence does not imply protocol compatibility.',
+  sheSandboxRoleNote: 'The role is stored in the sandbox descriptor. Workers cannot delegate; main routes tasks through the broker; only the broker writes inboxes.',
+  sheSandboxRoleOption: role => ({ standalone: 'standalone · manual sandbox', main: 'main · coordinator', worker: 'worker · executor', observer: 'observer · read-only', utility: 'utility · one-shot tool' } as Record<string, string>)[role] ?? role,
   sheSandboxToolsNote: 'Select one or more bundles. User tools live under /home/agent; OS packages are baked at image build. Docker CLI/socket are never installed or mounted.',
   sheSandboxConfirmNote: 'Generate only emits a secret-free package: no sudo and no container creation. The target user must review and execute it outside Feishu.',
   sheSandboxBack: '⬅️ Back',
@@ -1136,6 +1166,15 @@ const enUS: Strings = {
     ].join('\n')
   },
   sheSandboxUnavailable: 'This runtime does not provide the build-sandbox hook.',
+  sheSandboxBrokerUnavailable: 'Sandbox broker is unavailable: ensure sandbox-broker.service is running under the target account.',
+  sheSandboxListTitle: 'Sandbox list',
+  sheSandboxListEntry: (name, role, state) => `${name}  [${role}]  ${state}`,
+  sheSandboxInfoLine: (label, value) => `${label}: ${value}`,
+  sheSandboxStatsTitle: 'Sandbox resource snapshot',
+  sheSandboxStatsLine: (label, value) => `${label}: ${value}`,
+  sheSandboxActionDone: (action, name) => `sandbox ${name}: ${action} completed.`,
+  sheSandboxDestroyConfirm: name => `Destroying ${name} requires confirmation. Send: /she sandbox destroy ${name} --yes. Data is retained by default; --purge is not implemented in this version.`,
+  sheSandboxNotFound: name => `sandbox not found: ${name}`,
   sheNeedAliasHint: 'Compatibility: /she need now maps to /she sandbox status; prefer /she sandbox.',
   sheNeedPackageDeprecated: '/she need package is merged into /she sandbox; generating the default OpenCode package now. Prefer /she sandbox build.',
   sheInitOk: (shadowRepo, runtimeRoot, version) => `SHE initialized (OpenCode ${version}).\nShadow repo: ${shadowRepo}\nRuntime: ${runtimeRoot}\nNext: use /she submit.`,

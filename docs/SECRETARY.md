@@ -51,6 +51,11 @@ secretaryEnabled: true（手工配置）
 /she sandbox
 /she sandbox status
 /she sandbox build [flags]
+/she sandbox list
+/she sandbox info <name>
+/she sandbox stats <name>
+/she sandbox start|stop|restart <name>
+/she sandbox destroy <name> --yes
 /she need
 /she need package
 /she doctor
@@ -89,6 +94,8 @@ $HOME/.local/share/feishu4dsh/sandboxes/<sandbox-name>/
 包内包含 plan、host preflight、root bootstrap（专用账户模式）、create/verify/destroy 脚本、Dockerfile 与 CHECKSUMS。容器默认只读 rootfs、`cap-drop ALL`、`no-new-privileges`、独立网络，只挂 workspace/home/cache 三个叶子目录，禁止 Docker socket/host network/privileged。SHE 不执行 sudo 或容器创建；目标用户在飞书外审查执行。
 
 空机器可用 `scripts/sandbox-preflight.sh`（只读）和 `scripts/sandbox-bootstrap-host.sh`（root，支持 dry-run）准备专用 rootless 账户。
+
+Broker 使用固定 `sbx-` 名称前缀、Unix socket 和固定 registry；inbox 由 broker 写且容器只读，outbox 由 agent 写。
 
 ### 结果回收
 
