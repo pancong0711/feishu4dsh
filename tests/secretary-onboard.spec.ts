@@ -23,6 +23,19 @@ const hostReport = {
 }
 
 describe('terminal sandbox onboarding (R65)', () => {
+  it('renders a dry-run for both user services without touching systemd', () => {
+    const script = join(repoRoot, 'scripts', 'install-user-services.sh')
+    execFileSync('bash', ['-n', script])
+    const output = execFileSync('bash', [
+      script, '--dry-run', '--repo', repoRoot, '--dsh', '/bin/true',
+      '--profile', 'feishu4dsh', '--env-file', '/tmp/feishu4dsh-test.env',
+    ], { encoding: 'utf8' })
+    expect(output).toContain('== dsh unit ==')
+    expect(output).toContain('== broker unit ==')
+    expect(output).toContain('ExecStart=/bin/true --profile feishu4dsh')
+    expect(output).toContain('sandbox-broker.sh serve')
+  })
+
   it('checks development prerequisites and points to the non-root pnpm installer', () => {
     const script = join(repoRoot, 'scripts', 'bootstrap-dev-env.sh')
     execFileSync('bash', ['-n', script])

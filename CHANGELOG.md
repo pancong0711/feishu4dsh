@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.21.1 (2026-11-24)
+
+**R70-a：dsh 与 broker 用户级服务一键安装**
+
+- 新增 `scripts/install-user-services.sh`：
+  - `--dry-run` 打印两个 user unit 与 systemctl 命令；
+  - `--enable` 写入 `~/.config/systemd/user/`、daemon-reload、enable --now；
+  - `--uninstall` 停用/删除 unit，保留 broker registry 与 sandbox 数据。
+- 统一安装：
+  - `dsh-feishu4dsh.service`
+  - `feishu4dsh-sandbox-broker.service`
+- 非 root；专用 sandbox 账户需以目标用户执行。
+- 新增 `pnpm services:install` 包装命令。
+- README/SECRETARY 与测试清单更新；全量测试 428/428。
+
 ## 0.21.0 (2026-11-24)
 
 **R69：Sandbox Broker 与 sandbox 管理 MVP**
