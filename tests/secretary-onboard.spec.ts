@@ -50,6 +50,9 @@ describe('terminal sandbox onboarding (R65)', () => {
       expect(readme).toContain('当前用户')
       expect(readme).toContain('不要')
       expect(readme).toContain('destroy-sandbox-target.sh')
+      expect(readme).toContain('命令逐行说明')
+      expect(readme).toContain('# 只读检查 Docker/rootless/目标账户/镜像')
+      expect(readme).toContain('# 构建镜像、创建独立网络并启动 sandbox 容器')
       const manifest = JSON.parse(readFileSync(result.manifestPath, 'utf8')) as {
         target: { kind: string; user: string }
         scripts: { file: string; root: boolean }[]

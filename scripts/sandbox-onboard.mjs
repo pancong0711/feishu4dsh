@@ -102,6 +102,12 @@ function printIntro() {
 
 这套 onboarding 会生成一个可审查的本地工具包，不会自动 sudo、安装软件或创建容器。
 
+交互会依次询问：
+  1. 目标账户：专用 rootless 账户 / 当前用户
+  2. Sandbox 名称
+  3. Agent：空白 / OpenCode / Hermes / dsh / 自定义镜像
+  4. 工具包：core / node / python / build / data / search
+
 核心模型：
   飞书 / SHE  = 控制面：任务、审批、状态
   sandbox     = agent 的独立执行空间
@@ -113,6 +119,11 @@ function printIntro() {
   - root 脚本只做一次性主机/账户初始化
   - 创建、验证、销毁必须由目标用户非 root 执行
   - 不把 sandbox 数据放在项目仓库或 ~/Projects
+
+说明：
+  - 专用 rootless 账户更安全，但首次需要 root 做账户/依赖初始化；
+  - 当前用户模式更快，但用户仍可直接访问并删除自己的 sandbox 数据；
+  - 终端程序只生成可审查脚本，不会自动 sudo、安装软件或创建容器。
 `)
 }
 
@@ -123,7 +134,10 @@ async function ask(rl, question, fallback) {
 
 async function askChoice(rl, question, choices, fallback) {
   console.log(question)
-  choices.forEach((choice, i) => console.log(`  ${i + 1}) ${choice.label}`))
+  choices.forEach((choice, i) => {
+    console.log(`  ${i + 1}) ${choice.label}`)
+    if (choice.detail !== undefined) console.log(`     ${choice.detail}`)
+  })
   const raw = await ask(rl, '选择', String(fallback))
   const index = Number(raw) - 1
   if (!Number.isInteger(index) || choices[index] === undefined) throw new Error('invalid choice')
@@ -135,27 +149,57 @@ async function interactive(options) {
   try {
     printIntro()
     options.targetKind = await askChoice(rl, '\n目标账户：', [
-      { label: '专用 rootless 账户（推荐）', value: 'dedicated-user' },
-      { label: '当前用户（快速测试/同账户模式）', value: 'current-user' },
+      {
+        label: '专用 rootless 账户（推荐）',
+        value: 'dedicated-user',
+        detail: '首次需要一次 root 创建账户/配置 subuid/linger；之后创建/验证/销毁都以目标用户非 root 执行。',
+      },
+      {
+        label: '当前用户（快速测试/同账户模式）',
+        value: 'current-user',
+        detail: 'Docker 已可用时不需要 sudo；但用户与容器共享宿主账户，用户仍可删除自己的 sandbox 数据。',
+      },
     ], 1)
     if (options.targetKind === 'dedicated-user') {
-      options.dedicatedUser = await ask(rl, '专用账户名', options.dedicatedUser)
+      options.dedicatedUser = await ask(rl, '专用账户名（不要使用现有个人账户）', options.dedicatedUser)
     }
-    options.name = await ask(rl, 'Sandbox 名称（小写字母/数字/连字符）', options.name ?? makeSandboxName())
+    options.name = await ask(rl, 'Sandbox 名称（小写字母/数字/连字符；不要包含路径）', options.name ?? makeSandboxName())
     const agentChoices = [
-      { label: '空白基础沙箱（推荐首次测试）', value: 'blank' },
-      { label: 'OpenCode（固定版本）', value: 'opencode' },
-      { label: 'Hermes Agent（需自定义镜像）', value: 'hermes' },
-      { label: 'DeepSeek Harness（需自定义镜像）', value: 'deepseek-harness' },
-      { label: '自定义 Agent 镜像', value: 'custom' },
+      {
+        label: '空白基础沙箱（推荐首次测试）',
+        value: 'blank',
+        detail: 'Debian + 所选工具；用于先验证容器创建、挂载和安全边界，不需要模型凭据。',
+      },
+      {
+        label: 'OpenCode（固定版本）',
+        value: 'opencode',
+        detail: '内置固定版本镜像；真正运行 agent 前仍需 provider 凭据/认证配置。',
+      },
+      {
+        label: 'Hermes Agent（需自定义镜像）',
+        value: 'hermes',
+        detail: '不猜官方镜像；必须提供已核验镜像，且镜像存在不等于协议兼容。',
+      },
+      {
+        label: 'DeepSeek Harness（需自定义镜像）',
+        value: 'deepseek-harness',
+        detail: '不猜官方镜像；必须提供已核验镜像，并确认 adapter 兼容。',
+      },
+      {
+        label: '自定义 Agent 镜像',
+        value: 'custom',
+        detail: '必须提供镜像引用；后续需要 adapter 验证，不能仅凭容器存在就认为可管理。',
+      },
     ]
     options.agentId = await askChoice(rl, '\nAgent：', agentChoices, 1)
     if (options.agentId === 'hermes' || options.agentId === 'deepseek-harness' || options.agentId === 'custom') {
+      console.log('镜像引用示例：registry.example.com/team/agent:1.2.3；请先确认 registry 权限和 platform。')
       options.image = await ask(rl, '镜像引用（必须已核验）')
       if (options.image === '') throw new Error('this agent requires --image')
     }
+    console.log('\n工具包说明：core=git/curl/jq/ripgrep；node=Node/npm/pnpm；python=Python/pip/venv/uv；build=编译器/CMake；data=sqlite3；search=fd/tree。')
     const toolIds = SANDBOX_TOOL_BUNDLES.map(bundle => bundle.id).join(',')
-    const rawTools = await ask(rl, `工具包（${toolIds}）`, options.tools.join(','))
+    const rawTools = await ask(rl, `工具包（${toolIds}；逗号分隔）`, options.tools.join(','))
     options.tools = rawTools.split(',').map(item => item.trim()).filter(Boolean)
     const host = await inspectSandboxHost(options.dedicatedUser)
     printHostReport(host)
@@ -169,6 +213,8 @@ async function interactive(options) {
       `output: ${options.outputRoot}`,
     ].join('\n')
     console.log(`\n即将生成：\n${summary}\n`)
+    console.log('说明：现在只写脚本和说明文档，不会执行 sudo、Docker 创建或容器操作。')
+    console.log('生成后请先阅读 README.md 和 manifest.json，再按顺序审查执行。')
     const ok = await ask(rl, '确认生成？(y/N)', 'n')
     if (!/^y(es)?$/i.test(ok)) {
       console.log('已取消。')
