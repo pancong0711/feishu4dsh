@@ -44,7 +44,7 @@ describe('channel capability contract', () => {
     expect(hasChannelCapability(set, 'markdown.outbound')).toBe(false)
   })
 
-  it('publishes the exact canonical v1 capability names for @she/protocol alignment', () => {
+  it('publishes the exact canonical v1 capability names for external gateway alignment', () => {
     const known = new Set<ChannelCapability>(feishuChannelCapabilitySet().capabilities)
     expect(CHANNEL_CAPABILITIES_V1).toEqual([
       'text.inbound',

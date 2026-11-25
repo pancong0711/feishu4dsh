@@ -1,148 +1,68 @@
 # 配置参考
 
-配置来源优先级：**入口配置（`cordis.patch.yml` / 环境变量）→ settings 用户文档**。所有字段均可省略，未填写取默认值。
+feishu4dsh 的配置由 Cordis profile patch / settings 提供，凭据建议通过环境文件注入。字段分为传输、会话、工作区、输出、审批与文案几类。
 
-## 凭据（必填）
-
-| 字段 | 环境变量建议 | 默认 | 说明 |
-|---|---|---|---|
-| `appId` | `FEISHU_APP_ID` | — | 飞书自建应用 App ID（`cli_...`） |
-| `appSecret` | `FEISHU_APP_SECRET` | — | App Secret |
-
-两者缺失时插件不启动传输，控制台打印配置指引。
-
-## 传输
+## 传输与凭据
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `domain` | `feishu` | `feishu`（国内）或 `lark`（国际版） |
-| `connectionMode` | `websocket` | `websocket` 长连接（推荐，无需公网）或 `webhook` |
-| `verificationToken` | — | webhook 模式：飞书「加密策略」中的 Verification Token |
-| `encryptKey` | — | webhook 模式：Encrypt Key（消息加密） |
-| `webhookPort` | `3081` | webhook 模式本地监听端口，回调地址为 `https://<host>:<port>/webhook/event` |
+| `appId` | — | 飞书/Lark 自建应用 App ID |
+| `appSecret` | — | 飞书/Lark App Secret；建议放 systemd EnvironmentFile |
+| `domain` | `feishu` | `feishu` 或 `lark` |
+| `connectionMode` | `websocket` | `websocket` 长连接或 `webhook` |
+| `verificationToken` | — | webhook 模式校验 token |
+| `encryptKey` | — | webhook 模式加密 key |
+| `webhookPort` | `3081` | webhook 监听端口 |
+| `requireMention` | `true` | 群聊是否必须 @ 机器人 |
 
-## 会话与输出
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `sessionScope` | `chat` | `chat`（整个聊天一个会话）/ `chat-thread`（按话题）/ `chat-sender`（按发送人） |
-| `agentPreset` | `standard` | 新会话默认模式（R27/R38，R41 迁移 dsh 0.2.0）；会话内用 `/mode` 按 scope 覆盖。**真实语义 = 挂载**：值必须是已声明的 preset id（插件 bundle patch 出厂声明 `standard`/`minimal`；部署层 profile patch 可按同 id 覆盖声明），宿主 `agent-preset-registry` 把该 preset 的组合（工具/提示面）挂到 Agent 的 scope 上，`meta.agentPreset` 只是随头记录的标签；存续会话 resume 时按宿主投影/会话头的真实值挂载（读不到回退本配置/链路值） |
-| `chatPresets` | `{}` | 运行时状态（`/mode` 写入）：scopeKey → 模式覆盖，勿手改 |
-| `requireMention` | `true` | 群聊是否需要 @ 机器人 |
-| `output` | `stream` | `stream` 流式逐块输出 / `card` 单卡片聚合 |
-| `showProcess` | `true` | 是否展示每轮聚合的工具调用与 Token 用量摘要；例如“调用工具 bash × 3 次 · Token：输入 1,234 · 输出 56 · 缓存读 890”，并跟随入站消息的 `replyTo` 显示在话题内 |
-| `showReasoning` | `true` | 是否把模型思考过程（reasoning）放进回复卡片的**可折叠面板**里流式展示（R36 阶段二）；轮末折叠保留为一行「💭 思考过程（N 字 · Xs）」。`output: stream` 时需传输支持整卡流（旧传输退回 Markdown 流式，无面板），`output: card` 则在收口卡片中折叠展示；会话内用 `/reasoning` 按 scope 覆盖 |
-| `chatReasoning` | `{}` | 运行时状态（`/reasoning` 写入）：scopeKey → `on` / `off` 覆盖，勿手改 |
-| `locale` | `auto` | 渠道文案语言；`auto` 无提示时默认 zh-CN |
-
-> **话题/线程说明**：飞书话题 = thread。`sessionScope: chat` 时所有话题共享一个 Agent 会话；`chat-thread` 时每个话题独立会话。`/status` 显示的是配置原文（如 `chat` / `chat-thread`），不是自动判断的“话题”。
-
-> **思考过程显示**（R36 阶段二）：默认 `showReasoning: true` —— 一轮里模型产出的 reasoning 会以 `collapsible_panel` 折叠面板出现在回复卡片上方，**流式增量更新**，正文仍渲染在同一张卡片的 markdown 区；`turn/end` 把面板收成一行「💭 思考过程（1,204 字 · 18s）」并**默认折叠保留**（拍板 Q4）。**私聊默认展开、群聊默认折叠**（拍板 Q2），读者点标题即可自行展开。会话内用 `/reasoning`（无参查看当前值与来源）· `/reasoning on|off` 按 scope 覆盖并持久化，ACL 与 `/mode` 一致。超长思考保留头尾并标注「已省略 N 字」；思考区与正文区互不覆盖，思考内容绝不混入正文（正文落账语义不变）。**降级**：`showReasoning: false`、`/reasoning off` 或（`output: stream` 且）传输不支持整卡流时，一律回到阶段一/既有渲染路径（Markdown 流式 + 过程行）；`output: card` 不做 live 过程行，但收口卡片仍带折叠面板。`collapsible_panel` 需要飞书客户端 ≥ V7.9，更低版本会把面板体显示为「升级客户端」占位图（正文不受影响）。
->
-> **模式与推理强度**（R27/R28，R38/R42 修订）：`/mode` 查看/设置会话模式（standard/minimal，设置即开启新会话——`resume()` 不能换预设，且挂载的是会话真实 preset：standard=完整工具集，minimal=仅持久 shell 且无 runtime context/AGENTS 注入）；**minimal 亦不挂上下文压缩栈（省 token 的设计目标），故 `/compact` 仅 standard 可用**——minimal 下 `/help` 会把 `/compact` 列在「当前模式未提供」区并提示 `/mode standard`，直接输入 `/compact` 同样得到该提示（R42）；`/model effort` 按模型设置推理强度：`default` = 请求不携带 `reasoning_effort`；其余档位写入 `provider/model` 精确键。设置前**按模型真实能力预校验（R39/R55）**：宿主 `llm` 可达时接受其实际公布的档位（不止低/高/max，如 `medium`/`xhigh`），不支持的档位当场报错并列出支持档位，不再对 `max` 跳过校验；宿主不可达时回退 owner 档位 `low/high/max` 并给出持久化告警。`/model effort` 查看会同时列出**偏好、最近请求 header 实测值、宿主支持档位**；R55 起改档/清档不会再被历史 header 粘住，`default` 的删除会通过 settings `mutate/unset` 持久化（重启不回魂）。修改需要 `/model` 同级 ACL。
-> **会话管理**（R29）：`/session` 列表（自动标题 = 日期+首条消息首行≤12字）、`/session <n>` 切回旧会话（自动停止进行中任务）、`/session rename`、`/session archive <n>` / `archive old [天数]`（归档与 dsh web 共用同一集合，当前版本归档单向）。切换/重命名/归档的 ACL 与 `/cd` 一致。
->
-> **交互选择卡**（R32）：`/ws` 默认出**工作区选择卡**（当前项标 ✅，点击即切换，文本列表保留为 `/ws list`）；`/ws new` 打开**目录浏览卡**——在 `workspaceRoots` 配置的目录内逐级进入/翻页/返回上级，「✅ 就用这个目录」= 注册并切换；`/ws new <名称>` 在当前浏览位置新建文件夹并进入；`/model` 在状态文本后追加**模型选择卡**（`select_static` 下拉 + 分页，每页 15 条，当前模型标 ✅），候选清单来自 `modelCatalog` 配置；`/session` 文本列表后附**会话选择卡**（同一套稳定编号）。所有菜单点击都以**点击者身份**重查对应命令的审批 ACL，转发到别的会话的卡一律拒绝；菜单卡 15 分钟自动失效；文本命令全部保留兜底（`/cd` `/ws add` `/ws list` `/model <p/m>`）。**清单增删（R33/R43）**：`/model add <p/m>` 加入、`/model del <p/m>`（别名 `/model remove`）移出，删除**即时持久化**；带空白的伪目标（如 `/model rm p/m`）会被拒绝并回用法，不会 pin 到不存在的 provider、也不会写进清单。
-
-## 工作区
-
-dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操作限制在其中。插件的会话身份是 **(会话 scope × 工作区)**；在飞书里可用 `/ws` 与 `/cd` 查看、切换工作区，也可以在聊天（含手机端）中把 Agent 指向另一个目录。
+## 会话与工作区
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `workspace` | 宿主进程 cwd | 默认工作区；入站收件箱与 `send_file` 都以其为准 |
-| `workspaceRoots` | `[]` | `/cd` 可进入的目录前缀列表。**为空时只允许默认工作区与已注册工作区**（安全默认） |
-| `chatWorkspaces` | `{}` | 隐藏字段：`/cd` 持久化的「scopeKey→工作区」映射，运行时写入，勿手改 |
-| `userWorkspaces` | `[]` | 隐藏字段：`/ws add` 添加的工作区路径列表，运行时写入，勿手改 |
-| `chatSessions` | `{}` | 运行时状态（`/session` 写入）：agentKey → 会话注册表（标题/活跃时间），勿手改 |
-| `chatActiveGen` | `{}` | 运行时状态（`/session`/`/new` 写入）：agentKey → 活跃代次指针，勿手改 |
-| `modelCatalog` | `[]` | `/model` 点选卡的候选清单（`provider/model` 列表，部署管理员维护）；未配置时 `/model` 保持纯文本行为 |
+| `workspace` | 进程 cwd | 默认工作区 |
+| `workspaceRoots` | `[]` | `/cd` 可进入的目录前缀 |
+| `sessionScope` | `chat` | `chat` / `chat-thread` / `chat-sender` |
+| `agentPreset` | `standard` | 新会话默认 preset |
+| `chatPresets` | `{}` | `/mode` 持久化 map（运行时字段） |
+| `chatWorkspaces` | `{}` | `/cd` 持久化 map（运行时字段） |
+| `userWorkspaces` | `[]` | `/ws add` 持久化列表（运行时字段） |
+| `chatSessions` | `{}` | 会话注册表（运行时字段） |
+| `chatActiveGen` | `{}` | 活动代次指针（运行时字段） |
 
-切换规则（`/cd`）：
-- **权限**（R11）：与 `/ws add`、`/model` 一致，沿用审批 ACL——配置了 `approvers` 时仅名单内可切换，未配置时由会话驱动者操作；无权时回复「无权切换工作区」。
-- 目标 = **默认工作区**，或 **宿主 `workspaceRegistry` 中已注册的工作区**，或 **`/ws add` 添加的工作区** → 允许；
-- 目标在 `workspaceRoots` 某个前缀之内 → 允许；
-- 其余一律拒绝（目录不存在会提示 `not_found`，不在范围内提示 `not_allowed`）。
-- 切换后写入 settings（`chatWorkspaces`），重启后自动恢复；切回原工作区会复用原会话，不会串上下文。切换**无需 `/new`**（见下）。
-- **路径校验**（R10/R11）：凡是进入 `chatWorkspaces` / `userWorkspaces` / 新话题继承的工作区路径，使用前都会校验为**真实存在且规范化的目录**，三级兜底：坏值 → 默认工作区 → 守护进程 cwd，逐级控制台告警，保证 `/status` 显示的工作区与 Agent 实际可写目录始终一致。若看到 `workspace ... is not a real directory ... fix the 'workspace' setting` 告警，说明默认工作区本身失效，请尽快修配置。**勿手改隐藏字段；若曾手改出含空格/失效路径，删除空格或补正为无空格绝对路径后重启 feishu4dsh 即可。**
-- **关于 `/new`**：`/cd` 与 `/model` 都是即时改绑定、下一轮生效，**不需要也不应该用 `/new` 来"确保切换成功"**；`/new` 只用于清空当前工作区的上下文，模型 pin 与工作区绑定均保持不变（详见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) §3「切换模型/工作区」）。
-
-手机侧管理工作区（无需改配置重启）：
-- `/ws add <绝对路径>`：把一个**已存在的目录**登记为可用工作区（含存在性/目录校验），之后即可 `/cd` 进入；持久化到 settings。
-- `/ws remove <名称或路径>`：移除 `/ws add` 添加的工作区；默认与宿主注册的工作区**不可移除**。
-- **权限**：两者均属扩权操作，沿用审批 ACL——配置了 `approvers` 时仅名单内可操作，未配置时由会话驱动者操作；每次操作在控制台留痕。**群聊建议配置 `approvers`**。
-
-
-## 媒体
+## 输出与推理
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `receiveFiles` | `true` | 入站文件/音频/视频/图片落入 `<workspace>/.feishu4dsh/inbox/<消息键>/` |
-| `maxReceiveFileBytes` | `20971520`（20 MiB） | 单入站文件上限，非法值回退默认 |
-| `maxMessageReceiveBytes` | `1073741824`（1 GiB） | 单条消息所有入站附件总大小上限 |
-| `saveImagesToInbox` | `true` | 图片是否也保存到工作区 inbox（关闭时仅按 `attachImages` 决定是否给模型） |
-| `attachImages` | `false` | 图片是否作为模型可见附件（需模型支持视觉 + 宿主 attachments 服务） |
-| `sendFiles` | `true` | 是否给 Agent 注册 `send_file` 工具 |
-| `maxSendFileBytes` | `20971520` | 单出站文件上限 |
+| `output` | `stream` | `stream` 或 `card` |
+| `showProcess` | `true` | 显示工具/耗时/Token 过程行 |
+| `showReasoning` | `true` | 显示 reasoning 折叠面板 |
+| `chatReasoning` | `{}` | `/reasoning` 持久化 map |
+| `modelCatalog` | `[]` | `/model` 点选清单 |
+| `modelEfforts` | `{}` | `provider/model` 推理强度偏好 |
 
-未开启视觉且 `saveImagesToInbox: false` 时的图片、超限文件、不支持的类型，都会以**注记**形式随消息交给模型——模型至少知道「收到了但没拿到」。
-
-## 审批与授权
+## 文件与审批
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `approvalTimeoutMs` | `300000`（5 分钟） | 审批卡超时，下限 10 秒；超时按拒绝处理 |
-| `senderAllowlist` | `[]` | 允许私聊的 open_id；空 = 应用可见范围内的任何人 |
-| `groupAllowlist` | `[]` | 允许服务的群 chat_id；空 = 机器人所在的任何群 |
-| `approvers` | `[]` | 可点击允许/拒绝的 open_id；空 = 谁驱动会话谁审批 |
+| `receiveFiles` | `true` | 接收入站文件 |
+| `maxReceiveFileBytes` | 20 MiB | 单文件上限 |
+| `maxMessageReceiveBytes` | 1 GiB | 单消息媒体总量上限 |
+| `saveImagesToInbox` | `true` | 图片落工作区 inbox |
+| `attachImages` | `false` | 图片送入视觉模型 |
+| `sendFiles` | `true` | 允许出站文件 |
+| `maxSendFileBytes` | 20 MiB | 出站文件上限 |
+| `approvalTimeoutMs` | 300000 | 审批超时，下限 10 秒 |
+| `senderAllowlist` | `[]` | 私聊 open_id 白名单 |
+| `groupAllowlist` | `[]` | 群 chat_id 白名单 |
+| `approvers` | `[]` | 审批/管理操作 open_id 白名单 |
 
-白名单**只收窄、不放行**：可触达范围本身由飞书应用的「可用范围」决定。
+白名单只收窄；应用可见范围仍由飞书侧控制。
 
-
-
-## 独立 SHE 控制面接入（实验，可选）
-
-默认关闭；与下方旧 `secretary*` 子模块分开。开启后 `/she` 改走独立 SHE control-plane 的 `gateway.v1`，旧 secretary 路径保留用于回滚。
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `she.enabled` | `false` | 开启后 `/she` 与 SHE 卡片/表单回调走新 control-plane runtime；关闭时完全沿用旧 secretary |
-| `she.socketPath` | 空 | 显式 control-plane Unix socket；空 = `$XDG_RUNTIME_DIR/she/control.sock`，再回退 `~/.local/run/she/control.sock` |
-| `she.tokenFile` | 空 | 可选 0600 bearer token 文件；空 = `~/.config/she/token`（不存在则不发送 token） |
-| `she.timeoutMs` | `30000` | 单次 HTTP/事件连接超时 |
-
-当前 integration 版本通过 SHE GitHub Release tarball 锁定 `@she/protocol` / `@she/client`，尚未切到 npm registry semver。普通飞书聊天、旧 `/she` 和旧 secretary 配置不受影响。
-
-## 秘书子模块（SHE，可选）
-
-默认关闭；部署管理员可在飞书执行 `/she init` 完成 B 侧一键初始化。状态写入 0600 文件，后续 dsh 重启可自动恢复；手工 `secretaryEnabled: true` 仍优先。
+## 文案
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `secretaryEnabled` | `false` | 手工强制启用 SHE |
-| `secretaryAutoRestore` | `true` | 未手工启用时从状态文件自动恢复 |
-| `secretaryBootstrapFile` | `~/.local/state/feishu4dsh/she-bootstrap.json` | `/she init` 状态文件（无密钥） |
-| `secretarySandboxRoot` | `/srv/opencode-she/worktrees` | `/she init` 共享根 |
-| `secretarySandboxUser` | `opencode-she` | 专用沙箱用户（`/she need` 检测与安装包模板使用） |
-| `secretarySandboxBuilderUser` | `feishu4dsh-sandbox` | `/she sandbox` 推荐的专用 rootless 账户 |
-| `secretarySandboxDescriptor` | `/srv/opencode-she/worktrees/.she/sandbox.json` | she-sandbox 发布的服务/运行时 descriptor |
-| `secretarySandboxOpencodeUrl` | `http://127.0.0.1:49375` | `/she init` 探测的 loopback OpenCode |
-| `secretarySandboxPasswordFile` | `/srv/opencode-she/secrets/opencode-service.json` | HttpApi 密码 JSON |
-| `secretaryRoot` | `.feishu4dsh/secretary` | 状态根：SQLite 与 worktrees；需可写且 OpenCode 可解析 |
-| `secretaryOpencodeUrl` | `http://127.0.0.1:49374` | OpenCode HttpApi 地址 |
-| `secretaryOpencodeUsername` | `opencode` | HTTP Basic 用户名 |
-| `secretaryOpencodePasswordFile` | `~/.config/opencode/service.json` | 600 权限 JSON 的 `password`；也可用 `OPENCODE_SERVICE_PASSWORD` |
-| `secretaryModelProviderID` | `opencode-go` | 固定 provider |
-| `secretaryModelID` | `deepseek-v4.1-flash` | 固定 model |
-| `secretaryModelVariant` | `high` | 固定 variant |
-| `secretaryPollIntervalMs` | `2000` | watcher 轮询间隔 |
-| `secretaryMaxTopicsPerChat` | `2` | 每聊天最多活跃 Topic |
-| `secretaryMaxQueuedTasks` | `20` | 每 Topic 最多排队 |
-| `secretaryMaxConcurrent` | `0` | 0 = 自动 |
-| `secretaryRequireReport` | `true` | 成功但报告缺失时暂停 Topic |
-| `secretaryMaxReportBytes` | `10485760` | 报告大小上限 |
-
-完整命令与状态机见 [SECRETARY.md](SECRETARY.md)。
+| `locale` | `auto` | `auto` / `zh-CN` / `en-US` |
 
 ## cordis.patch.yml 示例
 
@@ -157,28 +77,15 @@ dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操�
         requireMention: true
         output: stream
         showProcess: true
-        # showReasoning: true   # 思考过程折叠面板（会话内 /reasoning on|off 覆盖）
         # workspace: /path/to/default-workspace
-        # workspaceRoots: ['/path/to/projects']   # 允许 /cd 进入的目录前缀
+        # workspaceRoots: ['/path/to/projects']
         # senderAllowlist: ['ou_xxx']
         # groupAllowlist: ['oc_xxx']
         # approvers: ['ou_admin']
-        # 独立 SHE control-plane（实验；与旧 secretary 二选一）
-        # she:
-        #   enabled: false
-        #   socketPath: ~/.local/run/she/control.sock
-        #   tokenFile: ~/.config/she/token
-        #   timeoutMs: 30000
-        # 旧 secretary：普通部署无需手填；管理员发 /she init
-        # secretaryEnabled: true
-        # secretaryAutoRestore: true
-        # secretaryBootstrapFile: ~/.local/state/feishu4dsh/she-bootstrap.json
-        # secretarySandboxBuilderUser: feishu4dsh-sandbox
-        # secretarySandboxRoot: /srv/opencode-she/worktrees
-        # secretarySandboxOpencodeUrl: http://127.0.0.1:49375
-        # secretarySandboxPasswordFile: /srv/opencode-she/secrets/opencode-service.json
-        # secretaryRoot: /path/to/secretary-state
-        # secretaryOpencodePasswordFile: ~/.config/opencode/service.json
 ```
 
-> `!!js`（双感叹号）表示「在配置解析期求值的环境表达式」；单感叹号 `!js` 语义不同，勿混用。
+> `!!js` 表示配置解析期求值；单感叹号 `!js` 语义不同，勿混用。
+
+## 边界
+
+SHE agent control plane（任务、agent/sandbox/broker、`/she`）已迁移到独立项目 `2611she`。本插件配置中不包含 `secretary*` 或 `she*` 字段。

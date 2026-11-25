@@ -11,12 +11,13 @@
 3. **评审与门禁**：主会话逐行评审 diff，并独立复核三道门禁——严格类型检查（`noUncheckedIndexedAccess`）、全量单测（vitest，离线不触网）、构建产物；
 4. **回归纪律**：修任何 bug 必须同时固化一条覆盖该 bug 的回归测试；通道行为用假端口（FakePort）离线验证。
 
-工程数据的一个切面：首版约 80 项测试，迭代至今 **469 项**，几乎每个版本都伴随新增强化与回归。
+工程数据的一个切面：首版约 80 项测试，迭代至今 **375 项**，几乎每个版本都伴随新增强化与回归。
 
 ## 二、版本里程碑
 
 | 版本 | 日期 | 主题 |
 |---|---|---|
+| 0.23.0 | 2026-11-25 | **移除 SHE 业务**：`/she`、secretary、control-plane client、sandbox/broker 脚本与 `@she/*` 依赖迁出 feishu4dsh；只保留飞书 ↔ dsh 通道；`/info` 与安装器收敛；377/377 |
 | 0.22.0 | 2026-11-25 | **SHE 独立控制面薄接入（实验，默认关闭）**：`she` 配置、health/hello、/she 透传、RenderIntent/表单/按钮回调、NDJSON 事件泵与 cursor/snapshot 恢复、task 里程碑、默认关闭双轨开关；SHE 不可达不影响普通聊天；469/469 |
 | 0.1.0 | 2026-08-19 | 首个可用版本：WebSocket/Webhook 双传输、三种会话作用域（chat/chat-thread/chat-sender）、流式与聚合两种回复渲染 |
 | 0.1.1 | 2026-08-19 | 更名 `feishu4dsh`；接入 CI |

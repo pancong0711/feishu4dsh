@@ -105,7 +105,7 @@ git status          # 确认无 node_modules/ lib/ .env 被误加
 | 仓库 | 位置 | 内容 | 角色 |
 |------|------|------|------|
 | **全量仓库** | 本地主仓（分支 `main`） | 全部源码 + 测试 + **内部过程/规格/日志文档** | "仓库即记忆"：内部权威来源，日常开发提交只在这里 |
-| **去敏仓库** | 部署预览仓库（`publish/` 下的独立 git 仓库） | **白名单去敏快照**：`src/` `tests/` `.github/` + 配置元数据 + `scripts/{sandbox-preflight,sandbox-bootstrap-host,sandbox-rootless-init,sandbox-onboard,sandbox-broker,install-user-services}.sh` + 用户面文档 | 发布筛选边界：一切对外内容的来源 |
+| **去敏仓库** | 部署预览仓库（`publish/` 下的独立 git 仓库） | **白名单去敏快照**：`src/` `tests/` `.github/` + 配置元数据 + `scripts/{bootstrap-dev-env,install-user-services}.sh` + 用户面文档 | 发布筛选边界：一切对外内容的来源 |
 | **远程仓库** | GitHub `pancong0711/feishu4dsh`（公开） | = 去敏快照（force-push 覆盖，历史只保留快照提交） | 对外发布面 |
 
 **同步规则**

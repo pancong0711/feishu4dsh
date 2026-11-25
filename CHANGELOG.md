@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.0 (2026-11-25)
+
+**破坏性边界变更：移除 SHE 业务，回归飞书 ↔ dsh 通道**
+
+- 移除 `/she` 命令、SHE control-plane 接入、`src/secretary/`、`src/integrations/she/` 与 `@she/*` 依赖。
+- 移除 `secretary*` / `she*` 配置、SHE 运行时装配、sandbox wizard、broker/sandbox 脚本与 service 示例。
+- 删除 SHE 专项测试、文档与公开入口；SHE 改由独立项目 `2611she` 维护。
+- `/info` 收敛为只读通道信息：插件版本、传输模式、当前工作区及 `dsh-feishu4dsh.service` 的状态/日志命令。
+- `install-user-services.sh` 收敛为只管理 `dsh-feishu4dsh.service`，不再管理 broker。
+- 保留飞书通道、dsh 会话/工作区/模型工具、卡片、文件审批、ACL、`/compact` 等全部通道能力。
+- 验证：`tsc` ✓，Vitest **377/377**。
+
 ## 0.22.0 (2026-11-25)
 
 **SHE 独立控制面薄接入（实验，默认关闭）**

@@ -4,10 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@she/protocol': https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-protocol-0.1.0.tgz
-  '@she/client': https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-client-0.1.0.tgz
-
 importers:
 
   .:
@@ -21,12 +17,6 @@ importers:
       '@larksuiteoapi/node-sdk':
         specifier: ^1.73.0
         version: 1.73.0(debug@4.4.3)
-      '@she/client':
-        specifier: https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-client-0.1.0.tgz
-        version: https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-client-0.1.0.tgz
-      '@she/protocol':
-        specifier: https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-protocol-0.1.0.tgz
-        version: https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-protocol-0.1.0.tgz
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
@@ -42,14 +32,6 @@ importers:
         version: 4.1.10(@types/node@22.20.1)(vite@8.2.1(@types/node@22.20.1))
 
 packages:
-
-  '@she/client@https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-client-0.1.0.tgz':
-    resolution: {integrity: sha512-2S0shltxE9IMWCV6R5m2WuMKYLAJOjOFcfppA4hR+IdogkdqYG/NEILAKFzta5GkJu2rD4W8XlSaTgSpBGwIqQ==, tarball: https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-client-0.1.0.tgz}
-    version: 0.1.0
-
-  '@she/protocol@https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-protocol-0.1.0.tgz':
-    resolution: {integrity: sha512-aIm9JMho18qQcl/ZfBlhyXxYHzwgiJEAX2HgHvyoLG7rKALBNzm+pH/Qp9p3PSMSZzySdeE29DKrbTI6yt7DbA==, tarball: https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-protocol-0.1.0.tgz}
-    version: 0.1.0
 
   '@deepseek-ai/cordis@4.0.1':
     resolution: {integrity: sha512-YBdskTU2Po1kru3GgcUWUbkTsPMA9LkSQDAY8rBkFJeajdgcQad3QPJZE26JyK99Xb6HaASvoXg2DSUTeN/0Nw==}
@@ -547,9 +529,9 @@ packages:
   siginfo@2.0.0:
     resolution: {integrity: sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==}
 
-  source-map-js@1.2.1:
-    resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
-    engines: {node: '>=0.10.0'}
+  source-map-js@1.2.4:
+    resolution: {integrity: sha512-J7ZjMvHd9O1fcT/5V09QWaaSl2BbWx3F6O08spde82Namf9UB0GxRVIPiNbVsdKkoizHiSpTodo3vp2bAy91MA==}
+    engines: {node: '>=6.0.0'}
 
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
@@ -682,12 +664,6 @@ packages:
         optional: true
 
 snapshots:
-
-  '@she/client@https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-client-0.1.0.tgz':
-    dependencies:
-      '@she/protocol': https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-protocol-0.1.0.tgz
-
-  '@she/protocol@https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-protocol-0.1.0.tgz': {}
 
   '@deepseek-ai/cordis@4.0.1':
     dependencies:
@@ -1060,7 +1036,7 @@ snapshots:
     dependencies:
       nanoid: 3.3.18
       picocolors: 1.1.1
-      source-map-js: 1.2.1
+      source-map-js: 1.2.4
 
   protobufjs@7.6.5:
     dependencies:
@@ -1133,7 +1109,7 @@ snapshots:
 
   siginfo@2.0.0: {}
 
-  source-map-js@1.2.1: {}
+  source-map-js@1.2.4: {}
 
   stackback@0.0.2: {}
 

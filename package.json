@@ -1,7 +1,7 @@
 {
   "name": "feishu4dsh",
   "description": "Feishu/Lark IM channel for DeepSeek Harness: chats drive dsh agents, replies stream as cards, approvals and questions return as interactive buttons",
-  "version": "0.22.0",
+  "version": "0.23.0",
   "type": "module",
   "keywords": [
     "dsh",
@@ -25,9 +25,7 @@
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
-    "sandbox:onboard": "bash scripts/sandbox-onboard.sh",
     "bootstrap:dev": "bash scripts/bootstrap-dev-env.sh",
-    "sandbox:broker": "bash scripts/sandbox-broker.sh",
     "services:install": "bash scripts/install-user-services.sh",
     "services:check": "bash scripts/install-user-services.sh --check"
   },
@@ -53,15 +51,7 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
-    "scripts/sandbox-onboard.sh",
-    "scripts/sandbox-onboard.mjs",
-    "scripts/sandbox-preflight.sh",
-    "scripts/sandbox-bootstrap-host.sh",
-    "scripts/sandbox-rootless-init.sh",
     "scripts/bootstrap-dev-env.sh",
-    "scripts/sandbox-broker.sh",
-    "scripts/sandbox-broker.mjs",
-    "scripts/feishu4dsh-sandbox-broker.service.example",
     "scripts/install-user-services.sh"
   ],
   "repository": {
@@ -72,9 +62,7 @@
   "dependencies": {
     "@deepseek-ai/cosmokit": "^1.8.2",
     "@deepseek-ai/schemastery": "^3.18.1",
-    "@larksuiteoapi/node-sdk": "^1.73.0",
-    "@she/client": "https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-client-0.1.0.tgz",
-    "@she/protocol": "https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-protocol-0.1.0.tgz"
+    "@larksuiteoapi/node-sdk": "^1.73.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"

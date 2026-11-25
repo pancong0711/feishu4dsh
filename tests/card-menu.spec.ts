@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   BROWSE_PAGE_SIZE, MENU_PAGE_SIZE, MenuRegistry, browseCard, createMenuId,
-  modelMenuCard, pageCount, pagedOptions, sandboxWizardCard, wsMenuCard, type MenuState,
+  modelMenuCard, pageCount, pagedOptions, wsMenuCard, type MenuState,
 } from '../src/card-menu.js'
 import { decodeActionValue, encodeMenuValue, parseMenuValue } from '../src/cards.js'
 
@@ -140,27 +140,3 @@ describe('menu card builders (R32)', () => {
 })
 
 
-describe('sandbox wizard card (R61)', () => {
-  it('renders target/agent/tools navigation with server-side toggle labels', () => {
-    const menu = menuOf('sandbox', {
-      options: [{ label: '✅ core' }, { label: '⬜ node' }],
-      sandbox: {
-        step: 'tools', name: 'sbx-1', targetKind: 'dedicated-user',
-        agentId: 'opencode', tools: ['core'],
-      },
-    })
-    const cardObject = sandboxWizardCard('oc_chat1', menu, {
-      title: step => `step:${step}`,
-      targetNote: 'target-note', roleNote: 'role-note', agentNote: 'agent-note', toolsNote: 'tools-note', confirmNote: 'confirm-note',
-      back: 'back', next: 'next', build: 'build', cancel: 'cancel',
-      summary: wizard => `summary:${wizard.name}`,
-      toolLabel: (label, selected) => `${selected ? '✅' : '⬜'} ${label}`,
-    })
-    const elements = (cardObject as { elements: { text?: { content?: string }; actions?: { value?: Record<string, unknown>; text?: { content?: string } }[] }[] }).elements
-    expect(elements.some(element => element.text?.content === 'summary:sbx-1')).toBe(true)
-    const actions = elements.flatMap(element => element.actions ?? [])
-    expect(actions.some(action => action.value?.act === 'up')).toBe(true)
-    expect(actions.some(action => action.value?.act === 'ok')).toBe(true)
-    expect(actions.filter(action => action.value?.act === 'sel')).toHaveLength(2)
-  })
-})

@@ -35,18 +35,6 @@ export type AgentPreset = (typeof AGENT_PRESETS)[number]
 export const REASONING_CHOICES = ['on', 'off'] as const
 export type ReasoningChoice = (typeof REASONING_CHOICES)[number]
 
-/** Optional controlled SHE endpoint. Missing/empty paths use the documented XDG fallbacks. */
-export interface SheConfig {
-  /** Default false: the legacy secretary path remains the active `/she` implementation. */
-  enabled?: boolean
-  /** Optional explicit control-plane Unix socket path. */
-  socketPath?: string
-  /** Optional 0600 bearer-token file. */
-  tokenFile?: string
-  /** Per-request timeout in milliseconds. */
-  timeoutMs?: number
-}
-
 /** Resolved plugin configuration, one instance per mounted row. */
 export interface Config {
   /** Feishu/Lark app id (`cli_...`). */
@@ -124,53 +112,7 @@ export interface Config {
   groupAllowlist?: string[]
   /** open_ids that may click approve/deny; empty lets the chat driver decide. */
   approvers?: string[]
-  /** New independent SHE control-plane integration. Disabled by default. */
-  she?: SheConfig
-  /* SHE / secretary handoff (R56). Disabled by default. */
-  /** Enable the optional `/she` secretary submodule. */
-  secretaryEnabled?: boolean
-  /** Auto-restore SHE from the 0600 bootstrap state file when no manual config is enabled. */
-  secretaryAutoRestore?: boolean
-  /** 0600 JSON state written by `/she init`; path only, never credentials. */
-  secretaryBootstrapFile?: string
-  /** Default shared sandbox root used by `/she init`. */
-  secretarySandboxRoot?: string
-  /** Dedicated OS user owned by the sandbox implementation (default opencode-she). */
-  secretarySandboxUser?: string
-  /** Dedicated rootless account proposed by `/she sandbox` (default feishu4dsh-sandbox). */
-  secretarySandboxBuilderUser?: string
-  /** JSON descriptor written by she-sandbox and consumed by `/she need verify` / `/she init`. */
-  secretarySandboxDescriptor?: string
-  /** OpenCode endpoint used by `/she init` (loopback only). */
-  secretarySandboxOpencodeUrl?: string
-  /** JSON `{password}` file used by `/she init` to probe the sandbox endpoint. */
-  secretarySandboxPasswordFile?: string
-  /** Root for relay.db, worktrees, reports and transient prompt spool files. */
-  secretaryRoot?: string
-  /** OpenCode HttpApi base URL; loopback only. */
-  secretaryOpencodeUrl?: string
-  /** HTTP Basic username used by the local OpenCode service. */
-  secretaryOpencodeUsername?: string
-  /** HTTP Basic password; prefer the password file or environment variable. */
-  secretaryOpencodePassword?: string
-  /** 600-permission JSON file containing `{ "password": "..." }`. */
-  secretaryOpencodePasswordFile?: string
-  /** OpenCode provider/model/variant fixed for every SHE topic. */
-  secretaryModelProviderID?: string
-  secretaryModelID?: string
-  secretaryModelVariant?: string
-  /** Watcher cadence and dispatching lease. */
-  secretaryPollIntervalMs?: number
-  secretaryLeaseMs?: number
-  /** Per-chat and per-topic queue limits. */
-  secretaryMaxTopicsPerChat?: number
-  secretaryMaxQueuedTasks?: number
-  /** Global executor concurrency; 0 = max(1, min(4, availableParallelism - 4)). */
-  secretaryMaxConcurrent?: number
-  /** A succeeded task without its report pauses the topic (fail-closed). */
-  secretaryRequireReport?: boolean
-  /** Largest report file accepted for `/she report`. */
-  secretaryMaxReportBytes?: number
+
 }
 
 /** The schemastery schema exported as the Cordis plugin `Config`. */
@@ -213,36 +155,7 @@ export const Config = Schema.object({
   senderAllowlist: Schema.array(String).default([]),
   groupAllowlist: Schema.array(String).default([]),
   approvers: Schema.array(String).default([]),
-  she: Schema.object({
-    enabled: Schema.boolean().default(false),
-    socketPath: Schema.string().default(''),
-    tokenFile: Schema.string().default(''),
-    timeoutMs: Schema.number().default(30_000),
-  }),
-  secretaryEnabled: Schema.boolean().default(false),
-  secretaryAutoRestore: Schema.boolean().default(true),
-  secretaryBootstrapFile: Schema.string().default('~/.local/state/feishu4dsh/she-bootstrap.json'),
-  secretarySandboxRoot: Schema.string().default('/srv/opencode-she/worktrees'),
-  secretarySandboxUser: Schema.string().default('opencode-she'),
-  secretarySandboxBuilderUser: Schema.string().default('feishu4dsh-sandbox'),
-  secretarySandboxDescriptor: Schema.string().default('/srv/opencode-she/worktrees/.she/sandbox.json'),
-  secretarySandboxOpencodeUrl: Schema.string().default('http://127.0.0.1:49375'),
-  secretarySandboxPasswordFile: Schema.string().default('/srv/opencode-she/secrets/opencode-service.json'),
-  secretaryRoot: Schema.string().default('.feishu4dsh/secretary'),
-  secretaryOpencodeUrl: Schema.string().default('http://127.0.0.1:49374'),
-  secretaryOpencodeUsername: Schema.string().default('opencode'),
-  secretaryOpencodePassword: Schema.string().role('secret'),
-  secretaryOpencodePasswordFile: Schema.string().default('~/.config/opencode/service.json'),
-  secretaryModelProviderID: Schema.string().default('opencode-go'),
-  secretaryModelID: Schema.string().default('deepseek-v4.1-flash'),
-  secretaryModelVariant: Schema.string().default('high'),
-  secretaryPollIntervalMs: Schema.number().default(2_000),
-  secretaryLeaseMs: Schema.number().default(15_000),
-  secretaryMaxTopicsPerChat: Schema.number().default(2),
-  secretaryMaxQueuedTasks: Schema.number().default(20),
-  secretaryMaxConcurrent: Schema.number().default(0),
-  secretaryRequireReport: Schema.boolean().default(true),
-  secretaryMaxReportBytes: Schema.number().default(10 * 1024 * 1024),
+
 })
 
 /** Whether both credential fields are present and non-empty. */
@@ -338,42 +251,7 @@ export function resolveConfig(config: Config): Required<Config> {
     senderAllowlist: cleanList(config.senderAllowlist),
     groupAllowlist: cleanList(config.groupAllowlist),
     approvers: cleanList(config.approvers),
-    she: {
-      enabled: config.she?.enabled ?? false,
-      socketPath: (config.she?.socketPath ?? '').trim(),
-      tokenFile: (config.she?.tokenFile ?? '').trim(),
-      timeoutMs: numberAtLeast(config.she?.timeoutMs, 1, 30_000),
-    },
-    secretaryEnabled: config.secretaryEnabled ?? false,
-    secretaryAutoRestore: config.secretaryAutoRestore ?? true,
-    secretaryBootstrapFile: (config.secretaryBootstrapFile ?? '~/.local/state/feishu4dsh/she-bootstrap.json').trim()
-      || '~/.local/state/feishu4dsh/she-bootstrap.json',
-    secretarySandboxRoot: (config.secretarySandboxRoot ?? '/srv/opencode-she/worktrees').trim()
-      || '/srv/opencode-she/worktrees',
-    secretarySandboxUser: (config.secretarySandboxUser ?? 'opencode-she').trim() || 'opencode-she',
-    secretarySandboxBuilderUser: (config.secretarySandboxBuilderUser ?? 'feishu4dsh-sandbox').trim() || 'feishu4dsh-sandbox',
-    secretarySandboxDescriptor: (config.secretarySandboxDescriptor ?? '/srv/opencode-she/worktrees/.she/sandbox.json').trim()
-      || '/srv/opencode-she/worktrees/.she/sandbox.json',
-    secretarySandboxOpencodeUrl: (config.secretarySandboxOpencodeUrl ?? 'http://127.0.0.1:49375').trim()
-      || 'http://127.0.0.1:49375',
-    secretarySandboxPasswordFile: (config.secretarySandboxPasswordFile ?? '/srv/opencode-she/secrets/opencode-service.json').trim()
-      || '/srv/opencode-she/secrets/opencode-service.json',
-    secretaryRoot: (config.secretaryRoot ?? '.feishu4dsh/secretary').trim() || '.feishu4dsh/secretary',
-    secretaryOpencodeUrl: (config.secretaryOpencodeUrl ?? 'http://127.0.0.1:49374').trim() || 'http://127.0.0.1:49374',
-    secretaryOpencodeUsername: (config.secretaryOpencodeUsername ?? 'opencode').trim() || 'opencode',
-    secretaryOpencodePassword: config.secretaryOpencodePassword ?? '',
-    secretaryOpencodePasswordFile: (config.secretaryOpencodePasswordFile ?? '~/.config/opencode/service.json').trim()
-      || '~/.config/opencode/service.json',
-    secretaryModelProviderID: (config.secretaryModelProviderID ?? 'opencode-go').trim() || 'opencode-go',
-    secretaryModelID: (config.secretaryModelID ?? 'deepseek-v4.1-flash').trim() || 'deepseek-v4.1-flash',
-    secretaryModelVariant: (config.secretaryModelVariant ?? 'high').trim(),
-    secretaryPollIntervalMs: numberAtLeast(config.secretaryPollIntervalMs, 250, 2_000),
-    secretaryLeaseMs: numberAtLeast(config.secretaryLeaseMs, 1_000, 15_000),
-    secretaryMaxTopicsPerChat: numberAtLeast(config.secretaryMaxTopicsPerChat, 1, 2),
-    secretaryMaxQueuedTasks: numberAtLeast(config.secretaryMaxQueuedTasks, 1, 20),
-    secretaryMaxConcurrent: numberAtLeast(config.secretaryMaxConcurrent, 0, 0),
-    secretaryRequireReport: config.secretaryRequireReport ?? true,
-    secretaryMaxReportBytes: sizeOrDefault(config.secretaryMaxReportBytes, 10 * 1024 * 1024),
+
   }
 }
 

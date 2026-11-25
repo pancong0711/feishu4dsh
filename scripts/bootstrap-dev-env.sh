@@ -67,7 +67,7 @@ fi
 if command -v npm >/dev/null 2>&1; then ok "npm $(npm --version 2>/dev/null || echo unknown)"; else warn "npm not found"; fi
 if command -v corepack >/dev/null 2>&1; then ok "corepack $(corepack --version 2>/dev/null || echo unknown)"; else warn "corepack not found"; fi
 if [ -d node_modules ]; then ok "node_modules present"; else warn "node_modules absent; run pnpm install --frozen-lockfile"; fi
-if [ -f lib/secretary/sandbox.js ] && [ -f lib/secretary/onboard.js ]; then ok "compiled lib for onboarding/sandbox present"; else warn "compiled lib missing; onboarding wrapper will build it after install"; fi
+if [ -f lib/index.js ]; then ok "compiled lib/index.js present"; else warn "compiled lib missing; run pnpm build"; fi
 
 echo
 if [ "$NODE_OK" -ne 1 ]; then

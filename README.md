@@ -1,131 +1,108 @@
 # feishu4dsh · DeepSeek Harness 飞书 / Lark 通道插件
 
-把 **DeepSeek Harness（dsh）** 接进飞书：在聊天里给 Agent 派任务、看执行过程、批准或拒绝工具调用；提问与授权确认直接在飞书卡片上点按钮处理。
+把飞书/Lark 聊天接入 DeepSeek Harness（dsh）的通道插件：消息、话题、工作区、会话、模型、卡片、文件与审批都在飞书侧完成，执行交给 dsh agent。
+
+> **边界说明**：SHE agent control plane（任务队列、agent/sandbox/broker、`/she`）已迁移到独立项目 `2611she`。本插件只负责飞书 ↔ dsh 的通道连接，不再内置 SHE。
 
 ## 定位
 
-- **面向个人用户**：一个 dsh 实例 + 一个飞书自建应用（单机器人），服务主人自己的多项目工作台——不是 one-person-company 式「多机器人分工协作」的编排方案；
-- **话题即项目**：以飞书群聊/私聊的话题（thread）为项目边界，每个话题独立 Agent 会话与工作区，`/cd` 切换、`/new` 重开、重启可恢复；`/session` 会话列表 / 切回 / 重命名 / 归档（TUI 式会话管理）；
-- **为什么做这个插件**：我们的日常是「在飞书里驱动 Agent 干活」——此前用 Hermes Agent 的飞书插件，交互顺手、体验对味；而早期的 dsh 飞书通道与这套使用习惯差距较大，问题修复链路也长。于是以 Hermes 飞书插件的体验为对标，把 dsh 接进飞书：早期借鉴社区 lark-bot 通道代码的经验，随后以独立 dsh 插件库用 TypeScript / Cordis 重写——传输层模块化 + 对接层可移植，开发过程本身也由 dsh 会话协作推进。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；
-- **把 dsh web 的体验带进飞书**：dsh 自带的 Web 控制台很好用——会话的模式、模型、推理强度、轮次与 Token 统计一目了然。本插件把这些能力逐步搬进聊天命令（`/status` `/mode` `/reasoning` `/model` `/model effort`），不开电脑也能在飞书里看到同样多的信息、调到同样的开关；
-- **向 TUI 借鉴会话管理**：TUI 最成熟的是会话管理——列表、缓冲区命名、快速切换。`/session` 把这三件事带进飞书（列表 / 重命名 / 切回，归档与 dsh web 同源）；而 TUI 的短板（可视化弱、传文件麻烦）恰是飞书的强项。交互学 Hermes、信息与设置学 dsh web、会话管理学 TUI，落在消息平台上互补成一体。
+```text
+飞书/Lark  ⇄  feishu4dsh  ⇄  dsh agent/session
+```
+
+- 通道负责：WebSocket/Webhook、消息与媒体、卡片、文件、审批、ACL、工作区、会话选择；
+- dsh 负责：agent runtime、模型、工具、上下文与会话；
+- SHE 负责：独立 agent control plane，不在本插件内。
 
 ## 快速开始
 
-前置：Node.js `^22.19 || >=24`、已装 dsh、一个飞书自建应用（[docs/FEISHU-SETUP.md](docs/FEISHU-SETUP.md)）。
-
 ```sh
-# 专用 profile（推荐）：首次会自动以 dsh-base 初始化该 profile，再挂载本插件
-dsh plugin --profile feishu4dsh add /path/to/feishu4dsh
-
-export FEISHU_APP_ID=cli_xxxxxxxx
-export FEISHU_APP_SECRET=xxxxxxxx
-dsh --profile feishu4dsh    # 日志出现 `feishu4dsh: connected as <机器人>` 即成功
+# 专用 profile（推荐）：首次会自动以 dsh-base 初始化 profile，再挂载本插件
+dsh plugin --profile feishu4dsh add feishu4dsh
 ```
 
-本插件自带 Agent 预设声明（`standard` = 完整工具集 / `minimal` = 仅持久 shell）与宿主工具面让位 patch，**为专用 profile 设计**：请让它独占一个 profile 进程（`dsh web` 如需控制台可另起一个 profile，二者共享 `$DSH_HOME`）。默认 **WebSocket 长连接**，无需公网/回调 URL。在飞书私聊机器人或在群里 @它即可。
+最小配置：
 
-### 从空机器初始化 agent sandbox（可选）
-
-`/she sandbox build` 只生成无密钥安装包；新机器先用仓库脚本检查/准备专用 rootless 账户。默认推荐专用账户，不建议把 agent 与 dsh/飞书凭据放在同一 home。
-
-```sh
-# 终端 onboarding：脚本写在本地固定目录，路径打印在终端，不通过飞书发送
-pnpm sandbox:onboard
-
-# 手工预检/rootless 准备（可选）
-./scripts/sandbox-preflight.sh --user feishu4dsh-sandbox
-sudo ./scripts/sandbox-bootstrap-host.sh --user feishu4dsh-sandbox --dry-run
-sudo ./scripts/sandbox-bootstrap-host.sh --user feishu4dsh-sandbox --install-docker-ce
-
-# 飞书 /she sandbox 才通过文件消息发送 sandbox 安装包
+```yaml
+appId: cli_xxx
+appSecret: xxx
+sessionScope: chat-thread
+requireMention: true
 ```
 
-固定路径为 `$HOME/.local/share/feishu4dsh/sandboxes/<sandbox-name>/{workspace,inbox,outbox,home,cache,logs}`。容器只挂 workspace/inbox/outbox/home/cache 叶子目录，不挂 Docker socket、home 父目录或 `/srv` 根；详见 [docs/SECRETARY.md](docs/SECRETARY.md)。
+或按 [docs/FEISHU-SETUP.md](docs/FEISHU-SETUP.md) 创建飞书自建应用，把凭据写入 dsh profile patch / 环境文件。
 
-## 进程管理（systemd 推荐）
-
-飞书频道与 broker 是两个独立 user service，由仓库内非 root 安装器生成：
-
-```text
-~/.config/systemd/user/dsh-feishu4dsh.service
-~/.config/systemd/user/feishu4dsh-sandbox-broker.service
-```
+### 部署为 user service
 
 ```sh
-# 先 dry-run/check，再 enable；日志用 journalctl --user -u <unit>
+mkdir -p ~/.config/feishu4dsh
+# 写入 FEISHU_APP_ID=... 与 FEISHU_APP_SECRET=... 后：
+chmod 600 ~/.config/feishu4dsh/feishu4dsh.env
+
+# 只打印 unit 和命令，不修改系统
 bash scripts/install-user-services.sh --dry-run
+
+# 只读检查 unit / env / systemd 状态
 bash scripts/install-user-services.sh --check
+
+# 确认后安装并启用 dsh-feishu4dsh.service
 bash scripts/install-user-services.sh --enable
 ```
 
-- 服务由 systemd 托管，崩溃后自动重启（`Restart=always`）；
-- 安装器先发现实际 unit 位置，再决定是否创建/改写；已有不同配置需显式 `--replace` 并保留备份；
-- broker 使用同账户 rootless Docker、Unix socket 0600、不监听 LAN；当前 client 只支持 dsh 与 broker 同 Unix 账户布局；
-- 如果之前用 `nohup` 手工启动过，请先停掉手工进程再启用 systemd，避免双开。
+安装器只管理 `dsh-feishu4dsh.service`，不安装 Docker/agent，不使用 sudo，也不管理任何 SHE 服务。
 
 ## 主要能力
 
 | 能力 | 说明 |
 |---|---|
 | 双传输 | WebSocket（默认，带重连）/ Webhook |
-| 多消息 | 文本、图片（可选送视觉）、文件/音视频（落入工作区收件箱） |
-| 回复 | `stream` 流式 / `card` 聚合；`showProcess` 按轮聚合显示工具调用与 Token 用量摘要；`showReasoning`（默认开）把思考过程放在可折叠面板里流式展示，轮末折叠保留（私聊默认展开、群聊默认折叠，`/reasoning on\|off` 按会话调整） |
+| 多消息 | 文本、图片、文件/音视频（落入工作区收件箱） |
+| 回复 | `stream` 流式 / `card` 聚合；过程行、Token 摘要、可折叠 reasoning |
 | 协作卡片 | 工具/出站文件审批，超时按拒绝（fail-closed） |
-| **结构化提问** | `ask_user` 以表单卡呈现：单选/多选/“其他”文本，一次提交一题一条；越权与非原会话拒答，超时或宿主撤回则委托下一个回答者 |
-| 会话隔离 | 按聊天/话题/发送人三种粒度，重启可恢复，`/new` 重开；`/session` 回溯/重命名/归档（与 dsh web 共用归档集合） |
-| **模式（preset）** | `standard` = 完整工具集；`minimal` = 仅持久 shell（无文件/子代理工具，也不注入运行时上下文，且不做上下文压缩以省 token）。`/mode` 查看/切换（切换即开新会话），`/status` 显示当前模式；minimal 下 `/help` 会列出 `/compact` 并提示如何切换（R42） |
-| **多工作区** | 会话 = scope×工作区；`/ws` 点选进入、`/ws new` 浏览新建、`/cd` 兜底切换，均持久化 |
-| 交互选择卡 | `/ws` `/model` `/session` 均有点选卡片（当前项标 ✅，`/model` 支持分页下拉）；点击以点击者身份过审批 ACL，菜单 15 分钟自动失效 |
-| 授权 | 应用可用范围 + 发送人/群白名单 + 审批人名单（只收窄） |
-| 命令 | `/help` `/info` `/new` `/mode` `/reasoning` `/session` `/stop` `/status` `/ws` `/cd` `/model`（含 effort、清单增删与点选卡片） |
-| **SHE 控制面（实验，可选）** | 默认关闭。配置 `she.enabled: true` 后，`/she` 与交互卡片改走独立 SHE control-plane 的 gateway.v1（Unix socket）；支持 health/hello、RenderIntent、原生表单、task 里程碑和 cursor/snapshot 恢复。SHE 不可达不影响普通聊天；旧 `secretary*` 路径保留作回滚。 |
-| **秘书（SHE，可选）** | 默认关闭。审批人可用 `/she init` 一键创建共享 shadow repo/runtime/ACL 与 0600 状态文件；`/she need` 保留为兼容入口（等同 `/she sandbox status`）；**`/she sandbox` 是唯一沙箱供给入口（`status` 合并主机预检与 SHE 接入检查，`build` 生成固定路径、最小挂载、无密钥安装包，`list/info/stats/start/stop/restart/destroy` 通过 broker 管理已注册 sandbox）**；`/she return` / `/she accept` 负责结果回收与 stage；`/she submit/continue/list/status/report/stop/resume/topic …` 把任务确定性转交本机 OpenCode。详见 [docs/SECRETARY.md](docs/SECRETARY.md) |
-| 文件 | 入站进 `.feishu4dsh/inbox/`；`send_file` 回传，群聊逐次审批 |
-| i18n | `locale: auto` 跟随读者语言，默认中文 |
-
-命令说明与多工作区准入规则 → [docs/CONFIG.md](docs/CONFIG.md)。
+| 结构化提问 | `ask_user` 表单卡：单选/多选/自由文本，越权与超时 fail-closed |
+| 会话隔离 | chat / chat-thread / chat-sender 三种粒度，重启恢复 |
+| 会话管理 | `/session` 列表、切回、重命名、归档 |
+| 模式 | `standard` / `minimal`，`/mode` 切换 |
+| 多工作区 | `/ws` 点选、`/ws new` 浏览器、`/cd` 切换并持久化 |
+| 模型 | `/model` 切换、清单增删与点选、`/model effort` |
+| 上下文压缩 | `/compact [N] [问题]` |
+| 授权 | 发送人/群白名单、审批人名单（只收窄） |
+| 文件 | 入站 `inbox/`；`send_file` 出站，群聊逐次审批 |
+| 服务信息 | `/info` 只读展示插件版本、传输、工作区与 service/journal 命令 |
+| i18n | `locale: auto` 自动跟随读者语言 |
 
 ## 安全边界（要点）
 
-- **只收窄、不放行**：白名单/审批人仅收窄，无反向放行开关。
-- **审批 fail-closed**：超时未点一律拒绝。
-- **出站文件**：词法 + realpath 双段校验防符号链接逃逸，失败不泄露宿主绝对路径。
-- **入站文件**：统一收口 `.feishu4dsh/inbox/`，文件名清洗。
-- **群聊出站必审批**：无关闭项（防提示注入外泄）。
-- **工作区切换准入**：仅默认 / 已注册 / `/ws add` / `workspaceRoots` 之内。
-- **会话单写入方约定**：请勿在 dsh web 中打开/驱动飞书通道创建的会话（`feishu-*` 前缀）——双写入方会导致输出错乱乃至会话日志损坏、飞书端中断；宿主暂无归属排他能力，此项为长期修复目标（详见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) §4）。
-- **Agent sandbox 隔离**：`/she sandbox` 不执行 sudo/Docker；生成脚本使用 rootless Docker、只读 rootfs、`cap-drop ALL`、`no-new-privileges`，只挂 workspace/inbox/outbox/home/cache 叶子目录，禁止 Docker socket/host network/privileged。
+- 白名单/审批人只收窄，不放行；
+- 审批超时 fail-closed；
+- 出站文件做词法 + realpath 校验，防 symlink 逃逸；
+- 入站文件统一进入 `<workspace>/.feishu4dsh/inbox/`；
+- 群聊出站文件必须审批；
+- 工作区切换只允许默认/已注册/`workspaceRoots` 内路径；
+- 不在 dsh web 中驱动飞书通道创建的 `feishu-*` 会话（单写入方约定）。
 
 ## 开发
 
 ```sh
-pnpm install
-pnpm typecheck    # 严格类型检查
-pnpm test         # vitest 全量单测
-pnpm build        # tsc 产出 lib/
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm build
 ```
 
 ## 文档
 
-- 📂 [docs/README.md](docs/README.md) — 文档索引（长期记忆中心，先读它）
-- 架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- 配置：[docs/CONFIG.md](docs/CONFIG.md) ｜ 飞书应用：[docs/FEISHU-SETUP.md](docs/FEISHU-SETUP.md)
-- 秘书子模块（SHE）：[docs/SECRETARY.md](docs/SECRETARY.md)
-- 排障（含 `has no provider/model`）：[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- 📜 开发史与发布模型：[HISTORY.md](HISTORY.md)
-- 发布：[docs/PUBLISHING.md](docs/PUBLISHING.md)
+- [架构](docs/ARCHITECTURE.md)
+- [配置](docs/CONFIG.md)
+- [飞书应用设置](docs/FEISHU-SETUP.md)
+- [故障排查](docs/TROUBLESHOOTING.md)
+- [发布流程](docs/PUBLISHING.md)
+- [文档索引](docs/README.md)
 
 ## 版本与兼容性
 
-要求 **dsh `>= 0.2.1-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.2.1-rc.2` 上验证（v0.22.0）。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。
-
-**升级前先跑契约门禁**：`pnpm test` 里的 `tests/host-contract.spec.ts` 会直接读取本机已安装 dsh 的 `.d.ts`，把 `TurnEndReasonMap`、`AgentCancelCause`、`commands.execute` 签名、`archivedSessionIds` getter、`snapshotEvents()`、观察租约、`user-questions/request` 逐条对账；宿主不可达时自动 skip。0.2.1 的四处漂移（`cancel` 结构化原因、`execute` 四参、归档集变取值器、`Session.events` 移除）都不会让插件启动失败，只会让 `/stop`、`/compact`、`/session archive`、`/status` 在真机上静默哑掉——这正是该门禁要提前拦住的。兼容底线说明：0.2.0 起 Agent 预设由 `@deepseek-ai/dsh-agent-preset-registry`（注册表服务）+ 每预设一条 `@deepseek-ai/dsh-agent-preset` 声明行提供（dsh 不再内置预设），插件 bundle patch 出厂声明 `standard` / `minimal` 并把宿主模型面工具行让位给 preset 层；dsh `0.1.5-rc.1` 及以下使用已废弃的 `@deepseek-ai/dsh-agent-presets` 包与 `settings.yaml` 载体，**本版本不可用**（需配套 v0.9.x）。
-
-## 路线图
-
-原生思考过程消息 · 提问卡片（对接 `ask_user_question`）· 多机器人 @ 交接 · 斜杠命令面板同步 · sandbox registry/只读状态面板 · sandbox broker（受限创建/调度兄弟容器）· 文件 inbox/outbox · main/worker/observer 角色与防循环委派 · 多 agent adapter 与 `/srv` 显式共享卷。
+要求 dsh `>= 0.2.1-rc.2`（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`。
 
 ## License
 
-[MIT](LICENSE)。非官方社区项目，与 DeepSeek、字节跳动、飞书、Lark 无从属/授权/背书关系。
+MIT

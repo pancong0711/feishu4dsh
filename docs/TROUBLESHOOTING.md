@@ -312,15 +312,3 @@ registered variables: provider, model
 
 重启服务即可。删掉这行不会丢失工作目录信息：dsh 的工作目录服务会另外提供当前目录。
 
-## 10. 秘书子模块（`/she`）不可用或报告缺失
-
-- **`秘书功能未启用`**：确认配置 `secretaryEnabled: true`。
-- **`OpenCode authentication failed` / `401`**：OpenCode 本地服务使用 HTTP Basic（用户名默认
-  `opencode`，密码来自 `~/.config/opencode/service.json` 的 `password`）。优先使用
-  `OPENCODE_SERVICE_PASSWORD`，并确保密码文件为 600 权限。
-- **`LocationNotFoundError`**：`secretaryRoot/worktrees` 必须位于 OpenCode 能解析的项目/工作区目录下，
-  不要使用任意 `/tmp` 临时目录。
-- **Topic paused / `needs_attention`**：通常是 OpenCode 完成了但没有写报告到 `report_path`。
-  检查 worktree 下 `.secretary/reports/`，修复后用 `/she resume <Topic>`。
-- **`/she report` 无报告**：SHE 只回传确实存在、非空且未超过 `secretaryMaxReportBytes` 的文件，
-  不会根据聊天消息伪造报告。

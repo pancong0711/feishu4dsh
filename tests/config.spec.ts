@@ -25,38 +25,10 @@ describe('resolveConfig', () => {
     expect(resolved.chatPresets).toEqual({})
     expect(resolved.chatSessions).toEqual({})
     expect(resolved.chatActiveGen).toEqual({})
-    expect(resolved.she).toEqual({
-      enabled: false,
-      socketPath: '',
-      tokenFile: '',
-      timeoutMs: 30_000,
-    })
-    expect(resolved.secretaryEnabled).toBe(false)
-    expect(resolved.secretaryAutoRestore).toBe(true)
-    expect(resolved.secretaryBootstrapFile).toBe('~/.local/state/feishu4dsh/she-bootstrap.json')
-    expect(resolved.secretarySandboxRoot).toBe('/srv/opencode-she/worktrees')
-    expect(resolved.secretarySandboxUser).toBe('opencode-she')
-    expect(resolved.secretarySandboxDescriptor).toBe('/srv/opencode-she/worktrees/.she/sandbox.json')
-    expect(resolved.secretarySandboxOpencodeUrl).toBe('http://127.0.0.1:49375')
-    expect(resolved.secretarySandboxPasswordFile).toBe('/srv/opencode-she/secrets/opencode-service.json')
 
     expect(resolved.senderAllowlist).toEqual([])
     expect(resolved.groupAllowlist).toEqual([])
     expect(resolved.approvers).toEqual([])
-  })
-
-  it('resolves the optional SHE control-plane config', () => {
-    const resolved = resolveConfig({
-      appId: 'cli_a',
-      appSecret: 's',
-      she: { enabled: true, socketPath: ' /tmp/she.sock ', tokenFile: ' /tmp/she.token ', timeoutMs: 0 },
-    })
-    expect(resolved.she).toEqual({
-      enabled: true,
-      socketPath: '/tmp/she.sock',
-      tokenFile: '/tmp/she.token',
-      timeoutMs: 1,
-    })
   })
 
   it('tolerates scalar strings where lists belong (hand-edited settings, R33)', () => {

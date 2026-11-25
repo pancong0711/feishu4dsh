@@ -315,255 +315,102 @@ export interface Strings {
   notAFileRefusal: string
   tooLargeRefusal: (size: string, limit: string) => string
   commandUnknown: (line: string) => string
-  /* SHE secretary handoff (R56). */
-  sheUsage: string
-  sheHelpTopic: (topic: string) => string
-  sheDisabled: string
-  sheNoPermission: string
-  sheInitUnavailable: string
-  sheNeedTitle: string
-  sheNeedItem: (status: string, label: string, detail: string) => string
-  sheNeedReady: string
-  sheNeedNext: string
-  /* SHE build-sandbox (R61). */
-  sheSandboxStatusTitle: string
-  sheSandboxReady: string
-  sheSandboxNotReady: string
-  sheSandboxWizardTitle: (step: string) => string
-  sheSandboxWizardSummary: (name: string, target: string, agent: string, tools: string, network: string) => string
-  sheSandboxTargetNote: string
-  sheSandboxAgentNote: string
-  sheSandboxRoleNote: string
-  sheSandboxRoleOption: (role: string) => string
-  sheSandboxToolsNote: string
-  sheSandboxConfirmNote: string
-  sheSandboxBack: string
-  sheSandboxNext: string
-  sheSandboxBuild: string
-  sheSandboxCancel: string
-  sheSandboxToolLabel: (label: string, selected: boolean) => string
-  sheSandboxImageRequired: (label: string) => string
-  sheSandboxTargetUnavailable: string
-  sheSandboxTargetWarning: string
-  sheSandboxCardUpdateFailed: string
-  sheSandboxPackageDone: (name: string, archivePath: string) => string
-  sheSandboxUsageGuide: (name: string, requiresRootBootstrap: boolean, targetUser: string) => string
-  sheSandboxUnavailable: string
-  sheSandboxBrokerUnavailable: string
-  sheSandboxListTitle: string
-  sheSandboxListEntry: (name: string, role: string, state: string) => string
-  sheSandboxInfoLine: (label: string, value: string) => string
-  sheSandboxStatsTitle: string
-  sheSandboxStatsLine: (label: string, value: string) => string
-  sheSandboxActionDone: (action: string, name: string) => string
-  sheSandboxDestroyConfirm: (name: string) => string
-  sheSandboxNotFound: (name: string) => string
-  sheNeedAliasHint: string
-  sheNeedPackageDeprecated: string
-  sheInitOk: (shadowRepo: string, runtimeRoot: string, version: string) => string
-  sheInitUpdateOk: (shadowRepo: string, head: string) => string
-  sheInitResetOk: (shadowRepo: string) => string
-  sheReturned: (label: string, returnDir: string, changed: number, added: number, outputs: number) => string
-  sheAccepted: (label: string, staged: number, copied: number, appliedPatch: boolean) => string
-  sheDoctorTitle: string
-  sheDoctorSource: (source: string, stateFile: string, statePresent: string) => string
-  sheDoctorHealth: (ok: boolean, detail: string) => string
-  sheDoctorRuntime: (runtimeRoot: string, worktreeRoot: string, reposRoot: string) => string
-  sheDoctorScope: (shadowRepo: string | undefined) => string
-  infoServiceTitle: string
-  infoServiceUnavailable: string
-  infoServiceAccount: (account: string, pluginRoot: string) => string
-  infoServiceInstaller: (installerPath: string, present: boolean) => string
-  infoServiceSystemd: (account: string, reachable: boolean, linger: 'yes' | 'no' | 'unknown') => string
-  infoServiceUnit: (label: string, name: string, unitFileState: string, activeState: string, fragmentPath: string | undefined) => string
-  infoServiceBrokerSocket: (path: string, present: boolean) => string
-  infoServiceInstallerHint: (pluginRoot: string) => string
-  infoServiceRestartHint: (units: readonly string[]) => string
-  infoServiceBusctlHint: (units: readonly string[]) => string
-  infoServiceNote: string
+  cardActionFailed: (detail: string) => string
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  /** Generic channel service info shown by `/info`. */
+  infoChannelBody: (version: string, mode: string, workspace: string) => string
   /** `/info` / `/info --help` usage text. */
   infoUsage: string
-  sheSubmitted: (label: string, status: string) => string
-  sheContinued: (label: string, status: string) => string
-  sheInvalid: (reason: string) => string
-  sheListEmpty: string
-  sheTopicListLine: (label: string, status: string, excerpt: string, summary: string) => string
-  sheTaskListLine: (label: string, status: string, excerpt: string) => string
-  sheTaskSummary: (total: string, running: string, queued: string, done: string) => string
-  sheStatusTitle: string
-  sheStatusTopic: (label: string, status: string, excerpt: string) => string
-  sheStatusTask: (label: string, status: string, excerpt: string) => string
-  sheStatusSession: (sessionId: string) => string
-  sheStatusReport: (path: string) => string
-  sheStatusAttachments: (count: string) => string
-  sheNotFound: (reference: string) => string
-  sheReportMissing: (label: string) => string
-  sheReportReady: (label: string, size: string) => string
-  sheStopped: (label: string) => string
-  sheResumed: (label: string) => string
-  sheRenamed: (oldLabel: string, newLabel: string) => string
-  sheRemoved: (label: string, purged: boolean) => string
-  sheError: (code: string, detail: string) => string
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
 }
 
 
-function sheHelpZh(topic: string): string {
-  const map: Record<string, string> = {
-    init: [
-      '/she init — 初始化当前话题的 SHE 运行环境',
-      '',
-      '作用：',
-      '  1. 读取当前聊天绑定的 git workspace，在共享区创建 shadow repo；',
-      '  2. 创建 SHE runtime 与 worktree root；',
-      '  3. 设置 bot2603/opencode-she ACL；',
-      '  4. 探测 OpenCode /api/info；',
-      '  5. 写入 0600 状态文件，并在当前进程启动 SHE。',
-      '',
-      '仓库名自动生成：<源仓库 basename>-shadow-repo，不接受自定义名称。',
-      '同一 scope 只能初始化一次；已初始化请用 /she init update，',
-      '需要更换源仓库时先 /she init reset。',
-      '注意：仅审批人可用；当前工作区必须是 git 仓库；clone 只包含已提交 HEAD。',
-    ].join('\n'),
-    update: [
-      '/she init update — 更新当前 scope 的 shadow repo',
-      '',
-      '从源 repo fetch 已提交更新并 fast-forward；有排队/运行中任务、',
-      'shadow 主工作区有未提交改动或非 fast-forward 时拒绝。',
-    ].join('\n'),
-    reset: [
-      '/she init reset — 清除当前 scope 的 shadow repo 映射',
-      '',
-      '只删除状态文件中的 scope 映射，不删除 shadow repo 目录；',
-      '用于误初始化后重新 /she init，或切换到其他源仓库。',
-    ].join('\n'),
-    need: [
-      '/she need — 兼容入口：等同 /she sandbox status',
-      '/she need verify — 兼容入口：等同 /she sandbox status',
-      '/she need package — 已弃用；按默认 OpenCode 方案转交 /she sandbox build',
-      '',
-      '新部署请直接使用：/she sandbox status / /she sandbox build。',
-    ].join('\n'),
-    sandbox: [
-      '/she sandbox — 打开 build-sandbox 交互式构建向导（只生成包，不创建容器）',
-      '/she sandbox status — 只读检查：主机预检 + descriptor/OpenCode/runtime 接入检查',
-      '/she sandbox build [flags] — 非交互生成安装包；群聊发送仍走文件审批',
-      '/she sandbox list — 经 broker 查看已注册 sandbox',
-      '/she sandbox info <name> — 经 broker 查看详情',
-      '/she sandbox stats <name> — 经 broker 查看 CPU/内存/PIDs 快照',
-      '/she sandbox start|stop|restart <name> — 经 broker 执行容器生命周期',
-      '/she sandbox destroy <name> --yes — 经 broker 删除容器和网络（数据默认保留）',
-      '',
-      'build flags: --suffix <suffix> --name <name> --role standalone|main|worker|observer|utility',
-      '             --target current-user|dedicated-user --agent opencode|hermes|deepseek-harness|blank|custom',
-      '             --image <ref> --tools core,node,python,build,data,search --network none|egress',
-      '             --host-port <1024-65535> --allowed-callers <a,b> --allowed-targets <a,b>',
-      '',
-      '命名：固定前缀 sbx-；suffix 留空自动 sbx-0001、sbx-0002。',
-      '挂载：只挂 workspace/inbox/outbox/home/cache 叶子目录；agent 不拿 Docker socket 或 broker socket。',
-      '权限：list/info/stats/start/stop/restart/destroy 需要同账户的 broker user service。',
-      '服务安装/检查（不通过飞书传脚本，在部署机 shell 执行）：',
-      '  PLUGIN_DIR="$(readlink -f "${DSH_HOME:-$HOME/.dsh}/profiles/feishu4dsh/node_modules/feishu4dsh")"',
-      '  bash "$PLUGIN_DIR/scripts/install-user-services.sh" --check  --only broker --repo "$PLUGIN_DIR"',
-      '  bash "$PLUGIN_DIR/scripts/install-user-services.sh" --enable --only broker --repo "$PLUGIN_DIR"',
-      '安装包：专用账户模式会另带 root bootstrap 脚本，必须在飞书外审查后由目标用户执行。',
-    ].join('\n'),
-    doctor: [
-      '/she doctor — 查看 SHE 诊断信息',
-      '',
-      '显示：来源（manual/bootstrap/none）、状态文件、OpenCode health、',
-      'runtime/worktree/repos 路径、当前话题的 shadow repo。',
-      '仅审批人可执行，避免泄露宿主绝对路径。',
-    ].join('\n'),
-    submit: [
-      '/she submit <任务原文> — 新建 Topic 并提交任务',
-      '',
-      '建议写成：目标 + 范围 + 验收 + 禁止事项。',
-      '报告/补丁/outputs 路径由 SHE 固定信封自动生成，用户不要指定。',
-      '示例：/she submit 阅读 README.md，总结当前插件用途；',
-      '  验收：200 字以内；禁止：修改文件、commit/push、安装依赖。',
-    ].join('\n'),
-    continue: '/she continue <Topic> <任务原文> — 在同一 Topic 追加串行任务。\n示例：/she continue 1 补充测试并更新报告。',
-    list: '/she list — 查看全部 Topic/Task。\n/she list <Topic> — 查看指定 Topic 的任务列表。',
-    status: '/she status <Topic|Task> — 查询 Topic 或任务状态；运行中的任务会主动刷新一次执行器状态。',
-    report: '/she report <Task> — 校验并回传任务报告文件；群聊仍走文件审批。',
-    return: [
-      '/she return <Task> — 把任务结果复制回当前项目的 she_returns/<task-id>/',
-      '',
-      '生成 REPORT.md、CHANGES.patch、changed-files/、new-files/、outputs/ 和 manifest.json；',
-      '不修改项目源码、不 git add、不 commit。',
-    ].join('\n'),
-    accept: [
-      '/she accept <Task> — 应用 she_returns/<task-id>/ 到当前项目并 stage',
-      '',
-      '先 git apply --check；冲突时拒绝。只 stage manifest 列出的项目路径；',
-      '不 commit、不 push。默认动作等价于 git apply + 新文件复制 + git add。',
-    ].join('\n'),
-    stop: '/she stop <Task> — 中断当前运行任务并暂停其 Topic；排队任务保留。',
-    resume: '/she resume <Topic> — 恢复暂停的 Topic 队列，从下一个 queued task 继续。',
-    rename: '/she topic rename <旧编号> <新编号> [--force] — 重命名 Topic；冲突时用 --force 自动改旧编号。',
-    remove: '/she topic remove <Topic> [--purge] — 归档并隐藏 Topic；--purge 会删除 worktree 与数据库记录。',
-  }
-  return map[topic] ?? `未知 SHE 帮助主题：${topic}\n发送 /she help 查看全部命令。`
-}
 
-function sheHelpEn(topic: string): string {
-  const map: Record<string, string> = {
-    init: [
-      '/she init — initialize SHE for the current chat',
-      '',
-      'Creates a shared shadow repo from the current git workspace, prepares the',
-      'runtime/worktree root and ACLs, probes OpenCode, writes a 0600 state file,',
-      'and starts SHE in-process.',
-      '',
-      'The repo name is derived as <source-basename>-shadow-repo; custom names are not accepted.',
-      'One init per scope: use /she init update to refresh it, or /she init reset before switching source repos.',
-      'Admins only; the current workspace must be a git repository; the clone contains committed HEAD only.',
-    ].join('\n'),
-    update: '/she init update — fast-forward the current scope shadow repo from committed source HEAD; refuses with unfinished tasks, dirty shadow tree or non-FF updates.',
-    reset: '/she init reset — forget the current scope→shadow mapping without deleting files; use before re-initializing or switching projects.',
-    need: '/she need and /she need verify are compatibility aliases for /she sandbox status. /she need package is deprecated and maps to the default OpenCode /she sandbox build path.',
-    sandbox: [
-      '/she sandbox — interactive package builder (writes files only; no container).',
-      '/she sandbox status — read-only host + SHE attach preflight.',
-      '/she sandbox build [flags] — non-interactive package; group delivery still needs file approval.',
-      '/she sandbox list|info|stats|start|stop|restart|destroy — broker-managed operations.',
-      '',
-      'build flags: --suffix --name --role --target --agent --image --tools --network --host-port',
-      '             --allowed-callers --allowed-targets.',
-      'Names use the fixed sbx- prefix; an empty suffix picks sbx-0001, sbx-0002, ...',
-      'Agents never receive the Docker socket or the broker socket. The broker must run',
-      'as the same Unix account. Locate the installer from the deployed dsh profile and',
-      'run it on the host (never transfer the script through Feishu):',
-      '  PLUGIN_DIR="$(readlink -f "${DSH_HOME:-$HOME/.dsh}/profiles/feishu4dsh/node_modules/feishu4dsh")"',
-      '  bash "$PLUGIN_DIR/scripts/install-user-services.sh" --check  --only broker --repo "$PLUGIN_DIR"',
-      '  bash "$PLUGIN_DIR/scripts/install-user-services.sh" --enable --only broker --repo "$PLUGIN_DIR"',
-      'Dedicated-account packages include a root bootstrap script that must be reviewed',
-      'outside Feishu and executed by the target user.',
-    ].join('\n'),
-    doctor: '/she doctor — show source, state file, OpenCode health, runtime paths and current-scope shadow repo (admins only).',
-    submit: [
-      '/she submit <request> — create a Topic and enqueue a task',
-      '',
-      'A good request states: goal + scope + acceptance + forbidden actions.',
-      'SHE injects the report/patch/output paths automatically; do not specify them.',
-      'Example: /she submit Read README.md and summarize the plugin; acceptance: <=200 words;',
-      '  forbidden: modify files, commit/push, install dependencies.',
-      '',
-      'Keep it concise: scope, acceptance and prohibitions matter more than long background prose.',
-    ].join('\n'),
-    continue: '/she continue <Topic> <request> — append a serial task to an existing Topic.',
-    list: '/she list — show all Topics/Tasks. /she list <Topic> — show one Topic.',
-    status: '/she status <Topic|Task> — query state; running tasks are polled once.',
-    report: '/she report <Task> — validate and return the report file; group chats still require file approval.',
-    return: '/she return <Task> — copy a task result into <project>/she_returns/<task-id>/ (REPORT, patch, changed/new files, outputs, manifest) without modifying project source.',
-    accept: '/she accept <Task> — git apply --check, apply the return bundle, copy new files, and stage only affected project paths; never commit/push.',
-    stop: '/she stop <Task> — interrupt the running task and pause its Topic.',
-    resume: '/she resume <Topic> — resume a paused Topic queue.',
-    rename: '/she topic rename <old> <new> [--force] — rename a Topic label.',
-    remove: '/she topic remove <Topic> [--purge] — archive/hide; --purge removes worktree and DB rows.',
-  }
-  return map[topic] ?? `Unknown SHE help topic: ${topic}\nSend /she help for the command list.`
-}
+
+
 
 const zhCN: Strings = {
   thinking: '正在处理…',
@@ -645,13 +492,12 @@ const zhCN: Strings = {
     '/session — 会话列表 / 切换 / 重命名 / 归档（/session 查看用法）',
     '/stop — 停止当前任务',
     '/status — 会话 / 工作区 / 模式 / 模型 / 推理强度 / 轮次与 Token 累计',
-    '/info — 只读查看服务位置、自启动与重启帮助',
+    '/info — 只读查看插件与 dsh 通道服务信息',
     '/ws — 列出可用工作区',
     '/ws add <路径> — 添加一个可用工作区（手机上添加）',
     '/ws remove <名称或路径> — 移除一个已添加的工作区',
     '/cd <名称或路径> — 切换当前会话的工作区',
     '/model <provider>/<model> — 切换当前会话模型（/model effort 设置推理强度）',
-    '/she — 秘书任务：提交给 OpenCode 异步执行、查看状态与报告（/she help 查看子命令）',
   ],
   statusTitle: '会话状态',
   statusSession: id => `会话：${id}`,
@@ -772,6 +618,7 @@ const zhCN: Strings = {
   notAFileRefusal: 'That path is not a regular file.',
   tooLargeRefusal: (size, limit) => `The file is ${size}, over the ${limit} limit.`,
   commandUnknown: line => `未知命令：${line}（/help 查看可用命令）`,
+  cardActionFailed: detail => `卡片操作失败：${detail}`,
   wsMenuTitle: '🗂 工作区（点选进入）',
   wsMenuEmpty: '当前没有已注册的工作区（默认工作区除外）。用 /ws new 或 /ws add 添加。',
   wsMenuNote: '点击即切换 · /ws list 文本列表 · /ws new 新建',
@@ -807,175 +654,23 @@ const zhCN: Strings = {
   modelDeleted: entry => `已将 ${entry} 移出点选清单。`,
   modelRemoveLast: '至少保留 1 条点选清单项。',
   modelAddCurButton: '➕ 把当前模型加入清单',
-  sheUsage: [
-    '用法：',
-    '/she help [命令] — 查看全局或子命令帮助',
-    '/she init — 初始化共享 shadow repo、SHE runtime 与状态文件',
-    '/she init update — 更新当前 scope 的 shadow repo',
-    '/she init reset — 清除当前 scope 的 shadow repo 映射',
-    '/she need — 兼容入口，等同 /she sandbox status',
-    '/she sandbox [status|build|list|info|stats|start|stop|restart|destroy] — sandbox 构建与 broker 管理（/she help sandbox）',
-    '/she doctor — 查看 SHE/OpenCode/共享目录诊断',
-    '/she submit <原文> — 新建 Topic 并提交任务',
-    '/she continue <Topic> <原文> — 在同一 Topic 追加串行任务',
-    '/she list [Topic] — 查看 Topic / Task 看板',
-    '/she status <Topic|Task> — 查询状态',
-    '/she report <Task> — 回传报告文件',
-    '/she return <Task> — 复制结果到 she_returns/<task-id>/（不修改源码）',
-    '/she accept <Task> — 应用结果到项目并 stage（默认不 commit）',
-    '/she stop <Task> — 中断当前任务并暂停 Topic',
-    '/she resume <Topic> — 恢复 Topic 队列',
-    '/she topic rename <旧编号> <新编号> [--force] — 重命名 Topic',
-    '/she topic remove <Topic> [--purge] — 移除 Topic',
+  infoChannelBody: (version, mode, workspace) => [
+    `feishu4dsh ${version}`,
+    `传输：${mode}`,
+    `当前工作区：${workspace}`,
+    '',
+    '服务：dsh-feishu4dsh.service（dsh 飞书通道）',
+    '状态：systemctl --user status dsh-feishu4dsh.service',
+    '日志：journalctl --user -u dsh-feishu4dsh.service -f',
+    '',
+    '本命令只读，不安装、不 enable、不重启。',
   ].join('\n'),
-  sheHelpTopic: sheHelpZh,
-  sheDisabled: '秘书功能未启用：管理员发送 /she init 完成初始化，或在插件配置中设置 secretaryEnabled: true。',
-  sheInitUnavailable: '当前运行环境不支持 /she init（未安装 R58 初始化控制器）。',
-  sheNeedTitle: 'SHE sandbox 就绪检查',
-  sheNeedItem: (status, label, detail) => `${status} ${label}：${detail}`,
-  sheNeedReady: 'she-sandbox 已就绪。下一步可执行 /she init。',
-  sheNeedNext: '存在缺失项：请执行 /she sandbox status 查看主机/接入缺口，并用 /she sandbox build 生成安装包。',
-  sheSandboxStatusTitle: 'Sandbox 执行面预检',
-  sheSandboxReady: '当前用户 Docker 可用；可继续选择沙箱配置。',
-  sheSandboxNotReady: '当前用户 Docker 不可用或未确认 rootless：建议选择专用 rootless 账户并生成 root bootstrap 包。',
-  sheSandboxWizardTitle: step => ({ target: 'Sandbox · 选择目标账户', role: 'Sandbox · 选择角色', agent: 'Sandbox · 选择 Agent', tools: 'Sandbox · 选择基础工具', confirm: 'Sandbox · 确认生成' } as Record<string, string>)[step] ?? 'Sandbox 构建',
-  sheSandboxWizardSummary: (name, target, agent, tools, network) => `名称：\`${name}\`\n目标：${target}\nAgent：${agent}\n工具：${tools}\n网络：${network}`,
-  sheSandboxTargetNote: '推荐专用 rootless 账户。当前用户模式只在本机 Docker 可达且可接受同账户风险时使用；本版不枚举任意系统用户。',
-  sheSandboxAgentNote: '内置 OpenCode 使用固定版本；Hermes/dsh 需显式镜像，不会猜测官方镜像名；镜像存在不等于协议兼容。',
-  sheSandboxRoleNote: '角色会写入 sandbox descriptor；worker 默认不能继续委派，main 通过 broker 分派任务，inbox 的写入由 broker 独占。',
-  sheSandboxRoleOption: role => ({ standalone: 'standalone · 手工沙箱', main: 'main · 协调者', worker: 'worker · 执行者', observer: 'observer · 只读观察', utility: 'utility · 单次工具' } as Record<string, string>)[role] ?? role,
-  sheSandboxToolsNote: '工具包可多选；用户态工具装到 /home/agent，系统包写入镜像。Docker CLI 与 socket 永不安装/挂载。',
-  sheSandboxConfirmNote: '点击生成后只产出无密钥安装包，不执行 sudo、不创建容器；请由目标用户在飞书外审查执行。',
-  sheSandboxBack: '⬅️ 上一步',
-  sheSandboxNext: '下一步 ➡️',
-  sheSandboxBuild: '📦 生成安装包',
-  sheSandboxCancel: '取消',
-  sheSandboxToolLabel: (label, selected) => `${selected ? '✅' : '⬜'} ${label}`,
-  sheSandboxImageRequired: label => `${label} 需要显式镜像引用。请发送：/she sandbox build --agent custom --image <镜像>；本版不会猜测或静默回退为空白沙箱。`,
-  sheSandboxTargetUnavailable: '当前用户 Docker 预检未通过，暂不能选择 current-user；可改用专用 rootless 账户生成 root bootstrap 包。',
-  sheSandboxTargetWarning: '当前用户 Docker 预检未完全通过；仍可生成安装包，但请在目标用户侧执行 host-preflight.sh 复核。',
-  sheSandboxCardUpdateFailed: '卡片状态更新失败。当前步骤已切换，但飞书卡片可能未刷新；请重新发送 /she sandbox，或查看服务日志。',
-  sheSandboxPackageDone: (name, archivePath) => `已生成 sandbox 安装包：${name}\n归档：${archivePath}`,
-  sheSandboxUsageGuide: (name, requiresRootBootstrap, targetUser) => {
-    const steps = [
-      '下载并解压 tar.gz，进入解压目录，执行 chmod +x *.sh',
-      './host-preflight.sh',
-      'sha256sum -c CHECKSUMS',
-      ...(requiresRootBootstrap
-        ? [
-            'sudo ./bootstrap-host.sh --dry-run',
-            'sudo ./bootstrap-host.sh',
-            `切换到目标用户 ${targetUser}，在包目录执行 ./create-sandbox.sh`,
-          ]
-        : ['./create-sandbox.sh']),
-      './verify-sandbox.sh，确认输出 SANDBOX_VERIFY_OK',
-      '不再需要时执行 ./destroy-sandbox.sh；数据默认保留，--purge 才删除',
-    ]
-    return [
-      `安装包 ${name} 已发送，但尚未创建容器。`,
-      '',
-      '操作步骤：',
-      ...steps.map((step, index) => `${index + 1}. ${step}`),
-      '',
-      '注意：SHE 不会自动执行 sudo、Docker 创建或容器操作，请先审查 plan.json、Dockerfile 与脚本。',
-    ].join('\n')
-  },
-  sheSandboxUnavailable: '当前运行环境不支持 build-sandbox（未装配 sandbox hook）。',
-  sheSandboxBrokerUnavailable: 'Sandbox broker 不可用：请确认 sandbox-broker.service 已启动，且使用同一目标账户。',
-  sheSandboxListTitle: 'Sandbox 列表',
-  sheSandboxListEntry: (name, role, state) => `${name}  [${role}]  ${state}`,
-  sheSandboxInfoLine: (label, value) => `${label}：${value}`,
-  sheSandboxStatsTitle: 'Sandbox 资源快照',
-  sheSandboxStatsLine: (label, value) => `${label}：${value}`,
-  sheSandboxActionDone: (action, name) => `sandbox ${name} 已执行 ${action}。`,
-  sheSandboxDestroyConfirm: name => `销毁 ${name} 需要确认。请发送：/she sandbox destroy ${name} --yes。数据默认保留，--purge 不在本版实现。`,
-  sheSandboxNotFound: name => `sandbox 不存在：${name}`,
-  sheNeedAliasHint: '兼容入口：/she need 已并入 /she sandbox status；后续请优先使用 /she sandbox。',
-  sheNeedPackageDeprecated: '/she need package 已并入 /she sandbox；本次按默认 OpenCode 方案继续生成。后续请使用 /she sandbox build。',
-  sheInitOk: (shadowRepo, runtimeRoot, version) => `SHE 初始化完成（OpenCode ${version}）。\nShadow repo：${shadowRepo}\nRuntime：${runtimeRoot}\n下一步直接 /she submit。`,
-  sheInitUpdateOk: (shadowRepo, head) => `Shadow repo 已更新：${shadowRepo}\nHEAD：${head}`,
-  sheInitResetOk: shadowRepo => `已清除当前 scope 的 shadow repo 映射（目录保留）：${shadowRepo}\n现在可以重新执行 /she init。`,
-  sheReturned: (label, returnDir, changed, added, outputs) => `任务 ${label} 的结果已复制到：${returnDir}\n修改文件 ${changed}，新增文件 ${added}，输出 ${outputs}。尚未修改项目源码或执行 git add。`,
-  sheAccepted: (label, staged, copied, appliedPatch) => `任务 ${label} 已接受：${appliedPatch ? '补丁已应用' : '无补丁'}，复制新增文件 ${copied}，已 stage ${staged} 个路径。未 commit/push。`,
-  sheDoctorTitle: 'SHE 诊断',
-  sheDoctorSource: (source, stateFile, statePresent) => `来源：${source}；状态文件：${stateFile}（${statePresent}）`,
-  sheDoctorHealth: (ok, detail) => `OpenCode：${ok ? 'healthy' : 'unhealthy'}${detail === '' ? '' : `（${detail}）`}`,
-  sheDoctorRuntime: (runtimeRoot, worktreeRoot, reposRoot) => `Runtime：${runtimeRoot}\nWorktree：${worktreeRoot}\nRepos：${reposRoot}`,
-  sheDoctorScope: shadowRepo => `当前话题 shadow repo：${shadowRepo ?? '未映射'}`,
-  infoServiceTitle: 'SHE 服务帮助',
-  infoServiceUnavailable: '当前运行环境不支持 /info（未装配 service report hook）。',
-  infoServiceAccount: (account, pluginRoot) => `账户：${account}\n插件目录：${pluginRoot}`,
-  infoServiceInstaller: (installerPath, present) => `安装器：${installerPath}（${present ? '存在' : '未找到'}）`,
-  infoServiceSystemd: (account, reachable, linger) => {
-    const lingerText = linger === 'yes'
-      ? '已开启（服务可在登录前随 user manager 启动）'
-      : linger === 'no'
-        ? `未开启（当前只在登录后启动；需要免登录自启时执行 sudo loginctl enable-linger ${account}）`
-        : '未知'
-    return `systemd --user：${reachable ? '可达' : '不可达（请在目标账户的登录 shell 或服务环境中检查）'}\nlinger：${lingerText}`
-  },
-  infoServiceUnit: (label, name, unitFileState, activeState, fragmentPath) => {
-    const autoStart = unitFileState === 'enabled' || unitFileState === 'enabled-runtime'
-      ? 'enabled'
-      : unitFileState === 'disabled'
-        ? 'disabled'
-        : (unitFileState === undefined || unitFileState === '' ? 'unknown' : unitFileState)
-    return `${label}：${name}\n  自启动：${autoStart}\n  状态：${activeState === undefined || activeState === '' ? 'unknown' : activeState}\n  unit：${fragmentPath ?? '未加载'}`
-  },
-  infoServiceBrokerSocket: (path, present) => `broker socket：${path}（${present ? '存在' : '不存在'}）`,
-  infoServiceInstallerHint: pluginRoot => [
-    '安装/检查（在部署机 shell 执行；不要从飞书传脚本）：',
-    `PLUGIN_DIR="${pluginRoot}"`,
-    'bash "$PLUGIN_DIR/scripts/install-user-services.sh" --check  --only broker --repo "$PLUGIN_DIR"',
-    'bash "$PLUGIN_DIR/scripts/install-user-services.sh" --enable --only broker --repo "$PLUGIN_DIR"',
-  ].join('\n'),
-  infoServiceRestartHint: units => [
-    '加载/查看/重启（宿主机终端，当前账户）：',
-    'systemctl --user daemon-reload',
-    ...units.map(unit => `systemctl --user restart ${unit}`),
-    ...units.map(unit => `systemctl --user status ${unit} --no-pager`),
-  ].join('\n'),
-  infoServiceBusctlHint: units => [
-    'systemctl 不可用但 user D-Bus 可达时，可让 agent 在宿主机同账户执行：',
-    ...units.map(unit => `busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager RestartUnit ss ${unit} replace`),
-    '注意：agent sandbox/容器内通常没有宿主 user bus；该命令必须在宿主机同账户执行。',
-  ].join('\n'),
-  infoServiceNote: '本命令只读：不会自动安装、enable、重启或停止服务。安装/重启是宿主机同账户的显式动作。',
   infoUsage: [
-    '/info — 只读显示宿主服务位置、自启动与重启帮助',
+    '/info — 只读显示 feishu4dsh 与 dsh 通道服务信息',
     '',
-    '内容：',
-    '  1. 当前账户、插件目录和一键安装器路径；',
-    '  2. dsh-feishu4dsh 与 sandbox-broker 两个 user unit 的 enabled/active 和实际 FragmentPath；',
-    '  3. linger 状态，以及是否需要启用 linger 才能登录前自启；',
-    '  4. 部署机上的 --check / --enable 命令；',
-    '  5. systemctl 加载/状态/重启命令，以及让 agent 使用 busctl 重启的命令与前提。',
-    '',
-    '本命令只读，不会自动安装、enable、restart 或 stop 服务。',
-    '安装/重启必须由宿主机同一 Unix 账户显式执行；agent sandbox 内通常没有宿主 user bus。',
+    '内容：插件版本、传输模式、当前工作区和服务重启/日志命令。',
+    'SHE 已迁移到独立项目 2611she；本插件不再提供 /she。',
   ].join('\n'),
-  sheNoPermission: '当前发送人无权使用 /she（需为审批人 / 会话驱动者）。',
-  sheSubmitted: (label, status) => `已提交任务 ${label}（${status}）。完成后用 /she status ${label} 查看。`,
-  sheContinued: (label, status) => `已追加任务 ${label}（${status}）。`,
-  sheInvalid: reason => `命令参数无效（${reason}）；发送 /she help 查看用法。`,
-  sheListEmpty: '当前聊天还没有 Topic。用 /she submit <原文> 创建第一个。',
-  sheTopicListLine: (label, status, excerpt, summary) => `${label}  [${status}]  ${excerpt}  ${summary}`,
-  sheTaskListLine: (label, status, excerpt) => `${label}  [${status}]  ${excerpt}`,
-  sheTaskSummary: (total, running, queued, done) => `共 ${total} 个任务：运行中 ${running}，排队 ${queued}，已完成 ${done}`,
-  sheStatusTitle: '秘书任务状态',
-  sheStatusTopic: (label, status, excerpt) => `Topic ${label} · ${status} · ${excerpt}`,
-  sheStatusTask: (label, status, excerpt) => `Task ${label} · ${status} · ${excerpt}`,
-  sheStatusSession: sessionId => `OpenCode session：${sessionId}`,
-  sheStatusReport: path => `报告：${path}`,
-  sheStatusAttachments: count => `附件：${count} 个`,
-  sheNotFound: reference => `未找到 ${reference}。`,
-  sheReportMissing: label => `任务 ${label} 尚无已登记报告（可能仍在运行或报告缺失）。`,
-  sheReportReady: (label, size) => `任务 ${label} 的报告（${size}）：`,
-  sheStopped: label => `已中断 ${label}，所属 Topic 已暂停。`,
-  sheResumed: label => `已恢复 Topic ${label} 的队列。`,
-  sheRenamed: (oldLabel, newLabel) => `Topic 编号已由 ${oldLabel} 改为 ${newLabel}。`,
-  sheRemoved: (label, purged) => purged ? `Topic ${label} 已彻底删除。` : `Topic ${label} 已归档并从看板隐藏；产物保留。`,
-  sheError: (code, detail) => `秘书命令失败（${code}）：${detail}`,
 }
 
 const enUS: Strings = {
@@ -1182,173 +877,24 @@ const enUS: Strings = {
   notAFileRefusal: 'That path is not a regular file.',
   tooLargeRefusal: (size, limit) => `The file is ${size}, over the ${limit} limit.`,
   commandUnknown: line => `Unknown command: ${line} (try /help)`,
-  sheUsage: [
-    'Usage:',
-    '/she help [command] — show global or per-command help',
-    '/she init — initialize the shared shadow repo, SHE runtime and state file',
-    '/she init update — update the current scope shadow repo',
-    '/she init reset — forget the current scope shadow repo mapping',
-    '/she need — compatibility alias for /she sandbox status',
-    '/she sandbox [status|build|list|info|stats|start|stop|restart|destroy] — sandbox builder and broker management (/she help sandbox)',
-    '/she doctor — inspect SHE/OpenCode/shared-directory diagnostics',
-    '/she submit <request> — create a Topic and enqueue a task',
-    '/she continue <Topic> <request> — append a serial task',
-    '/she list [Topic] — show Topics / Tasks',
-    '/she status <Topic|Task> — query status',
-    '/she report <Task> — return the report file',
-    '/she return <Task> — copy results to she_returns/<task-id>/ without touching project source',
-    '/she accept <Task> — apply/stage results in the project (no commit)',
-    '/she stop <Task> — interrupt the running task and pause its Topic',
-    '/she resume <Topic> — resume the Topic queue',
-    '/she topic rename <old> <new> [--force] — rename a Topic label',
-    '/she topic remove <Topic> [--purge] — archive/remove a Topic',
+  cardActionFailed: detail => `Card action failed: ${detail}`,
+  infoChannelBody: (version, mode, workspace) => [
+    `feishu4dsh ${version}`,
+    `transport: ${mode}`,
+    `current workspace: ${workspace}`,
+    '',
+    'service: dsh-feishu4dsh.service (dsh Feishu channel)',
+    'status: systemctl --user status dsh-feishu4dsh.service',
+    'logs: journalctl --user -u dsh-feishu4dsh.service -f',
+    '',
+    'Read-only: this command never installs, enables, restarts or stops a service.',
   ].join('\n'),
-  sheHelpTopic: sheHelpEn,
-  sheDisabled: 'Secretary is disabled: ask an admin to run /she init, or set secretaryEnabled: true in the plugin config.',
-  sheInitUnavailable: 'This runtime does not provide the R58 /she init controller.',
-  sheNeedTitle: 'SHE sandbox readiness',
-  sheNeedItem: (status, label, detail) => `${status} ${label}: ${detail}`,
-  sheNeedReady: 'she-sandbox is ready. Next: /she init.',
-  sheNeedNext: 'Missing prerequisites: run /she sandbox status for host/attach gaps, then /she sandbox build for the package.',
-  sheSandboxStatusTitle: 'Sandbox execution-plane preflight',
-  sheSandboxReady: 'Current-user Docker is reachable; continue with sandbox configuration.',
-  sheSandboxNotReady: 'Current-user Docker is unavailable or rootless is unconfirmed: use a dedicated rootless account and review the root bootstrap package.',
-  sheSandboxWizardTitle: step => ({ target: 'Sandbox · target account', role: 'Sandbox · role', agent: 'Sandbox · agent', tools: 'Sandbox · tools', confirm: 'Sandbox · confirm' } as Record<string, string>)[step] ?? 'Sandbox builder',
-  sheSandboxWizardSummary: (name, target, agent, tools, network) => `Name: \`${name}\`\nTarget: ${target}\nAgent: ${agent}\nTools: ${tools}\nNetwork: ${network}`,
-  sheSandboxTargetNote: 'Dedicated rootless account is recommended. Current-user mode is only for an accessible local Docker and accepted same-account risk; arbitrary system users are not enumerated.',
-  sheSandboxAgentNote: 'OpenCode is pinned. Hermes/dsh require an explicit image; official image names are not guessed. Image existence does not imply protocol compatibility.',
-  sheSandboxRoleNote: 'The role is stored in the sandbox descriptor. Workers cannot delegate; main routes tasks through the broker; only the broker writes inboxes.',
-  sheSandboxRoleOption: role => ({ standalone: 'standalone · manual sandbox', main: 'main · coordinator', worker: 'worker · executor', observer: 'observer · read-only', utility: 'utility · one-shot tool' } as Record<string, string>)[role] ?? role,
-  sheSandboxToolsNote: 'Select one or more bundles. User tools live under /home/agent; OS packages are baked at image build. Docker CLI/socket are never installed or mounted.',
-  sheSandboxConfirmNote: 'Generate only emits a secret-free package: no sudo and no container creation. The target user must review and execute it outside Feishu.',
-  sheSandboxBack: '⬅️ Back',
-  sheSandboxNext: 'Next ➡️',
-  sheSandboxBuild: '📦 Generate package',
-  sheSandboxCancel: 'Cancel',
-  sheSandboxToolLabel: (label, selected) => `${selected ? '✅' : '⬜'} ${label}`,
-  sheSandboxImageRequired: label => `${label} requires an explicit image reference. Send: /she sandbox build --agent custom --image <image>. This version never guesses or silently falls back to a blank sandbox.`,
-  sheSandboxTargetUnavailable: 'Current-user Docker preflight failed; current-user cannot be selected. Use a dedicated rootless account to generate the root bootstrap package.',
-  sheSandboxTargetWarning: 'Current-user Docker preflight was not fully successful; package generation can continue, but run host-preflight.sh as the target user before creating the sandbox.',
-  sheSandboxCardUpdateFailed: 'Could not refresh the card. The wizard state advanced, but the Feishu card may be stale; send /she sandbox again or inspect service logs.',
-  sheSandboxPackageDone: (name, archivePath) => `Generated sandbox package: ${name}\nArchive: ${archivePath}`,
-  sheSandboxUsageGuide: (name, requiresRootBootstrap, targetUser) => {
-    const steps = [
-      'Download and extract the tar.gz, then chmod +x *.sh',
-      './host-preflight.sh',
-      'sha256sum -c CHECKSUMS',
-      ...(requiresRootBootstrap
-        ? [
-            'sudo ./bootstrap-host.sh --dry-run',
-            'sudo ./bootstrap-host.sh',
-            `Switch to target user ${targetUser} and run ./create-sandbox.sh from the package directory`,
-          ]
-        : ['./create-sandbox.sh']),
-      './verify-sandbox.sh and confirm SANDBOX_VERIFY_OK',
-      'When done, run ./destroy-sandbox.sh; data is retained unless --purge is passed',
-    ]
-    return [
-      `Package ${name} has been sent, but no container has been created yet.`,
-      '',
-      'Next steps:',
-      ...steps.map((step, index) => `${index + 1}. ${step}`),
-      '',
-      'SHE never runs sudo, container creation, or Docker lifecycle actions automatically. Review plan.json, Dockerfile and scripts first.',
-    ].join('\n')
-  },
-  sheSandboxUnavailable: 'This runtime does not provide the build-sandbox hook.',
-  sheSandboxBrokerUnavailable: 'Sandbox broker is unavailable: ensure sandbox-broker.service is running under the target account.',
-  sheSandboxListTitle: 'Sandbox list',
-  sheSandboxListEntry: (name, role, state) => `${name}  [${role}]  ${state}`,
-  sheSandboxInfoLine: (label, value) => `${label}: ${value}`,
-  sheSandboxStatsTitle: 'Sandbox resource snapshot',
-  sheSandboxStatsLine: (label, value) => `${label}: ${value}`,
-  sheSandboxActionDone: (action, name) => `sandbox ${name}: ${action} completed.`,
-  sheSandboxDestroyConfirm: name => `Destroying ${name} requires confirmation. Send: /she sandbox destroy ${name} --yes. Data is retained by default; --purge is not implemented in this version.`,
-  sheSandboxNotFound: name => `sandbox not found: ${name}`,
-  sheNeedAliasHint: 'Compatibility: /she need now maps to /she sandbox status; prefer /she sandbox.',
-  sheNeedPackageDeprecated: '/she need package is merged into /she sandbox; generating the default OpenCode package now. Prefer /she sandbox build.',
-  sheInitOk: (shadowRepo, runtimeRoot, version) => `SHE initialized (OpenCode ${version}).\nShadow repo: ${shadowRepo}\nRuntime: ${runtimeRoot}\nNext: use /she submit.`,
-  sheInitUpdateOk: (shadowRepo, head) => `Shadow repo updated: ${shadowRepo}\nHEAD: ${head}`,
-  sheInitResetOk: shadowRepo => `Cleared the current scope's shadow repo mapping (directory retained): ${shadowRepo}\nYou can run /she init again.`,
-  sheReturned: (label, returnDir, changed, added, outputs) => `Task ${label} results copied to: ${returnDir}\nchanged ${changed}, added ${added}, outputs ${outputs}. Project source was not modified or staged.`,
-  sheAccepted: (label, staged, copied, appliedPatch) => `Task ${label} accepted: ${appliedPatch ? 'patch applied' : 'no patch'}, copied ${copied} new files, staged ${staged} paths. No commit/push.`,
-  sheDoctorTitle: 'SHE diagnostics',
-  sheDoctorSource: (source, stateFile, statePresent) => `Source: ${source}; state file: ${stateFile} (${statePresent})`,
-  sheDoctorHealth: (ok, detail) => `OpenCode: ${ok ? 'healthy' : 'unhealthy'}${detail === '' ? '' : ` (${detail})`}`,
-  sheDoctorRuntime: (runtimeRoot, worktreeRoot, reposRoot) => `Runtime: ${runtimeRoot}\nWorktree: ${worktreeRoot}\nRepos: ${reposRoot}`,
-  sheDoctorScope: shadowRepo => `Current-scope shadow repo: ${shadowRepo ?? 'not mapped'}`,
-  infoServiceTitle: 'SHE service help',
-  infoServiceUnavailable: 'This runtime does not provide the /info report hook.',
-  infoServiceAccount: (account, pluginRoot) => `Account: ${account}\nPlugin directory: ${pluginRoot}`,
-  infoServiceInstaller: (installerPath, present) => `Installer: ${installerPath} (${present ? 'present' : 'not found'})`,
-  infoServiceSystemd: (account, reachable, linger) => {
-    const lingerText = linger === 'yes'
-      ? 'enabled (user manager can start before login)'
-      : linger === 'no'
-        ? `disabled (starts after login only; run sudo loginctl enable-linger ${account} for boot-time start)`
-        : 'unknown'
-    return `systemd --user: ${reachable ? 'reachable' : 'unreachable (check from the target account login shell or service environment)'}\nlinger: ${lingerText}`
-  },
-  infoServiceUnit: (label, name, unitFileState, activeState, fragmentPath) => {
-    const autoStart = unitFileState === 'enabled' || unitFileState === 'enabled-runtime'
-      ? 'enabled'
-      : unitFileState === 'disabled'
-        ? 'disabled'
-        : (unitFileState === undefined || unitFileState === '' ? 'unknown' : unitFileState)
-    return `${label}: ${name}\n  autostart: ${autoStart}\n  state: ${activeState === undefined || activeState === '' ? 'unknown' : activeState}\n  unit: ${fragmentPath ?? 'not loaded'}`
-  },
-  infoServiceBrokerSocket: (path, present) => `broker socket: ${path} (${present ? 'present' : 'missing'})`,
-  infoServiceInstallerHint: pluginRoot => [
-    'Install/check from the deployment-host shell (never transfer the script via Feishu):',
-    `PLUGIN_DIR="${pluginRoot}"`,
-    'bash "$PLUGIN_DIR/scripts/install-user-services.sh" --check  --only broker --repo "$PLUGIN_DIR"',
-    'bash "$PLUGIN_DIR/scripts/install-user-services.sh" --enable --only broker --repo "$PLUGIN_DIR"',
-  ].join('\n'),
-  infoServiceRestartHint: units => [
-    'Reload/check/restart from the host terminal as the same account:',
-    'systemctl --user daemon-reload',
-    ...units.map(unit => `systemctl --user restart ${unit}`),
-    ...units.map(unit => `systemctl --user status ${unit} --no-pager`),
-  ].join('\n'),
-  infoServiceBusctlHint: units => [
-    'If systemctl is unavailable but the user D-Bus is reachable, an agent on the host may use:',
-    ...units.map(unit => `busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager RestartUnit ss ${unit} replace`),
-    'Note: agent sandbox/container environments usually do not have the host user bus; run this on the host as the same account.',
-  ].join('\n'),
-  infoServiceNote: 'This command is read-only: it never installs, enables, restarts, or stops services. Installation/restart remains an explicit host-side action.',
   infoUsage: [
-    '/info — read-only host service location, autostart and restart help',
+    '/info — read-only feishu4dsh / dsh channel service help',
     '',
-    'Shows: current account/plugin/installer paths; enabled/active/FragmentPath for',
-    'dsh-feishu4dsh and sandbox-broker user units; linger/boot-start status; host-side',
-    '--check/--enable commands; and systemctl/busctl load/status/restart commands with prerequisites.',
-    '',
-    'This command never installs, enables, restarts or stops a service. Those actions must be',
-    'run explicitly on the host as the same Unix account; agent sandboxes usually do not have',
-    'the host user bus.',
+    'Shows plugin version, transport mode, current workspace and service restart/log commands.',
+    'SHE moved to the separate 2611she project; this plugin no longer provides /she.',
   ].join('\n'),
-  sheNoPermission: 'This sender may not use /she (must be an approver / the chat driver).',
-  sheSubmitted: (label, status) => `Submitted task ${label} (${status}). Check it with /she status ${label}.`,
-  sheContinued: (label, status) => `Appended task ${label} (${status}).`,
-  sheInvalid: reason => `Invalid command arguments (${reason}); send /she help for usage.`,
-  sheListEmpty: 'No Topics in this chat yet. Use /she submit <request> to create one.',
-  sheTopicListLine: (label, status, excerpt, summary) => `${label}  [${status}]  ${excerpt}  ${summary}`,
-  sheTaskListLine: (label, status, excerpt) => `${label}  [${status}]  ${excerpt}`,
-  sheTaskSummary: (total, running, queued, done) => `${total} task(s): ${running} running, ${queued} queued, ${done} done`,
-  sheStatusTitle: 'Secretary task status',
-  sheStatusTopic: (label, status, excerpt) => `Topic ${label} · ${status} · ${excerpt}`,
-  sheStatusTask: (label, status, excerpt) => `Task ${label} · ${status} · ${excerpt}`,
-  sheStatusSession: sessionId => `OpenCode session: ${sessionId}`,
-  sheStatusReport: path => `Report: ${path}`,
-  sheStatusAttachments: count => `Attachments: ${count}`,
-  sheNotFound: reference => `Not found: ${reference}.`,
-  sheReportMissing: label => `Task ${label} has no registered report yet (still running or report missing).`,
-  sheReportReady: (label, size) => `Report for ${label} (${size}):`,
-  sheStopped: label => `Interrupted ${label}; its Topic is paused.`,
-  sheResumed: label => `Resumed the queue for Topic ${label}.`,
-  sheRenamed: (oldLabel, newLabel) => `Topic label renamed from ${oldLabel} to ${newLabel}.`,
-  sheRemoved: (label, purged) => purged ? `Topic ${label} was purged.` : `Topic ${label} was archived and hidden; artifacts are retained.`,
-  sheError: (code, detail) => `Secretary command failed (${code}): ${detail}`,
   wsMenuTitle: '🗂 Workspaces (tap to switch)',
   wsMenuEmpty: 'No registered workspaces yet (besides the default). Add one via /ws new or /ws add.',
   wsMenuNote: 'Tap to switch · /ws list for text · /ws new to create',

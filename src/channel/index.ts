@@ -4,10 +4,10 @@
  * This is intentionally narrower than `src/bridge.ts`: it exposes platform
  * capability declarations and pure Feishu-side primitives (authorization,
  * card construction, file boundary helpers, transport-facing event types).
- * It does not expose dsh host/session or SHE state.
+ * It does not expose dsh host/session or control-plane state.
  *
- * SHE must use the versioned gateway protocol rather than importing this
- * module directly. A future generic gateway package may consume this facade.
+ * External gateways should consume this through a versioned protocol rather
+ * than importing the dsh-facing bridge module.
  * @module feishu4dsh/channel
  */
 

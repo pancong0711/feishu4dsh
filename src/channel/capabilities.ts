@@ -2,7 +2,7 @@
  * Platform-neutral channel capability declarations.
  *
  * This module is the first seam for sharing Feishu-side channel capabilities
- * with an external gateway/control-plane (SHE). It deliberately has no
+ * with an external gateway/control-plane. It deliberately has no
  * dependency on the Feishu SDK, dsh host contracts, Docker, or SHE protocol
  * internals. Platform adapters (currently the Feishu implementation) declare
  * what they can do; consumers negotiate against this set and fall back to
@@ -44,7 +44,7 @@ export interface ChannelCapabilitySet {
   readonly extensions?: readonly string[]
 }
 
-/** Canonical v1 capability names. Keep this list in lock-step with @she/protocol. */
+/** Canonical v1 capability names. Consumers negotiate against this additive set. */
 export const CHANNEL_CAPABILITIES_V1: readonly ChannelCapability[] = [
   'text.inbound',
   'text.outbound',

@@ -49,8 +49,8 @@
 | 模块 | 职责 | 对应 Hermes 概念 |
 |---|---|---|
 | `src/adapter.ts` | 组装 `LarkChannel`、webhook 端点，暴露窄接口 `ChannelPort` | `gateway/platforms/feishu.py` 的传输职责 |
-| `src/channel/capabilities.ts` | 平台无关的 channel capability 声明、能力协商 helper 与文本降级；不 import Feishu SDK/dsh/SHE | 通用 platform capability 契约 |
-| `src/channel/index.ts` | 飞书通道能力的稳定 facade：capability、入站/出站类型、ACL、卡片、文件安全原语；不暴露 dsh/SHE 业务状态 | 通用 channel capability 层 |
+| `src/channel/capabilities.ts` | 平台无关的 channel capability 声明、能力协商 helper 与文本降级；不 import Feishu SDK/dsh/control-plane | 通用 platform capability 契约 |
+| `src/channel/index.ts` | 飞书通道能力的稳定 facade：capability、入站/出站类型、ACL、卡片、文件安全原语；不暴露 dsh/control-plane 业务状态 | 通用 channel capability 层 |
 | `src/bridge.ts` | 对接层：消息↔会话↔Agent、回复渲染、审批、命令、媒体、工作区切换 | 移植指南中的「胶水代码层」 |
 | `src/sessions.ts` | 会话身份 **(scope × workspace × generation)** → 确定性 agentKey/sessionId；`/new` 代数递增 | Hermes 的会话隔离/话题隔离 |
 | `src/workspaces.ts` | 工作区目录构建、`/cd` 解析与准入校验（纯函数） | —（dsh 写限制特有） |
@@ -65,7 +65,6 @@
 | `src/card-menu.ts` | 交互菜单纯逻辑：菜单注册表（每 scope×kind 一张活卡/TTL）、分页、四类选择卡构建（R32） | Hermes 交互卡片 |
 | `src/host.ts` | dsh 宿主服务的窄契约（唯一适配面） | —（dsh 特有） |
 | `src/runtime.ts` | Cordis `apply`：bootstrap、settings、端口装配、拆卸 | —（dsh 特有） |
-| `src/secretary/` | **规划迁出**：可选 SHE 子模块：确定性 `/she` 命令、`/she init update/reset` 生命周期、0600 bootstrap 状态、Topic/Task 状态机、SQLite、串行队列/watcher、OpenCode adapter、worktree、报告校验、`return/accept` 结果回收、`/she need` 执行面检测、`/she sandbox` 固定路径/agent catalog/rootless 预检/无密钥安装包、终端 onboarding kit、Unix-socket sandbox broker（registry/lifecycle/mailbox）；不依赖飞书 SDK/dsh 类型 | 秘书转发层 + sandbox 供给入口 |
 
 ## 4. 能力映射：Hermes 飞书适配器 → 本插件
 
@@ -163,50 +162,13 @@ NormalizedMessage ──► scopeKey(sessionScope) ──┐
 - 真实链路验证（需要飞书应用凭据）：按 README 挂载后在飞书发消息回归。
 
 
-## 10. SHE 秘书子模块（R56）
+## 10. 与独立 SHE 项目的边界
 
-SHE 是 feishu4dsh 的可选、默认关闭的能力，不是第二个自由发挥的 Agent。它把用户原文按固定信封转交给本机 OpenCode，并持久化 Topic/Task、串行队列、状态与报告。
-
-```text
-飞书 /she
-  -> bridge.ts 薄命令适配（只做字段映射/文案/报告文件投递）
-  -> secretary/service.ts（状态唯一事实源 + watcher）
-       -> store.ts（SQLite：topics/tasks/attempts/artifacts/events/leases）
-       -> envelope.ts（[she/v1] 固定信封；原文逐字保留）
-       -> types.ts ExecutorAdapter
-            -> opencode.ts（HTTP Basic；HttpApi 2.3.2）
-       -> worktree.ts（每 Topic 独立 git worktree）
-```
-
-边界：
-
-- `bridge.ts` 不写状态机；`secretary/` 不 import 飞书 SDK 或 dsh 宿主类型；
-- 未初始化且未启用 `secretaryEnabled` 时不创建数据库、不读取 OpenCode 凭据、不启动 watcher；管理员 `/she init` 可创建 0600 状态并在当前进程内启动；重启时状态文件可自动恢复；
-- 同一 Topic 严格串行、每聊天最多 2 个活跃 Topic、每 Topic 最多 20 个排队 task；
-- 失败/中断/报告缺失/执行器不可达均暂停 Topic，`/she resume` 恢复；
-- 排队任务原文仅以 0600 临时 spool 暂存，OpenCode 接收后删除；数据库只存 hash/20 字摘录；
-- 报告必须由执行器写到约定路径；SHE 只校验存在与大小，然后原样回传。
-
-部署与 G1 技术验证记录见 [SECRETARY.md](SECRETARY.md) 与 [R56 工作单](20261119-需求-r56-秘书子模块SHE.md)。
-
-## 11. build-sandbox：控制面与执行面的下一步（R61）
-
-R61 把 sandbox 配置从“手写 Docker 命令”收敛为确定性规格：
+SHE agent control plane（任务队列、agent/sandbox/broker、`/she`）已迁移到独立项目 `2611she`，不再属于 feishu4dsh：
 
 ```text
-Feishu 卡片 / 文本命令
-  → SandboxSpec（目标账户 / agent / 工具 / 固定路径 / 安全策略）
-  → 无密钥安装包（plan + preflight + bootstrap + create + verify + destroy）
-  → 目标用户在飞书外审查执行
-  → verify-sandbox.sh 用 docker inspect 与实际写探针验收
+feishu4dsh = Feishu/Lark ⇄ dsh channel adapter
+2611she    = agent control plane
 ```
 
-边界：
-
-- SHE 进程不 sudo、不访问 Docker socket、不创建容器；
-- 安装包只允许固定 XDG 路径，不接受用户自定义挂载根；
-- 容器只挂 workspace/home/cache 三个叶子目录，不挂父目录/Docker socket；
-- 默认 rootless Docker、只读 rootfs、`cap-drop ALL`、`no-new-privileges`、独立网络、资源限额；
-- 自定义镜像只做引用/存在性检查，协议兼容性必须由后续 adapter 校验；
-- 未来多 sandbox 调度采用 host-side broker + sibling container，禁止把 Docker socket 放进 dsh/agent 容器。
-- R62 起 `/she need` 只保留为 `/she sandbox status` 的兼容入口；安装包生成器唯一实现位于 `src/secretary/sandbox.ts`。
+本仓库保留通用 `src/channel/` 能力面，但不内置 SHE 状态机、control-plane client、broker 或 sandbox 管理。两者如需组合，应通过独立项目/公开协议完成，不在本插件内耦合并行。

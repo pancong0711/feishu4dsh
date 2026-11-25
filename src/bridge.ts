@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { createRequire } from 'node:module'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { mkdir, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
@@ -34,26 +35,13 @@ import {
 } from './session-registry.js'
 import {
   MENU_TTL_MS, MenuRegistry, browseCard, createMenuId, menuDoneCard,
-  menuExpiredCard, modelMenuCard, sandboxWizardCard, sessionMenuCard, wsMenuCard,
-  type BrowseLabels, type MenuLabels, type MenuOption, type MenuState, type SandboxWizardLabels,
+  menuExpiredCard, modelMenuCard, sessionMenuCard, wsMenuCard,
+  type BrowseLabels, type MenuLabels, type MenuOption, type MenuState,
 } from './card-menu.js'
 import { resolveLocale, strings, type Locale, type Strings } from './strings.js'
 import { formatBytes, formatNumber, formatStamp, shortHash, sleep, splitWithCodeFences } from './util.js'
-import { parseSheCommand } from './secretary/command.js'
-import { SecretaryServiceError, type SecretaryService } from './secretary/service.js'
-import type { SecretaryAttachmentInput } from './secretary/types.js'
-import type { SecretaryDoctorReport, SecretaryRuntimeInitInput, SecretaryRuntimeInitResult, SecretaryRuntimeResetResult, SecretaryRuntimeUpdateResult, SecretaryServiceReport } from './secretary/runtime.js'
-import type { TaskAcceptResult, TaskReturnResult } from './secretary/returns.js'
-import type { SheNeedReport } from './secretary/need.js'
-import type { BrokerDockerStats, BrokerSandboxView } from './secretary/broker.js'
-import {
-  SANDBOX_AGENT_PROFILES, SANDBOX_TOOL_BUNDLES, SandboxError, buildSandboxSpec, makeSandboxName, nextSandboxName, sandboxAgentProfile,
-  type SandboxAgentId, type SandboxHostReport, type SandboxPackageResult, type SandboxRole, type SandboxSpec,
-  type SandboxTargetKind, type SandboxToolId, type SandboxWizardState,
-} from './secretary/sandbox.js'
-import type { SheSandboxBuildOptions } from './secretary/command.js'
-import { parseSheCardInteraction } from './integrations/she/render.js'
-import type { FeishuSheContext, FeishuSheInteractionInput } from './integrations/she/gateway.js'
+
+const pluginVersion: string = (createRequire(import.meta.url)('../package.json') as { version?: string }).version ?? 'unknown'
 
 /* ------------------------------------------------------------------ */
 /* Host surface the bridge needs (structurally satisfied by cordis ctx) */
@@ -241,21 +229,7 @@ interface PendingQuestion {
 }
 
 /** Optional cross-cutting hooks the runtime can supply. */
-/** Text input forwarded to the new SHE control-plane runtime. */
-export interface BridgeSheTextInput extends FeishuSheContext {
-  readonly text: string
-}
-
-/** Narrow runtime surface the bridge calls when SHE control-plane mode is on. */
-export interface BridgeSheRuntime {
-  readonly state: string
-  handleFeishuText(input: BridgeSheTextInput): Promise<boolean>
-  handleFeishuInteraction(input: FeishuSheInteractionInput): Promise<void>
-}
-
 export interface BridgeHooks {
-  /** Optional new independent SHE control-plane runtime. */
-  sheRuntime?: BridgeSheRuntime
   /** Persist one chat's workspace selection (survives restarts via settings). */
   onWorkspaceChange?: (scopeKey: string, workspacePath: string) => void | Promise<void>
   /** Persist the list of user-added workspaces (from `/ws add` / `/ws remove`). */
@@ -278,37 +252,7 @@ export interface BridgeHooks {
     sessions: SessionRegistry
     activeGen: ActiveGenMap
   }) => void | Promise<void>
-  /** Optional SHE secretary service; content is formatted by this bridge. */
-  secretary?: SecretaryService
-  /** `/she init`: B-side one-shot initialization from the current workspace. */
-  secretaryInit?: (input: SecretaryRuntimeInitInput) => Promise<SecretaryRuntimeInitResult>
-  /** `/she init update`: fast-forward the current scope's shadow repo. */
-  secretaryInitUpdate?: (scopeKey: string) => Promise<SecretaryRuntimeUpdateResult>
-  /** `/she init reset`: forget one scope→shadow mapping without deleting files. */
-  secretaryInitReset?: (scopeKey: string) => Promise<SecretaryRuntimeResetResult>
-  /** `/she doctor`: read-only SHE diagnostics. */
-  secretaryDoctor?: (scopeKey: string) => Promise<SecretaryDoctorReport>
-  /** `/info`: read-only host service location/autostart/restart guidance. */
-  secretaryServiceReport?: () => Promise<SecretaryServiceReport>
-  /** Persistent scope→shadow-repo mapping written by `/she init`. */
-  secretaryWorkspaceFor?: (scopeKey: string) => string | undefined
-  /** `/she return`: copy one task's results into `<project>/she_returns/<task-id>/`. */
-  secretaryReturn?: (input: { scopeKey: string; taskRef: string; projectRoot: string }) => Promise<TaskReturnResult>
-  /** `/she accept`: apply a returned bundle to the project working tree and stage it. */
-  secretaryAccept?: (input: { scopeKey: string; taskRef: string; projectRoot: string }) => Promise<TaskAcceptResult>
-  /** `/she need` / `need verify`: read-only sandbox readiness report. */
-  secretaryNeed?: () => Promise<SheNeedReport>
-  /** `/she sandbox status`: read-only host preflight. */
-  secretarySandboxPreflight?: () => Promise<SandboxHostReport>
-  /** `/she sandbox build`: generate a secret-free sandbox package. */
-  secretarySandboxPackage?: (input: { readonly spec: SandboxSpec; readonly preflight?: SandboxHostReport }) => Promise<SandboxPackageResult>
-  /** `/she sandbox`: next fixed sbx-<suffix>/sbx-000N name. */
-  secretarySandboxNextName?: (suffix?: string) => Promise<string>
-  /** Broker-backed sandbox management (host-local service). */
-  secretarySandboxList?: () => Promise<readonly BrokerSandboxView[]>
-  secretarySandboxInfo?: (name: string) => Promise<BrokerSandboxView | undefined>
-  secretarySandboxStats?: (name: string) => Promise<BrokerDockerStats | undefined>
-  secretarySandboxAction?: (action: 'start' | 'stop' | 'restart' | 'destroy', name: string) => Promise<void>
+
 }
 
 /**
@@ -1306,7 +1250,7 @@ function wirePortEvents(env: BridgeEnv, state: BridgeState): void {
     env.report(`feishu4dsh: card action received chat=${event.chatId} message=${event.messageId} tag=${event.action.tag}`)
     void handleCardAction(env, state, event).catch(error => {
       env.report(`feishu4dsh: card action failed: ${describeError(error)}`)
-      void safeSend(env, event.chatId, state.copy.sheError('card_action_failed', describeError(error))).catch(() => undefined)
+      void safeSend(env, event.chatId, state.copy.cardActionFailed(describeError(error))).catch(() => undefined)
     })
   })
   env.port.on('reject', (...args: unknown[]) => {
@@ -3065,70 +3009,7 @@ function dropScopeMenus(state: BridgeState, scopeKey: string): void {
   }
 }
 
-/** Human label for one sandbox target. */
-function sandboxTargetText(wizard: SandboxWizardState): string {
-  if (wizard.targetKind === 'current-user') return `当前用户（${wizard.preflight?.currentUser ?? 'unknown'}）`
-  return `专用 rootless 账户（${wizard.preflight?.dedicatedUser ?? 'feishu4dsh-sandbox'}）`
-}
-
-/** The option snapshot for the current sandbox wizard step. */
-function sandboxMenuOptions(wizard: SandboxWizardState, copy: Strings): MenuOption[] {
-  if (wizard.step === 'target') {
-    return [
-      { label: '🔒 专用 rootless 账户（推荐）' },
-      { label: '👤 当前用户（需 Docker 预检通过）' },
-    ]
-  }
-  if (wizard.step === 'role') {
-    return (['standalone', 'main', 'worker', 'observer', 'utility'] as const).map(role => ({
-      label: copy.sheSandboxRoleOption(role),
-    }))
-  }
-  if (wizard.step === 'agent') {
-    return SANDBOX_AGENT_PROFILES.map(profile => ({
-      label: profile.requiresImage ? `${profile.label}（需 --image）` : `${profile.label} · ${profile.version || 'custom'}`,
-    }))
-  }
-  if (wizard.step === 'tools') {
-    return SANDBOX_TOOL_BUNDLES.map(bundle => ({
-      label: copy.sheSandboxToolLabel(bundle.label, wizard.tools.includes(bundle.id)),
-    }))
-  }
-  return []
-}
-
-/** The current one-line spec summary used by both the card and direct-build receipt. */
-function sandboxSummaryOf(wizard: SandboxWizardState, copy: Strings): string {
-  const profile = sandboxAgentProfile(wizard.agentId)
-  return copy.sheSandboxWizardSummary(
-    wizard.name,
-    sandboxTargetText(wizard),
-    `${profile?.label ?? wizard.agentId} · role=${wizard.role}`,
-    wizard.tools.join(', '),
-    wizard.preflight === undefined ? 'unknown' : 'egress（独立网络；代理白名单后置）',
-  )
-}
-
-/** Labels handed to the pure sandbox card builder. */
-function sandboxWizardLabelsFor(state: BridgeState): SandboxWizardLabels {
-  const copy = state.copy
-  return {
-    title: step => copy.sheSandboxWizardTitle(step),
-    targetNote: copy.sheSandboxTargetNote,
-    roleNote: copy.sheSandboxRoleNote,
-    agentNote: copy.sheSandboxAgentNote,
-    toolsNote: copy.sheSandboxToolsNote,
-    confirmNote: copy.sheSandboxConfirmNote,
-    back: copy.sheSandboxBack,
-    next: copy.sheSandboxNext,
-    build: copy.sheSandboxBuild,
-    cancel: copy.sheSandboxCancel,
-    summary: wizard => sandboxSummaryOf(wizard, copy),
-    toolLabel: (label, selected) => copy.sheSandboxToolLabel(label, selected),
-  }
-}
-
-/** Re-render one paged/browse/sandbox card in place after a navigation click. */
+/** Re-render one paged/browse/model card in place after a navigation click. */
 async function refreshMenuCard(env: BridgeEnv, state: BridgeState, menu: MenuState): Promise<boolean> {
   if (menu.messageId === undefined) return false
   // Model menus re-sync their options from the LIVE catalog so addcur/learn
@@ -3143,9 +3024,7 @@ async function refreshMenuCard(env: BridgeEnv, state: BridgeState, menu: MenuSta
     ? browseCard(menu.chatId, menu, browseLabelsFor(state))
     : menu.kind === 'model'
       ? modelMenuCard(menu.chatId, menu, modelMenuLabels(state))
-      : menu.kind === 'sandbox'
-        ? sandboxWizardCard(menu.chatId, menu, sandboxWizardLabelsFor(state))
-        : undefined
+      : undefined
   if (cardObject === undefined) return false
   try {
     await env.port.updateCard(menu.messageId, cardObject)
@@ -3179,266 +3058,6 @@ function browseLabelsFor(state: BridgeState): BrowseLabels {
     next: state.copy.menuNextLabel,
     pageOf: state.copy.menuPageOf,
   }
-}
-
-/** Build one spec from server-side wizard state (no user-controlled shell text). */
-function sandboxSpecFromWizard(wizard: SandboxWizardState, preflight: SandboxHostReport): SandboxSpec {
-  return buildSandboxSpec({
-    name: wizard.name,
-    targetKind: wizard.targetKind,
-    currentUser: preflight.currentUser,
-    dedicatedUser: preflight.dedicatedUser,
-    agentId: wizard.agentId,
-    customImage: wizard.customImage,
-    tools: wizard.tools,
-    role: wizard.role,
-  })
-}
-
-/** Generate a package and deliver it with the existing file-approval boundary. */
-async function buildAndSendSandboxPackage(
-  env: BridgeEnv,
-  state: BridgeState,
-  binding: ChatBinding,
-  preflight: SandboxHostReport,
-  spec: SandboxSpec,
-  replyTo?: string,
-): Promise<void> {
-  const build = env.hooks.secretarySandboxPackage
-  if (build === undefined) {
-    await safeSend(env, binding.chatId, state.copy.sheSandboxUnavailable, replyTo)
-    return
-  }
-  const result = await build({ spec, preflight })
-  env.report(`feishu4dsh: sandbox package generated name=${result.sandboxName} anchored=${replyTo !== undefined}`)
-  await safeSend(env, binding.chatId, state.copy.sheSandboxPackageDone(result.sandboxName, result.archivePath), replyTo)
-  const delivered = await sendShePackageFile(env, state, binding, replyTo, result.archiveBytes, result.archiveName)
-  if (delivered) {
-    await safeSend(env, binding.chatId,
-      state.copy.sheSandboxUsageGuide(result.sandboxName, spec.target.requiresRootBootstrap, spec.target.user),
-      replyTo)
-  }
-}
-
-/**
- * Send the NEXT sandbox wizard card as a new message instead of patching the
- * current one. Feishu card patches were observed to return success while some
- * clients did not visibly refresh; a new card gives the user an unambiguous
- * next step. The old menu is retired, so its stale buttons resolve to
- * "menu gone" rather than acting on the new state.
- */
-async function sendSandboxStepCard(
-  env: BridgeEnv,
-  state: BridgeState,
-  binding: ChatBinding,
-  wizard: SandboxWizardState,
-  event: CardActionEvent,
-): Promise<boolean> {
-  const menu: MenuState = {
-    id: createMenuId(),
-    kind: 'sandbox',
-    chatId: binding.chatId,
-    scopeKey: binding.scopeKey,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + MENU_TTL_MS,
-    page: 0,
-    options: sandboxMenuOptions(wizard, state.copy),
-    sandbox: wizard,
-  }
-  const cardObject = sandboxWizardCard(binding.chatId, menu, sandboxWizardLabelsFor(state))
-  let sent = await env.port.send(binding.chatId, { card: cardObject },
-    { replyTo: event.messageId, replyInThread: true }).catch(error => {
-      env.report(`feishu4dsh: sandbox next-card threaded send failed: ${describeError(error)}`)
-      return undefined
-    })
-  if (sent === undefined) {
-    // Do not leave the user without a next card if replying inside the thread
-    // is rejected by the client/API; fall back to an ordinary chat message.
-    sent = await env.port.send(binding.chatId, { card: cardObject }).catch(error => {
-      env.report(`feishu4dsh: sandbox next-card fallback send failed: ${describeError(error)}`)
-      return undefined
-    })
-  }
-  if (sent === undefined) {
-    await safeSend(env, event.chatId, state.copy.sheSandboxCardUpdateFailed)
-    return false
-  }
-  menu.messageId = sent.messageId
-  registerMenu(env, state, menu)
-  env.report(`feishu4dsh: sandbox wizard advanced step=${wizard.step} menu=${menu.id}`)
-  return true
-}
-
-/** One sandbox-wizard click: target → agent → tool toggles → confirm/build. */
-async function handleSandboxMenuAction(
-  env: BridgeEnv,
-  state: BridgeState,
-  menu: MenuState,
-  binding: ChatBinding,
-  event: CardActionEvent,
-  payload: MenuActionPayload,
-): Promise<void> {
-  const wizard = menu.sandbox
-  if (wizard === undefined) {
-    await safeSend(env, event.chatId, state.copy.menuGone)
-    return
-  }
-  env.report(`feishu4dsh: sandbox wizard action step=${wizard.step} act=${payload.act} idx=${payload.idx ?? '-'} menu=${menu.id}`)
-  if (payload.act === 'cancel') {
-    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('target'), state.copy.sheSandboxCancel)
-    return
-  }
-  if (payload.act === 'up') {
-    if (wizard.step === 'role') wizard.step = 'target'
-    else if (wizard.step === 'agent') wizard.step = 'role'
-    else if (wizard.step === 'tools') wizard.step = 'agent'
-    else if (wizard.step === 'confirm') wizard.step = 'tools'
-    await sendSandboxStepCard(env, state, binding, wizard, event)
-    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle(wizard.step), state.copy.sheSandboxNext)
-    return
-  }
-  if (payload.act === 'ok') {
-    if (wizard.step === 'tools') {
-      wizard.step = 'confirm'
-      await sendSandboxStepCard(env, state, binding, wizard, event)
-      await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('confirm'), state.copy.sheSandboxNext)
-      return
-    }
-    if (wizard.step === 'confirm') {
-      const preflight = wizard.preflight
-      if (preflight === undefined) {
-        await safeSend(env, event.chatId, state.copy.sheSandboxUnavailable)
-        return
-      }
-      await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('confirm'), state.copy.sheSandboxPackageDone(wizard.name, '…'))
-      try {
-        const spec = sandboxSpecFromWizard(wizard, preflight)
-        await buildAndSendSandboxPackage(env, state, binding, preflight, spec, event.messageId)
-      } catch (error) {
-        await safeSend(env, event.chatId, state.copy.sheError('sandbox_build_failed', describeError(error)))
-      }
-      return
-    }
-    return
-  }
-  if (payload.act !== 'sel' || payload.idx === undefined) return
-  if (wizard.step === 'target') {
-    if (payload.idx === 1) {
-      if (wizard.preflight?.currentDockerReady !== true) {
-        await safeSend(env, event.chatId, state.copy.sheSandboxTargetWarning)
-      }
-      wizard.targetKind = 'current-user'
-    } else {
-      wizard.targetKind = 'dedicated-user'
-    }
-    wizard.step = 'role'
-    await sendSandboxStepCard(env, state, binding, wizard, event)
-    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('role'), state.copy.sheSandboxNext)
-    return
-  }
-  if (wizard.step === 'role') {
-    const roles: readonly SandboxRole[] = ['standalone', 'main', 'worker', 'observer', 'utility']
-    const role = roles[payload.idx]
-    if (role === undefined) return
-    wizard.role = role
-    wizard.step = 'agent'
-    await sendSandboxStepCard(env, state, binding, wizard, event)
-    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('agent'), state.copy.sheSandboxNext)
-    return
-  }
-  if (wizard.step === 'agent') {
-    const profile = SANDBOX_AGENT_PROFILES[payload.idx]
-    if (profile === undefined) return
-    if (profile.requiresImage) {
-      await safeSend(env, event.chatId, state.copy.sheSandboxImageRequired(profile.label))
-      return
-    }
-    wizard.agentId = profile.id as SandboxAgentId
-    wizard.step = 'tools'
-    await sendSandboxStepCard(env, state, binding, wizard, event)
-    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('tools'), state.copy.sheSandboxNext)
-    return
-  }
-  if (wizard.step === 'tools') {
-    const bundle = SANDBOX_TOOL_BUNDLES[payload.idx]
-    if (bundle === undefined) return
-    const at = wizard.tools.indexOf(bundle.id)
-    if (at >= 0) wizard.tools.splice(at, 1)
-    else wizard.tools.push(bundle.id)
-    await sendSandboxStepCard(env, state, binding, wizard, event)
-    await settleMenu(env, state, menu, state.copy.sheSandboxWizardTitle('tools'), state.copy.sheSandboxNext)
-  }
-}
-
-/** Format the read-only host preflight for text commands. */
-function formatSandboxPreflight(report: SandboxHostReport, copy: Strings): string {
-  const icon = (status: string): string => status === 'ok' ? '✓' : status === 'missing' ? '✗' : status === 'warn' ? '!' : '?'
-  const lines = [copy.sheSandboxStatusTitle]
-  for (const check of report.checks) lines.push(copy.sheNeedItem(icon(check.status), check.label, check.detail))
-  lines.push(report.currentDockerReady ? copy.sheSandboxReady : copy.sheSandboxNotReady)
-  return lines.join('\n')
-}
-
-/** Format a broker-managed sandbox for `/she sandbox info`. */
-function formatSandboxInfo(record: BrokerSandboxView, copy: Strings): string {
-  return [
-    copy.sheSandboxInfoLine('name', record.name),
-    copy.sheSandboxInfoLine('role', record.role),
-    copy.sheSandboxInfoLine('state', record.status.state),
-    copy.sheSandboxInfoLine('container', record.containerName),
-    copy.sheSandboxInfoLine('agent', `${record.spec.agent.label} (${record.spec.agent.id})`),
-    copy.sheSandboxInfoLine('target', `${record.spec.target.kind} / ${record.spec.target.user}`),
-    copy.sheSandboxInfoLine('inbox', record.inbox),
-    copy.sheSandboxInfoLine('outbox', record.outbox),
-    ...(record.status.detail === undefined ? [] : [copy.sheSandboxInfoLine('detail', record.status.detail)]),
-  ].join('\n')
-}
-
-/** Format the broker list without leaking full host paths. */
-function formatSandboxList(records: readonly BrokerSandboxView[], copy: Strings): string {
-  if (records.length === 0) return copy.sheSandboxListTitle + '\n' + copy.sheListEmpty
-  return [copy.sheSandboxListTitle, ...records.map(record => copy.sheSandboxListEntry(record.name, record.role, record.status.state))].join('\n')
-}
-
-/** Format `/info`: location, autostart state and safe restart guidance. */
-function formatServiceReport(report: SecretaryServiceReport, copy: Strings): string {
-  const linger: 'yes' | 'no' | 'unknown' = report.linger === true ? 'yes' : report.linger === false ? 'no' : 'unknown'
-  const unitNames = report.units.map(unit => unit.name)
-  return [
-    copy.infoServiceTitle,
-    copy.infoServiceAccount(report.account, report.pluginRoot),
-    copy.infoServiceInstaller(report.installerPath, report.installerPresent),
-    copy.infoServiceSystemd(report.account, report.systemdUserBusReachable, linger),
-    ...report.units.map(unit => copy.infoServiceUnit(
-      unit.role === 'channel' ? 'channel' : 'broker',
-      unit.name,
-      unit.unitFileState ?? 'unknown',
-      unit.activeState ?? 'unknown',
-      unit.fragmentPath,
-    )),
-    copy.infoServiceBrokerSocket(report.brokerSocket, report.brokerSocketPresent),
-    '',
-    copy.infoServiceInstallerHint(report.pluginRoot),
-    '',
-    copy.infoServiceRestartHint(unitNames),
-    '',
-    copy.infoServiceBusctlHint(unitNames),
-    '',
-    copy.infoServiceNote,
-  ].join('\n')
-}
-
-/** Combined `/she sandbox status` + legacy `/she need` report. */
-function formatSandboxStatus(host: SandboxHostReport, attach: SheNeedReport | undefined, copy: Strings, legacyHint = false): string {
-  const lines = [formatSandboxPreflight(host, copy)]
-  if (legacyHint) lines.push('', copy.sheNeedAliasHint)
-  if (attach !== undefined) {
-    lines.push('', copy.sheNeedTitle)
-    const icon = (status: string): string => status === 'ok' ? '✓' : status === 'missing' ? '✗' : status === 'blocked' ? '!' : '?'
-    for (const item of attach.items) lines.push(copy.sheNeedItem(icon(item.status), item.label, item.detail))
-    lines.push(attach.ready ? copy.sheNeedReady : copy.sheNeedNext)
-  }
-  return lines.join('\n')
 }
 
 /**
@@ -3475,10 +3094,6 @@ async function handleMenuAction(env: BridgeEnv, state: BridgeState, event: CardA
 
   if (menu.kind === 'browse') {
     await handleBrowseAction(env, state, menu, binding, payload)
-    return
-  }
-  if (menu.kind === 'sandbox') {
-    await handleSandboxMenuAction(env, state, menu, binding, event, payload)
     return
   }
 
@@ -3632,78 +3247,6 @@ async function sendSessionMenu(env: BridgeEnv, state: BridgeState, binding: Chat
   if (sent !== undefined) menu.messageId = sent.messageId
 }
 
-/** `/she sandbox`: open the interactive build-sandbox wizard card. */
-async function sendSandboxWizard(
-  env: BridgeEnv,
-  state: BridgeState,
-  binding: ChatBinding,
-  preflight: SandboxHostReport,
-  replyTo?: string,
-): Promise<void> {
-  let nextName: string | undefined
-  try {
-    nextName = await env.hooks.secretarySandboxNextName?.()
-  } catch (error) {
-    env.report(`feishu4dsh: sandbox next-name hook failed: ${describeError(error)}`)
-  }
-  const wizard: SandboxWizardState = {
-    step: 'target',
-    name: nextName ?? nextSandboxName([]),
-    targetKind: 'dedicated-user',
-    role: 'standalone',
-    agentId: 'opencode',
-    tools: ['core'],
-    preflight,
-  }
-  const menu: MenuState = {
-    id: createMenuId(),
-    kind: 'sandbox',
-    chatId: binding.chatId,
-    scopeKey: binding.scopeKey,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + MENU_TTL_MS,
-    page: 0,
-    options: sandboxMenuOptions(wizard, state.copy),
-    sandbox: wizard,
-  }
-  registerMenu(env, state, menu)
-  env.report(`feishu4dsh: sandbox wizard opened currentDockerReady=${preflight.currentDockerReady} rootless=${preflight.rootlessDocker} target=${wizard.targetKind}`)
-  const sent = await env.port.send(binding.chatId, { card: sandboxWizardCard(binding.chatId, menu, sandboxWizardLabelsFor(state)) },
-    replyTo === undefined ? undefined : { replyTo, replyInThread: true }).catch(() => undefined)
-  if (sent !== undefined) menu.messageId = sent.messageId
-  else env.report('feishu4dsh: sandbox wizard card send returned no message id')
-}
-
-/** Build a package from deterministic `/she sandbox build` flags. */
-async function directSandboxBuild(
-  env: BridgeEnv,
-  state: BridgeState,
-  binding: ChatBinding,
-  preflight: SandboxHostReport,
-  options: SheSandboxBuildOptions,
-  replyTo?: string,
-): Promise<void> {
-  const hookedName = await env.hooks.secretarySandboxNextName?.(options.suffix)
-  const name = options.name
-    ?? hookedName
-    ?? (options.suffix === undefined ? makeSandboxName() : nextSandboxName([], options.suffix))
-  const spec = buildSandboxSpec({
-    name,
-    targetKind: options.targetKind,
-    currentUser: preflight.currentUser,
-    dedicatedUser: preflight.dedicatedUser,
-    agentId: options.agentId ?? 'opencode',
-    customImage: options.image,
-    tools: options.tools,
-    role: options.role ?? 'standalone',
-    allowedCallers: options.allowedCallers,
-    allowedTargets: options.allowedTargets,
-    networkMode: options.networkMode,
-    hostPort: options.hostPort,
-  })
-  await buildAndSendSandboxPackage(env, state, binding, preflight, spec, replyTo)
-}
-
 /** Browse-card click routing: enter / up / page / confirm. */
 async function handleBrowseAction(env: BridgeEnv, state: BridgeState, menu: MenuState, binding: ChatBinding, payload: MenuActionPayload): Promise<void> {
   const root = menu.root ?? ''
@@ -3852,30 +3395,6 @@ async function handleCardAction(env: BridgeEnv, state: BridgeState, event: CardA
   // an empty string is not nullish, so `??` alone would skip the fallback.
   const action = event.action
   const raw = typeof action.option === 'string' && action.option !== '' ? action.option : action.value
-  const sheInteraction = parseSheCardInteraction(raw, formValueOf(event) ?? {})
-  if (sheInteraction !== undefined) {
-    const runtime = env.hooks.sheRuntime
-    if (runtime === undefined) {
-      await safeSend(env, event.chatId, state.copy.sheError('control_plane_unavailable', 'SHE control-plane integration is not enabled'))
-      return
-    }
-    if (!mayApprove(env.authorization, event.operator.openId, true)) return
-    const binding = [...state.chats.values()].find(candidate => candidate.chatId === event.chatId)
-    try {
-      await runtime.handleFeishuInteraction({
-        senderId: event.operator.openId,
-        ...(event.operator.name === undefined ? {} : { senderName: event.operator.name }),
-        chatId: event.chatId,
-        chatType: binding?.chatType ?? 'group',
-        messageId: event.messageId,
-        interactionId: sheInteraction.interactionId,
-        values: sheInteraction.values,
-      })
-    } catch (error) {
-      await safeSend(env, event.chatId, state.copy.sheError('interaction_failed', describeError(error)))
-    }
-    return
-  }
   const payload = decodeActionValue(raw)
   if (payload === null) {
     env.report(`feishu4dsh: card action ignored (unrecognized payload tag=${action.tag})`)
@@ -4365,7 +3884,7 @@ function currentSessionId(state: BridgeState, binding: ChatBinding): string {
   return sessionIdOf(binding.scopeKey, binding.workspacePath, state.ledger.generationOf(agentKey))
 }
 
-/** `/info`: channel-level read-only service/location/autostart guidance. */
+/** `/info`: read-only channel and dsh service location/restart guidance. */
 async function cmdInfo(
   env: BridgeEnv,
   state: BridgeState,
@@ -4376,25 +3895,15 @@ async function cmdInfo(
 ): Promise<void> {
   const copy = state.copy
   const arg = args.trim()
-  if (arg === '--help' || arg === '-h' || arg === 'help') {
-    await safeSend(env, binding.chatId, copy.infoUsage, replyTo)
-    return
-  }
-  if (arg !== '') {
+  if (arg === '--help' || arg === '-h' || arg === 'help' || arg !== '') {
     await safeSend(env, binding.chatId, copy.infoUsage, replyTo)
     return
   }
   if (!mayApprove(env.authorization, senderId, true)) {
-    await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
+    await safeSend(env, binding.chatId, copy.cdNoPermission, replyTo)
     return
   }
-  const reportService = env.hooks.secretaryServiceReport
-  if (reportService === undefined) {
-    await safeSend(env, binding.chatId, copy.infoServiceUnavailable, replyTo)
-    return
-  }
-  const report = await reportService()
-  await safeSend(env, binding.chatId, formatServiceReport(report, copy), replyTo)
+  await safeSend(env, binding.chatId, copy.infoChannelBody(pluginVersion, env.config.connectionMode, binding.workspacePath), replyTo)
 }
 
 /** Built-in channel commands; unrecognised lines fall through to the host. */
@@ -4486,28 +3995,6 @@ async function runCommand(
     }
     case '/info': {
       await cmdInfo(env, state, binding, line.slice('/info'.length).trim(), senderId, replyTo)
-      return
-    }
-    case '/she': {
-      const runtime = env.hooks.sheRuntime
-      if (runtime !== undefined) {
-        try {
-          await runtime.handleFeishuText({
-            senderId,
-            ...(message?.senderName === undefined ? {} : { senderName: message.senderName }),
-            chatId: binding.chatId,
-            chatType: binding.chatType,
-            ...(message?.threadId === undefined ? {} : { threadId: message.threadId }),
-            ...(message?.messageId === undefined ? {} : { messageId: message.messageId }),
-            workspaceKey: binding.scopeKey,
-            text: line,
-          })
-        } catch (error) {
-          await safeSend(env, chatId, state.copy.sheError('control_plane_unavailable', describeError(error)), replyTo)
-        }
-        return
-      }
-      await cmdShe(env, state, binding, line.slice('/she'.length).trim(), senderId, replyTo, message)
       return
     }
     default: {
@@ -5680,502 +5167,6 @@ function tryHostCompactListed(env: BridgeEnv, state: BridgeState, binding: ChatB
 
 
 /* ------------------------------------------------------------------ */
-/* SHE secretary (/she, R56)                                           */
-/* ------------------------------------------------------------------ */
-
-/** Download this inbound message's resources into memory for the secretary. */
-async function collectSecretaryAttachments(
-  env: BridgeEnv,
-  state: BridgeState,
-  message: NormalizedMessage | undefined,
-): Promise<SecretaryAttachmentInput[]> {
-  if (message === undefined || message.resources.length === 0) return []
-  const inputs: SecretaryAttachmentInput[] = []
-  let total = 0
-  for (const resource of message.resources) {
-    const type = resource.type === 'image' ? 'image' : 'file'
-    let data: Buffer
-    try {
-      data = await env.port.downloadResource(resource.fileKey, type, message.messageId)
-    } catch (error) {
-      env.report(`feishu4dsh: secretary attachment fetch failed (${resource.type}): ${describeError(error)}`)
-      throw new SecretaryServiceError('attachment_failed', '无法下载附件')
-    }
-    if (data.byteLength > env.config.maxReceiveFileBytes) {
-      throw new SecretaryServiceError('attachment_too_large', `附件超过 ${formatBytes(env.config.maxReceiveFileBytes)} 限制`)
-    }
-    total += data.byteLength
-    if (total > env.config.maxMessageReceiveBytes) {
-      throw new SecretaryServiceError('attachment_too_large', `附件总大小超过 ${formatBytes(env.config.maxMessageReceiveBytes)} 限制`)
-    }
-    inputs.push({
-      fileName: resource.fileName ?? `${resource.type}-${shortHash(resource.fileKey, 6)}`,
-      bytes: data,
-    })
-  }
-  return inputs
-}
-
-/** Send a validated SHE report. Group chats retain the mandatory approval gate. */
-async function sendSecretaryReportFile(
-  env: BridgeEnv,
-  state: BridgeState,
-  binding: ChatBinding,
-  replyTo: string | undefined,
-  bytes: Buffer,
-  fileName: string,
-): Promise<void> {
-  const options = anchorOptions(replyTo)
-  env.report(`feishu4dsh: SHE package delivery chat=${binding.chatId} kind=${binding.chatType} anchored=${replyTo !== undefined}`)
-  if (binding.chatType === 'p2p') {
-    await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
-    return
-  }
-  const token = randomUUID()
-  const cardObject = approvalCard({
-    title: state.copy.sendFileApprovalTitle,
-    body: state.copy.sendFileApprovalDetail(fileName, 'SHE', formatBytes(bytes.byteLength)),
-    approveLabel: state.copy.approveButton,
-    denyLabel: state.copy.denyButton,
-    payload: { kind: 'file-send' as const, token, decision: 'deny' as const, chatId: binding.chatId },
-  })
-  const sent = await env.port.send(binding.chatId, { card: cardObject }, options)
-  // The existing file-send approval handler resolves the card's owning scope
-  // through sessionScopes; a SHE report has no dsh session of its own, so a
-  // short-lived synthetic mapping lets the same ACL/timer path own the click.
-  const syntheticSession = `she-report-${token}`
-  const hadMapping = state.sessionScopes.has(syntheticSession)
-  if (!hadMapping) state.sessionScopes.set(syntheticSession, binding.scopeKey)
-  try {
-    const decision = await waitForCardDecision(env, state, {
-      token,
-      kind: 'file-send',
-      chatId: binding.chatId,
-      sessionId: syntheticSession,
-      messageId: sent.messageId,
-    })
-    if (decision !== 'approve') {
-      await safeSend(env, binding.chatId, state.copy.sheError('report_denied', 'group approval denied'), replyTo)
-      return
-    }
-    await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
-  } finally {
-    if (!hadMapping) state.sessionScopes.delete(syntheticSession)
-  }
-}
-
-/** Send a generated she-sandbox package with the same outbound-file approval boundary as SHE reports. */
-async function sendShePackageFile(
-  env: BridgeEnv,
-  state: BridgeState,
-  binding: ChatBinding,
-  replyTo: string | undefined,
-  bytes: Buffer,
-  fileName: string,
-): Promise<boolean> {
-  const options = anchorOptions(replyTo)
-  env.report(`feishu4dsh: SHE package delivery chat=${binding.chatId} kind=${binding.chatType} anchored=${replyTo !== undefined}`)
-  if (binding.chatType === 'p2p') {
-    await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
-    return true
-  }
-  const token = randomUUID()
-  const cardObject = approvalCard({
-    title: state.copy.sendFileApprovalTitle,
-    body: state.copy.sendFileApprovalDetail(fileName, 'SHE sandbox package', formatBytes(bytes.byteLength)),
-    approveLabel: state.copy.approveButton,
-    denyLabel: state.copy.denyButton,
-    payload: { kind: 'file-send' as const, token, decision: 'deny' as const, chatId: binding.chatId },
-  })
-  const sent = await env.port.send(binding.chatId, { card: cardObject }, options)
-  const syntheticSession = `she-need-${token}`
-  const hadMapping = state.sessionScopes.has(syntheticSession)
-  if (!hadMapping) state.sessionScopes.set(syntheticSession, binding.scopeKey)
-  try {
-    const decision = await waitForCardDecision(env, state, {
-      token,
-      kind: 'file-send',
-      chatId: binding.chatId,
-      sessionId: syntheticSession,
-      messageId: sent.messageId,
-    })
-    if (decision !== 'approve') {
-      await safeSend(env, binding.chatId, state.copy.sheError('package_denied', 'group approval denied'), replyTo)
-      return false
-    }
-    await env.port.send(binding.chatId, { file: { source: bytes, fileName } }, options)
-    return true
-  } finally {
-    if (!hadMapping) state.sessionScopes.delete(syntheticSession)
-  }
-}
-
-function secretaryFailure(copy: Strings, error: unknown): string {
-  if (error instanceof SecretaryServiceError) return copy.sheError(error.code, error.message)
-  return copy.sheError('internal', describeError(error))
-}
-
-/** `/she`: deterministic command adapter over SecretaryService. */
-async function cmdShe(
-  env: BridgeEnv,
-  state: BridgeState,
-  binding: ChatBinding,
-  args: string,
-  senderId: string,
-  replyTo?: string,
-  message?: NormalizedMessage,
-): Promise<void> {
-  const copy = state.copy
-  const command = parseSheCommand(args)
-  if (command.kind === 'help') {
-    await safeSend(env, binding.chatId, command.topic === undefined ? copy.sheUsage : copy.sheHelpTopic(command.topic), replyTo)
-    return
-  }
-  if (command.kind === 'invalid') {
-    await safeSend(env, binding.chatId, copy.sheInvalid(command.reason), replyTo)
-    return
-  }
-  try {
-    if (command.kind === 'sandbox') {
-      if (!mayApprove(env.authorization, senderId, true)) {
-        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
-        return
-      }
-      const preflightHook = env.hooks.secretarySandboxPreflight
-      if (command.action === 'status') {
-        if (preflightHook === undefined) {
-          await safeSend(env, binding.chatId, copy.sheSandboxUnavailable, replyTo)
-          return
-        }
-        const report = await preflightHook()
-        const attach = env.hooks.secretaryNeed === undefined ? undefined : await env.hooks.secretaryNeed()
-        await safeSend(env, binding.chatId, formatSandboxStatus(report, attach, copy), replyTo)
-        return
-      }
-      if (command.action === 'list') {
-        if (env.hooks.secretarySandboxList === undefined) {
-          await safeSend(env, binding.chatId, copy.sheSandboxBrokerUnavailable, replyTo)
-          return
-        }
-        const records = await env.hooks.secretarySandboxList()
-        await safeSend(env, binding.chatId, formatSandboxList(records, copy), replyTo)
-        return
-      }
-      if (command.action === 'info' || command.action === 'stats') {
-        const name = command.reference ?? ''
-        if (command.action === 'info') {
-          if (env.hooks.secretarySandboxInfo === undefined) {
-            await safeSend(env, binding.chatId, copy.sheSandboxBrokerUnavailable, replyTo)
-            return
-          }
-          const record = await env.hooks.secretarySandboxInfo(name)
-          await safeSend(env, binding.chatId, record === undefined ? copy.sheSandboxNotFound(name) : formatSandboxInfo(record, copy), replyTo)
-          return
-        }
-        if (env.hooks.secretarySandboxStats === undefined) {
-          await safeSend(env, binding.chatId, copy.sheSandboxBrokerUnavailable, replyTo)
-          return
-        }
-        const stats = await env.hooks.secretarySandboxStats(name)
-        if (stats === undefined) {
-          await safeSend(env, binding.chatId, copy.sheSandboxNotFound(name), replyTo)
-          return
-        }
-        const lines = [copy.sheSandboxStatsTitle]
-        if (stats.cpuPercent !== undefined) lines.push(copy.sheSandboxStatsLine('CPU', stats.cpuPercent))
-        if (stats.memoryUsage !== undefined) lines.push(copy.sheSandboxStatsLine('memory', stats.memoryUsage))
-        if (stats.pids !== undefined) lines.push(copy.sheSandboxStatsLine('pids', stats.pids))
-        if (stats.networkRx !== undefined) lines.push(copy.sheSandboxStatsLine('network', stats.networkRx))
-        if (stats.blockRead !== undefined) lines.push(copy.sheSandboxStatsLine('block', stats.blockRead))
-        lines.push(copy.sheSandboxStatsLine('sampledAt', stats.sampledAt))
-        await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
-        return
-      }
-      if (command.action === 'start' || command.action === 'stop' || command.action === 'restart' || command.action === 'destroy') {
-        const name = command.reference ?? ''
-        if (command.action === 'destroy' && command.confirm !== true) {
-          await safeSend(env, binding.chatId, copy.sheSandboxDestroyConfirm(name), replyTo)
-          return
-        }
-        if (env.hooks.secretarySandboxAction === undefined) {
-          await safeSend(env, binding.chatId, copy.sheSandboxBrokerUnavailable, replyTo)
-          return
-        }
-        await env.hooks.secretarySandboxAction(command.action, name)
-        await safeSend(env, binding.chatId, copy.sheSandboxActionDone(command.action, name), replyTo)
-        return
-      }
-      if (preflightHook === undefined) {
-        await safeSend(env, binding.chatId, copy.sheSandboxUnavailable, replyTo)
-        return
-      }
-      if (env.hooks.secretarySandboxPackage === undefined) {
-        await safeSend(env, binding.chatId, copy.sheSandboxUnavailable, replyTo)
-        return
-      }
-      const report = await preflightHook()
-      if (command.action === 'build' && command.options !== undefined) {
-        await directSandboxBuild(env, state, binding, report, command.options, replyTo)
-        return
-      }
-      await sendSandboxWizard(env, state, binding, report, replyTo)
-      return
-    }
-    if (command.kind === 'init') {
-      if (!mayApprove(env.authorization, senderId, true)) {
-        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
-        return
-      }
-      const init = env.hooks.secretaryInit
-      if (init === undefined) {
-        await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
-        return
-      }
-      const result = await init({
-        scopeKey: binding.scopeKey,
-        workspacePath: binding.workspacePath,
-      })
-      env.hooks.secretary = result.service
-      await safeSend(env, binding.chatId, copy.sheInitOk(result.shadowRepo, result.runtimeRoot, result.healthVersion), replyTo)
-      return
-    }
-    if (command.kind === 'init_update') {
-      if (!mayApprove(env.authorization, senderId, true)) {
-        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
-        return
-      }
-      const update = env.hooks.secretaryInitUpdate
-      if (update === undefined) {
-        await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
-        return
-      }
-      const result = await update(binding.scopeKey)
-      await safeSend(env, binding.chatId, copy.sheInitUpdateOk(result.shadowRepo, result.head), replyTo)
-      return
-    }
-    if (command.kind === 'init_reset') {
-      if (!mayApprove(env.authorization, senderId, true)) {
-        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
-        return
-      }
-      const reset = env.hooks.secretaryInitReset
-      if (reset === undefined) {
-        await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
-        return
-      }
-      const result = await reset(binding.scopeKey)
-      env.hooks.secretary = undefined
-      await safeSend(env, binding.chatId, copy.sheInitResetOk(result.shadowRepo), replyTo)
-      return
-    }
-    if (command.kind === 'need') {
-      if (!mayApprove(env.authorization, senderId, true)) {
-        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
-        return
-      }
-      const preflightHook = env.hooks.secretarySandboxPreflight
-      if (preflightHook === undefined) {
-        await safeSend(env, binding.chatId, copy.sheSandboxUnavailable, replyTo)
-        return
-      }
-      const host = await preflightHook()
-      if (command.action === 'package') {
-        if (env.hooks.secretarySandboxPackage === undefined) {
-          await safeSend(env, binding.chatId, copy.sheSandboxUnavailable, replyTo)
-          return
-        }
-        await safeSend(env, binding.chatId, copy.sheNeedPackageDeprecated, replyTo)
-        await directSandboxBuild(env, state, binding, host, {
-          agentId: 'opencode',
-          targetKind: 'dedicated-user',
-        }, replyTo)
-        return
-      }
-      const attach = env.hooks.secretaryNeed === undefined ? undefined : await env.hooks.secretaryNeed()
-      await safeSend(env, binding.chatId, formatSandboxStatus(host, attach, copy, true), replyTo)
-      return
-    }
-    if (command.kind === 'doctor') {
-      if (!mayApprove(env.authorization, senderId, true)) {
-        await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
-        return
-      }
-      const doctor = env.hooks.secretaryDoctor
-      if (doctor === undefined) {
-        await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
-        return
-      }
-      const report = await doctor(binding.scopeKey)
-      const healthDetail = report.health.ok
-        ? `v${report.health.version ?? '?'}`
-        : report.health.detail ?? 'unknown'
-      const lines = [
-        copy.sheDoctorTitle,
-        copy.sheDoctorSource(report.source, report.stateFile, report.statePresent ? 'present' : 'missing'),
-        copy.sheDoctorHealth(report.health.ok, healthDetail),
-      ]
-      if (report.runtimeRoot !== undefined && report.worktreeRoot !== undefined && report.reposRoot !== undefined) {
-        lines.push(copy.sheDoctorRuntime(report.runtimeRoot, report.worktreeRoot, report.reposRoot))
-      }
-      lines.push(copy.sheDoctorScope(report.currentScopeShadowRepo))
-      await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
-      return
-    }
-
-    const service = env.hooks.secretary
-    if (service === undefined) {
-      await safeSend(env, binding.chatId, copy.sheDisabled, replyTo)
-      return
-    }
-    if (!mayApprove(env.authorization, senderId, true)) {
-      await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
-      return
-    }
-    switch (command.kind) {
-      case 'submit': {
-        const attachments = await collectSecretaryAttachments(env, state, message)
-        const submitted = await service.submit({
-          scopeKey: binding.scopeKey,
-          workspacePath: env.hooks.secretaryWorkspaceFor?.(binding.scopeKey) ?? binding.workspacePath,
-          rawRequest: command.raw,
-          attachments,
-        })
-        await safeSend(env, binding.chatId, copy.sheSubmitted(`${submitted.topic.displayNo}.${submitted.task.seq}`, submitted.task.status), replyTo)
-        return
-      }
-      case 'continue': {
-        const attachments = await collectSecretaryAttachments(env, state, message)
-        const submitted = await service.continue({
-          scopeKey: binding.scopeKey,
-          topicRef: command.topic,
-          rawRequest: command.raw,
-          attachments,
-        })
-        await safeSend(env, binding.chatId, copy.sheContinued(`${submitted.topic.displayNo}.${submitted.task.seq}`, submitted.task.status), replyTo)
-        return
-      }
-      case 'return': {
-        const run = env.hooks.secretaryReturn
-        if (run === undefined) {
-          await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
-          return
-        }
-        const result = await run({ scopeKey: binding.scopeKey, taskRef: command.reference, projectRoot: binding.workspacePath })
-        await safeSend(env, binding.chatId, copy.sheReturned(result.display, result.returnDir, result.changedFiles, result.newFiles, result.outputs), replyTo)
-        return
-      }
-      case 'accept': {
-        const run = env.hooks.secretaryAccept
-        if (run === undefined) {
-          await safeSend(env, binding.chatId, copy.sheInitUnavailable, replyTo)
-          return
-        }
-        const result = await run({ scopeKey: binding.scopeKey, taskRef: command.reference, projectRoot: binding.workspacePath })
-        await safeSend(env, binding.chatId, copy.sheAccepted(result.display, result.stagedPaths.length, result.copiedNewFiles, result.appliedPatch), replyTo)
-        return
-      }
-      case 'list': {
-        const views = service.list(binding.scopeKey)
-        if (views.length === 0) {
-          await safeSend(env, binding.chatId, copy.sheListEmpty, replyTo)
-          return
-        }
-        const selected = command.topic === undefined
-          ? views
-          : views.filter(view => view.topic.displayNo === command.topic || view.topic.id === command.topic)
-        if (selected.length === 0) {
-          await safeSend(env, binding.chatId, copy.sheNotFound(command.topic ?? ''), replyTo)
-          return
-        }
-        const lines: string[] = []
-        for (const view of selected) {
-          if (command.topic === undefined) {
-            const running = view.tasks.filter(item => ['dispatching', 'submitted', 'running'].includes(item.task.status)).length
-            const queued = view.tasks.filter(item => item.task.status === 'queued').length
-            const done = view.tasks.filter(item => item.task.status === 'succeeded').length
-            lines.push(copy.sheTopicListLine(
-              view.topic.displayNo ?? '?', view.topic.status, view.topic.titleExcerpt,
-              copy.sheTaskSummary(String(view.tasks.length), String(running), String(queued), String(done)),
-            ))
-          } else {
-            for (const item of view.tasks) lines.push(copy.sheTaskListLine(item.display, item.task.status, item.task.rawExcerpt))
-            if (view.tasks.length === 0) lines.push(copy.sheListEmpty)
-          }
-        }
-        await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
-        return
-      }
-      case 'status': {
-        const result = await service.status(binding.scopeKey, command.reference)
-        if (result === undefined) {
-          await safeSend(env, binding.chatId, copy.sheNotFound(command.reference), replyTo)
-          return
-        }
-        const lines = [copy.sheStatusTitle]
-        if (result.task !== undefined) {
-          lines.push(copy.sheStatusTask(
-            `${result.topic.displayNo ?? '?'}.${result.task.seq}`,
-            result.task.status,
-            result.task.rawExcerpt,
-          ))
-          if (result.task.opencodeSessionId !== null) lines.push(copy.sheStatusSession(result.task.opencodeSessionId))
-          if (result.task.attachments.length > 0) lines.push(copy.sheStatusAttachments(String(result.task.attachments.length)))
-          if (result.task.error !== null) lines.push(result.task.error)
-        } else {
-          lines.push(copy.sheStatusTopic(result.topic.displayNo ?? '?', result.topic.status, result.topic.titleExcerpt))
-          if (result.topic.opencodeSessionId !== null) lines.push(copy.sheStatusSession(result.topic.opencodeSessionId))
-          const view = service.list(binding.scopeKey).find(item => item.topic.id === result.topic.id)
-          for (const item of view?.tasks ?? []) {
-            lines.push(copy.sheTaskListLine(item.display, item.task.status, item.task.rawExcerpt))
-          }
-        }
-        await safeSend(env, binding.chatId, lines.join('\n'), replyTo)
-        return
-      }
-      case 'report': {
-        const report = await service.report(binding.scopeKey, command.reference)
-        if (report === undefined || report.task === undefined) {
-          await safeSend(env, binding.chatId, copy.sheNotFound(command.reference), replyTo)
-          return
-        }
-        if (report.artifact === null) {
-          await safeSend(env, binding.chatId, copy.sheReportMissing(`${report.topic.displayNo}.${report.task.seq}`), replyTo)
-          return
-        }
-        const bytes = await service.readReport(report.artifact.path)
-        await safeSend(env, binding.chatId, copy.sheReportReady(`${report.topic.displayNo}.${report.task.seq}`, formatBytes(bytes.byteLength)), replyTo)
-        await sendSecretaryReportFile(env, state, binding, replyTo, bytes, basename(report.artifact.path))
-        return
-      }
-      case 'stop': {
-        const stopped = await service.stop(binding.scopeKey, command.reference)
-        const label = stopped.task === undefined
-          ? (stopped.topic.displayNo ?? command.reference)
-          : `${stopped.topic.displayNo ?? '?'}.${stopped.task.seq}`
-        await safeSend(env, binding.chatId, copy.sheStopped(label), replyTo)
-        return
-      }
-      case 'resume': {
-        const resumed = service.resume(binding.scopeKey, command.reference)
-        await safeSend(env, binding.chatId, copy.sheResumed(resumed.displayNo ?? command.reference), replyTo)
-        return
-      }
-      case 'rename': {
-        const renamed = service.rename(binding.scopeKey, command.oldRef, command.newLabel, command.force)
-        await safeSend(env, binding.chatId, copy.sheRenamed(command.oldRef, renamed.displayNo ?? command.newLabel), replyTo)
-        return
-      }
-      case 'remove': {
-        const removed = await service.remove(binding.scopeKey, command.reference, command.purge)
-        await safeSend(env, binding.chatId, copy.sheRemoved(removed.displayNo ?? command.reference, command.purge), replyTo)
-        return
-      }
-    }
-  } catch (error) {
-    await safeSend(env, binding.chatId, secretaryFailure(copy, error), replyTo)
-  }
-}
-
 async function cmdHelp(env: BridgeEnv, state: BridgeState, binding: ChatBinding, replyTo?: string): Promise<void> {
   const lines: string[] = [`**${state.copy.helpTitle}**`]
   lines.push(`**${state.copy.helpChannelHeader}**`)

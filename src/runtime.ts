@@ -81,9 +81,6 @@ import { resolveAuthorization, describeAuthorization } from './acl.js'
 import { createFeishuPort } from './adapter.js'
 import { installBridge, type BridgeHost, type BridgeHooks } from './bridge.js'
 import { resolveLocale, strings } from './strings.js'
-import { createSecretaryRuntime } from './secretary/runtime.js'
-import { resolveSheIntegrationConfig } from './integrations/she/config.js'
-import { FeishuSheAdapter, SheIntegrationRuntime, createFeishuSheRenderPort } from './integrations/she/index.js'
 
 /** Resolved configuration whose credentials are present. */
 export type ChannelConfig = ResolvedConfig
@@ -153,48 +150,18 @@ export function apply(ctx: Context, config: Config): void {
 
     const authorization = resolveAuthorization(resolved)
     internals.notify(describeAuthorization(authorization))
-    const secretaryRuntime = await createSecretaryRuntime(resolved, internals.notify)
-    const secretaryService = secretaryRuntime.current
 
     // R36: the streaming placeholder is user-facing copy — resolve it from the
     // shared strings table here and hand it to the transport, so the adapter
     // never hard-codes text (and never falls back to the SDK's English default).
     const streamInitialText = strings(resolveLocale(resolved.locale)).streamInitial
     const port = createFeishuPort(resolved, authorization, internals.notify, streamInitialText)
-    let sheRuntime: SheIntegrationRuntime | undefined
-    if (resolved.she.enabled) {
-      try {
-        sheRuntime = new SheIntegrationRuntime({
-          config: resolveSheIntegrationConfig({
-            enabled: true,
-            ...(resolved.she.socketPath === '' ? {} : { socketPath: resolved.she.socketPath }),
-            ...(resolved.she.tokenFile === '' ? {} : { tokenFile: resolved.she.tokenFile }),
-            timeoutMs: resolved.she.timeoutMs,
-          }),
-          adapter: new FeishuSheAdapter({
-            version: pluginVersion,
-            port: createFeishuSheRenderPort(port),
-            onTaskEvent: event => internals.notify(`feishu4dsh: SHE task ${event.type} ${event.taskId}`),
-          }),
-          onError: error => internals.notify(`feishu4dsh: SHE integration error: ${error instanceof Error ? error.message : String(error)}`),
-        })
-      } catch (error) {
-        internals.notify(`feishu4dsh: SHE integration config invalid: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    }
     const host: BridgeHost = {
       agents: ctx.agents,
       on: (name, listener) => (ctx.on as (name: string, listener: (...args: never[]) => unknown) => unknown)(name, listener),
       get: name => ctx.get(name),
     }
     const hooks: BridgeHooks = {
-      ...(sheRuntime === undefined ? {} : {
-        sheRuntime: {
-          get state() { return sheRuntime.state },
-          handleFeishuText: input => sheRuntime.handleFeishuText(input),
-          handleFeishuInteraction: input => sheRuntime.handleFeishuInteraction(input),
-        },
-      }),
       // Persist one chat's /cd selection so it survives restarts. The patch
       // deep-merges, so only the changed key is written.
       onWorkspaceChange: settingsScope === undefined
@@ -240,23 +207,6 @@ export function apply(ctx: Context, config: Config): void {
         : async ({ sessions, activeGen }) => {
             await settingsScope.update({ chatSessions: sessions, chatActiveGen: activeGen })
           },
-      ...(secretaryService === undefined ? {} : { secretary: secretaryService }),
-      secretaryInit: input => secretaryRuntime.init(input),
-      secretaryInitUpdate: scopeKey => secretaryRuntime.update({ scopeKey }),
-      secretaryInitReset: scopeKey => secretaryRuntime.reset({ scopeKey }),
-      secretaryDoctor: scopeKey => secretaryRuntime.doctor(scopeKey),
-      secretaryServiceReport: () => secretaryRuntime.serviceReport(),
-      secretaryWorkspaceFor: scopeKey => secretaryRuntime.workspaceFor(scopeKey),
-      secretaryReturn: input => secretaryRuntime.returnTask(input),
-      secretaryAccept: input => secretaryRuntime.acceptTask(input),
-      secretaryNeed: () => secretaryRuntime.needStatus(),
-      secretarySandboxPreflight: () => secretaryRuntime.sandboxPreflight(),
-      secretarySandboxPackage: input => secretaryRuntime.sandboxPackage(input),
-      secretarySandboxNextName: suffix => secretaryRuntime.sandboxNextName(suffix),
-      secretarySandboxList: () => secretaryRuntime.sandboxList(),
-      secretarySandboxInfo: name => secretaryRuntime.sandboxInfo(name),
-      secretarySandboxStats: name => secretaryRuntime.sandboxStats(name),
-      secretarySandboxAction: (action, name) => secretaryRuntime.sandboxAction(action, name),
     }
     const disposeBridge = installBridge(host, resolved, port, authorization, internals.notify, hooks)
 
@@ -268,28 +218,17 @@ export function apply(ctx: Context, config: Config): void {
           ? 'feishu4dsh: connected'
           : `feishu4dsh: connected as ${identity.name} (${identity.openId})`,
       )
-      if (sheRuntime !== undefined) {
-        const started = await sheRuntime.start()
-        if (started.ok) {
-          internals.notify(`feishu4dsh: SHE control-plane ready (${started.probe.welcome.serverVersion})`)
-        } else {
-          internals.notify(`feishu4dsh: SHE control-plane unavailable [${started.failure.code}]: ${started.failure.message}`)
-        }
-      }
     } catch (error) {
       ctx.logger('feishu4dsh').error(
         'transport connect failed: %s',
         error instanceof Error ? error.message : error,
       )
       void disposeBridge().catch(() => undefined)
-      await secretaryRuntime.dispose().catch(() => undefined)
       return
     }
 
     ctx.effect(() => async () => {
-      await sheRuntime?.stop().catch(() => undefined)
       await disposeBridge()
-      await secretaryRuntime.dispose().catch(() => undefined)
       await port.disconnect().catch(() => undefined)
     }, 'feishu:teardown')
   }
