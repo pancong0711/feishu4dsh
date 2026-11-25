@@ -1,6 +1,7 @@
 /**
  * Local Unix-socket HTTP server for the sandbox broker. It deliberately does
- * not listen on TCP: the broker is a host-local privileged service.
+ * not listen on TCP: the broker is a host-local, security-sensitive service
+ * with a narrow API, not a generic Docker proxy. The socket is chmod 0600.
  * @module feishu4dsh/secretary/broker-server
  */
 

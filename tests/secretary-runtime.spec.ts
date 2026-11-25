@@ -130,4 +130,35 @@ describe('SHE runtime bootstrap restore', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('reports service location/autostart without mutating systemd', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'she-service-'))
+    try {
+      const config = resolveConfig({ appId: 'cli_test', appSecret: 'secret', workspace: dir })
+      const calls: string[] = []
+      const runtime = new SecretaryRuntime(config, () => undefined, {
+        probeSystemdUserBus: async () => true,
+        inspectLinger: async () => true,
+        inspectServiceUnit: async unit => {
+          calls.push(unit)
+          return unit === 'dsh-feishu4dsh.service'
+            ? { fragmentPath: '/home/alice/.config/systemd/user/dsh-feishu4dsh.service', loadState: 'loaded', unitFileState: 'enabled', activeState: 'active' }
+            : { loadState: 'not-found', unitFileState: 'disabled', activeState: 'inactive' }
+        },
+      })
+      const report = await runtime.serviceReport()
+      expect(report).toMatchObject({
+        systemdUserBusReachable: true,
+        linger: true,
+        installerPresent: true,
+        units: [
+          { name: 'dsh-feishu4dsh.service', role: 'channel', unitFileState: 'enabled', activeState: 'active' },
+          { name: 'feishu4dsh-sandbox-broker.service', role: 'broker', loadState: 'not-found' },
+        ],
+      })
+      expect(calls).toEqual(['dsh-feishu4dsh.service', 'feishu4dsh-sandbox-broker.service'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

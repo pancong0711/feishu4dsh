@@ -4,7 +4,8 @@
  *
  * Security boundary:
  * - this module never invokes sudo and never starts/stops containers;
- * - generated scripts mount exactly one workspace leaf plus agent home/cache;
+ * - generated scripts mount leaf paths only: workspace, inbox, outbox,
+ *   agent home and cache (never a sandbox parent, host home or project root);
  * - Docker socket, host network, privileged mode and devices are forbidden;
  * - the host preflight is read-only (`docker info` only).
  *

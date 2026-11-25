@@ -49,6 +49,8 @@
 | 模块 | 职责 | 对应 Hermes 概念 |
 |---|---|---|
 | `src/adapter.ts` | 组装 `LarkChannel`、webhook 端点，暴露窄接口 `ChannelPort` | `gateway/platforms/feishu.py` 的传输职责 |
+| `src/channel/capabilities.ts` | 平台无关的 channel capability 声明、能力协商 helper 与文本降级；不 import Feishu SDK/dsh/SHE | 通用 platform capability 契约 |
+| `src/channel/index.ts` | 飞书通道能力的稳定 facade：capability、入站/出站类型、ACL、卡片、文件安全原语；不暴露 dsh/SHE 业务状态 | 通用 channel capability 层 |
 | `src/bridge.ts` | 对接层：消息↔会话↔Agent、回复渲染、审批、命令、媒体、工作区切换 | 移植指南中的「胶水代码层」 |
 | `src/sessions.ts` | 会话身份 **(scope × workspace × generation)** → 确定性 agentKey/sessionId；`/new` 代数递增 | Hermes 的会话隔离/话题隔离 |
 | `src/workspaces.ts` | 工作区目录构建、`/cd` 解析与准入校验（纯函数） | —（dsh 写限制特有） |
@@ -63,7 +65,7 @@
 | `src/card-menu.ts` | 交互菜单纯逻辑：菜单注册表（每 scope×kind 一张活卡/TTL）、分页、四类选择卡构建（R32） | Hermes 交互卡片 |
 | `src/host.ts` | dsh 宿主服务的窄契约（唯一适配面） | —（dsh 特有） |
 | `src/runtime.ts` | Cordis `apply`：bootstrap、settings、端口装配、拆卸 | —（dsh 特有） |
-| `src/secretary/` | 可选 SHE 子模块：确定性 `/she` 命令、`/she init update/reset` 生命周期、0600 bootstrap 状态、Topic/Task 状态机、SQLite、串行队列/watcher、OpenCode adapter、worktree、报告校验、`return/accept` 结果回收、`/she need` 执行面检测、`/she sandbox` 固定路径/agent catalog/rootless 预检/无密钥安装包、终端 onboarding kit、Unix-socket sandbox broker（registry/lifecycle/mailbox）；不依赖飞书 SDK/dsh 类型 | 秘书转发层 + sandbox 供给入口 |
+| `src/secretary/` | **规划迁出**：可选 SHE 子模块：确定性 `/she` 命令、`/she init update/reset` 生命周期、0600 bootstrap 状态、Topic/Task 状态机、SQLite、串行队列/watcher、OpenCode adapter、worktree、报告校验、`return/accept` 结果回收、`/she need` 执行面检测、`/she sandbox` 固定路径/agent catalog/rootless 预检/无密钥安装包、终端 onboarding kit、Unix-socket sandbox broker（registry/lifecycle/mailbox）；不依赖飞书 SDK/dsh 类型 | 秘书转发层 + sandbox 供给入口 |
 
 ## 4. 能力映射：Hermes 飞书适配器 → 本插件
 

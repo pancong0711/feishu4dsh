@@ -41,6 +41,61 @@ import {
 
 const execFileAsync = promisify(execFile)
 
+function systemdProperties(stdout: string): Map<string, string> {
+  const values = new Map<string, string>()
+  for (const line of stdout.split(/\r?\n/)) {
+    const eq = line.indexOf('=')
+    if (eq <= 0) continue
+    values.set(line.slice(0, eq), line.slice(eq + 1).trim())
+  }
+  return values
+}
+
+async function inspectUserServiceUnit(unit: string): Promise<SecretaryServiceUnitState> {
+  try {
+    const { stdout } = await execFileAsync('systemctl', [
+      '--user', 'show',
+      '-p', 'FragmentPath',
+      '-p', 'LoadState',
+      '-p', 'UnitFileState',
+      '-p', 'ActiveState',
+      unit,
+    ], { timeout: 4_000, encoding: 'utf8' })
+    const values = systemdProperties(String(stdout))
+    const pick = (key: string): string | undefined => {
+      const value = values.get(key)
+      return value === undefined || value === '' ? undefined : value
+    }
+    return {
+      ...(pick('FragmentPath') === undefined ? {} : { fragmentPath: pick('FragmentPath') }),
+      ...(pick('LoadState') === undefined ? {} : { loadState: pick('LoadState') }),
+      ...(pick('UnitFileState') === undefined ? {} : { unitFileState: pick('UnitFileState') }),
+      ...(pick('ActiveState') === undefined ? {} : { activeState: pick('ActiveState') }),
+    }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+async function probeSystemdUserBus(): Promise<boolean> {
+  try {
+    await execFileAsync('systemctl', ['--user', 'show-environment'], { timeout: 4_000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function inspectUserLinger(user: string): Promise<boolean | undefined> {
+  try {
+    const { stdout } = await execFileAsync('loginctl', ['show-user', user, '--property=Linger', '--value'], { timeout: 4_000, encoding: 'utf8' })
+    const value = String(stdout).trim().toLowerCase()
+    return value === 'yes' ? true : value === 'no' ? false : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export interface SecretaryRuntimeInitInput {
   /** Bridge scope whose `/she submit` should use the resulting shadow repo. */
   readonly scopeKey: string
@@ -77,11 +132,43 @@ export interface SecretaryRuntimeInitResult {
 
 export type SecretaryRuntimeSource = 'manual' | 'bootstrap' | 'none'
 
+/** One user-systemd unit's read-only state, as shown by `/info`. */
+export interface SecretaryServiceUnitState {
+  readonly fragmentPath?: string
+  readonly loadState?: string
+  readonly unitFileState?: string
+  readonly activeState?: string
+  readonly error?: string
+}
+
+export interface SecretaryServiceUnitReport extends SecretaryServiceUnitState {
+  readonly name: string
+  readonly role: 'channel' | 'broker'
+}
+
+/** Read-only host service location/autostart/restart guidance for `/info`. */
+export interface SecretaryServiceReport {
+  readonly account: string
+  readonly pluginRoot: string
+  readonly installerPath: string
+  readonly installerPresent: boolean
+  readonly unitDir: string
+  readonly systemdUserBusReachable: boolean
+  /** `true` = lingering; `false` = starts only after login; undefined = unknown. */
+  readonly linger?: boolean
+  readonly brokerSocket: string
+  readonly brokerSocketPresent: boolean
+  readonly units: readonly SecretaryServiceUnitReport[]
+}
+
 /** Injection seam for filesystem/health operations; production uses the concrete helpers below. */
 export interface SecretaryRuntimeDeps {
   readonly setAcl?: (path: string, recursive: boolean) => Promise<void>
   readonly setDefaultAcl?: (path: string, recursiveDirs: boolean) => Promise<void>
   readonly probeOpenCode?: (url: string, username: string, credential: string) => Promise<{ ok: boolean; version?: string; detail?: string }>
+  readonly inspectServiceUnit?: (unit: string) => Promise<SecretaryServiceUnitState>
+  readonly probeSystemdUserBus?: () => Promise<boolean>
+  readonly inspectLinger?: (user: string) => Promise<boolean | undefined>
 }
 
 export interface SecretaryDoctorReport {
@@ -632,6 +719,46 @@ export class SecretaryRuntime {
       }),
       health,
       ...(bootstrapWorkspaceOf(state, scopeKey) === undefined ? {} : { currentScopeShadowRepo: bootstrapWorkspaceOf(state, scopeKey) }),
+    }
+  }
+
+  /**
+   * Read-only host-service guidance for `/info`. This never calls
+   * systemctl enable/restart: it locates the deployed installer, reports the
+   * user-systemd unit state, and leaves mutation to an explicit host-side
+   * operator/agent command.
+   */
+  async serviceReport(): Promise<SecretaryServiceReport> {
+    const account = userInfo().username
+    const pluginRoot = fileURLToPath(new URL('../../', import.meta.url))
+    const installerPath = join(pluginRoot, 'scripts', 'install-user-services.sh')
+    const unitDir = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'systemd', 'user')
+    const brokerSocket = join(homedir(), '.local', 'share', 'feishu4dsh', 'broker', 'broker.sock')
+    const inspect = this.deps.inspectServiceUnit ?? inspectUserServiceUnit
+    const probeBus = this.deps.probeSystemdUserBus ?? probeSystemdUserBus
+    const inspectLinger = this.deps.inspectLinger ?? inspectUserLinger
+    const [systemdUserBusReachable, linger, channel, broker, installerPresent, socketPresent] = await Promise.all([
+      probeBus().catch(() => false),
+      inspectLinger(account).catch(() => undefined),
+      inspect('dsh-feishu4dsh.service').catch(error => ({ error: error instanceof Error ? error.message : String(error) })),
+      inspect('feishu4dsh-sandbox-broker.service').catch(error => ({ error: error instanceof Error ? error.message : String(error) })),
+      access(installerPath).then(() => true).catch(() => false),
+      stat(brokerSocket).then(value => value.isSocket()).catch(() => false),
+    ])
+    return {
+      account,
+      pluginRoot,
+      installerPath,
+      installerPresent,
+      unitDir,
+      systemdUserBusReachable,
+      ...(linger === undefined ? {} : { linger }),
+      brokerSocket,
+      brokerSocketPresent: socketPresent,
+      units: [
+        { name: 'dsh-feishu4dsh.service', role: 'channel', ...channel },
+        { name: 'feishu4dsh-sandbox-broker.service', role: 'broker', ...broker },
+      ],
     }
   }
 

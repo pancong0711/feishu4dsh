@@ -99,6 +99,20 @@ dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操�
 白名单**只收窄、不放行**：可触达范围本身由飞书应用的「可用范围」决定。
 
 
+
+## 独立 SHE 控制面接入（实验，可选）
+
+默认关闭；与下方旧 `secretary*` 子模块分开。开启后 `/she` 改走独立 SHE control-plane 的 `gateway.v1`，旧 secretary 路径保留用于回滚。
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `she.enabled` | `false` | 开启后 `/she` 与 SHE 卡片/表单回调走新 control-plane runtime；关闭时完全沿用旧 secretary |
+| `she.socketPath` | 空 | 显式 control-plane Unix socket；空 = `$XDG_RUNTIME_DIR/she/control.sock`，再回退 `~/.local/run/she/control.sock` |
+| `she.tokenFile` | 空 | 可选 0600 bearer token 文件；空 = `~/.config/she/token`（不存在则不发送 token） |
+| `she.timeoutMs` | `30000` | 单次 HTTP/事件连接超时 |
+
+当前 integration 版本通过 SHE GitHub Release tarball 锁定 `@she/protocol` / `@she/client`，尚未切到 npm registry semver。普通飞书聊天、旧 `/she` 和旧 secretary 配置不受影响。
+
 ## 秘书子模块（SHE，可选）
 
 默认关闭；部署管理员可在飞书执行 `/she init` 完成 B 侧一键初始化。状态写入 0600 文件，后续 dsh 重启可自动恢复；手工 `secretaryEnabled: true` 仍优先。
@@ -149,7 +163,13 @@ dsh 把每个 Agent 会话根植（root）在一个工作区内，并把写操�
         # senderAllowlist: ['ou_xxx']
         # groupAllowlist: ['oc_xxx']
         # approvers: ['ou_admin']
-        # 普通部署无需手填；管理员发 /she init
+        # 独立 SHE control-plane（实验；与旧 secretary 二选一）
+        # she:
+        #   enabled: false
+        #   socketPath: ~/.local/run/she/control.sock
+        #   tokenFile: ~/.config/she/token
+        #   timeoutMs: 30000
+        # 旧 secretary：普通部署无需手填；管理员发 /she init
         # secretaryEnabled: true
         # secretaryAutoRestore: true
         # secretaryBootstrapFile: ~/.local/state/feishu4dsh/she-bootstrap.json

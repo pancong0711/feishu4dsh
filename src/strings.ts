@@ -370,6 +370,19 @@ export interface Strings {
   sheDoctorHealth: (ok: boolean, detail: string) => string
   sheDoctorRuntime: (runtimeRoot: string, worktreeRoot: string, reposRoot: string) => string
   sheDoctorScope: (shadowRepo: string | undefined) => string
+  infoServiceTitle: string
+  infoServiceUnavailable: string
+  infoServiceAccount: (account: string, pluginRoot: string) => string
+  infoServiceInstaller: (installerPath: string, present: boolean) => string
+  infoServiceSystemd: (account: string, reachable: boolean, linger: 'yes' | 'no' | 'unknown') => string
+  infoServiceUnit: (label: string, name: string, unitFileState: string, activeState: string, fragmentPath: string | undefined) => string
+  infoServiceBrokerSocket: (path: string, present: boolean) => string
+  infoServiceInstallerHint: (pluginRoot: string) => string
+  infoServiceRestartHint: (units: readonly string[]) => string
+  infoServiceBusctlHint: (units: readonly string[]) => string
+  infoServiceNote: string
+  /** `/info` / `/info --help` usage text. */
+  infoUsage: string
   sheSubmitted: (label: string, status: string) => string
   sheContinued: (label: string, status: string) => string
   sheInvalid: (reason: string) => string
@@ -431,22 +444,28 @@ function sheHelpZh(topic: string): string {
       '新部署请直接使用：/she sandbox status / /she sandbox build。',
     ].join('\n'),
     sandbox: [
-      '/she sandbox — 打开 build-sandbox 交互式构建向导',
-      '/she sandbox status — 合并只读检查：主机预检 + descriptor/OpenCode/runtime 接入检查',
-      '/she sandbox build [flags] — 非交互生成安装包',
-      '/she sandbox list — 查看已注册 sandbox',
-      '/she sandbox info <name> — 查看 sandbox 详情',
-      '/she sandbox stats <name> — 查看 CPU/内存/PIDs 快照',
-      '/she sandbox start|stop|restart <name> — 容器生命周期',
-      '/she sandbox destroy <name> --yes — 删除容器和网络（数据默认保留）',
+      '/she sandbox — 打开 build-sandbox 交互式构建向导（只生成包，不创建容器）',
+      '/she sandbox status — 只读检查：主机预检 + descriptor/OpenCode/runtime 接入检查',
+      '/she sandbox build [flags] — 非交互生成安装包；群聊发送仍走文件审批',
+      '/she sandbox list — 经 broker 查看已注册 sandbox',
+      '/she sandbox info <name> — 经 broker 查看详情',
+      '/she sandbox stats <name> — 经 broker 查看 CPU/内存/PIDs 快照',
+      '/she sandbox start|stop|restart <name> — 经 broker 执行容器生命周期',
+      '/she sandbox destroy <name> --yes — 经 broker 删除容器和网络（数据默认保留）',
       '',
-      'flags: --suffix <suffix> --name <name> --role standalone|main|worker|observer|utility',
-      '       --target current-user|dedicated-user --agent opencode|hermes|deepseek-harness|blank|custom',
-      '       --image <ref> --tools core,node,python,build,data,search --network none|egress',
+      'build flags: --suffix <suffix> --name <name> --role standalone|main|worker|observer|utility',
+      '             --target current-user|dedicated-user --agent opencode|hermes|deepseek-harness|blank|custom',
+      '             --image <ref> --tools core,node,python,build,data,search --network none|egress',
+      '             --host-port <1024-65535> --allowed-callers <a,b> --allowed-targets <a,b>',
       '',
-      '固定前缀 sbx-；suffix 留空自动 sbx-0001、sbx-0002。',
-      '工作区只挂载 workspace/inbox/outbox/home/cache 具体叶子目录，不挂 Docker socket 或父目录。',
-      '专用账户模式会另带 root bootstrap 脚本，必须在飞书外审查执行。',
+      '命名：固定前缀 sbx-；suffix 留空自动 sbx-0001、sbx-0002。',
+      '挂载：只挂 workspace/inbox/outbox/home/cache 叶子目录；agent 不拿 Docker socket 或 broker socket。',
+      '权限：list/info/stats/start/stop/restart/destroy 需要同账户的 broker user service。',
+      '服务安装/检查（不通过飞书传脚本，在部署机 shell 执行）：',
+      '  PLUGIN_DIR="$(readlink -f "${DSH_HOME:-$HOME/.dsh}/profiles/feishu4dsh/node_modules/feishu4dsh")"',
+      '  bash "$PLUGIN_DIR/scripts/install-user-services.sh" --check  --only broker --repo "$PLUGIN_DIR"',
+      '  bash "$PLUGIN_DIR/scripts/install-user-services.sh" --enable --only broker --repo "$PLUGIN_DIR"',
+      '安装包：专用账户模式会另带 root bootstrap 脚本，必须在飞书外审查后由目标用户执行。',
     ].join('\n'),
     doctor: [
       '/she doctor — 查看 SHE 诊断信息',
@@ -503,7 +522,24 @@ function sheHelpEn(topic: string): string {
     update: '/she init update — fast-forward the current scope shadow repo from committed source HEAD; refuses with unfinished tasks, dirty shadow tree or non-FF updates.',
     reset: '/she init reset — forget the current scope→shadow mapping without deleting files; use before re-initializing or switching projects.',
     need: '/she need and /she need verify are compatibility aliases for /she sandbox status. /she need package is deprecated and maps to the default OpenCode /she sandbox build path.',
-    sandbox: '/she sandbox — interactive builder. /she sandbox status — preflight. /she sandbox build [--suffix x] [--role worker] — package. /she sandbox list|info|stats|start|stop|restart|destroy — broker-managed sandbox operations.',
+    sandbox: [
+      '/she sandbox — interactive package builder (writes files only; no container).',
+      '/she sandbox status — read-only host + SHE attach preflight.',
+      '/she sandbox build [flags] — non-interactive package; group delivery still needs file approval.',
+      '/she sandbox list|info|stats|start|stop|restart|destroy — broker-managed operations.',
+      '',
+      'build flags: --suffix --name --role --target --agent --image --tools --network --host-port',
+      '             --allowed-callers --allowed-targets.',
+      'Names use the fixed sbx- prefix; an empty suffix picks sbx-0001, sbx-0002, ...',
+      'Agents never receive the Docker socket or the broker socket. The broker must run',
+      'as the same Unix account. Locate the installer from the deployed dsh profile and',
+      'run it on the host (never transfer the script through Feishu):',
+      '  PLUGIN_DIR="$(readlink -f "${DSH_HOME:-$HOME/.dsh}/profiles/feishu4dsh/node_modules/feishu4dsh")"',
+      '  bash "$PLUGIN_DIR/scripts/install-user-services.sh" --check  --only broker --repo "$PLUGIN_DIR"',
+      '  bash "$PLUGIN_DIR/scripts/install-user-services.sh" --enable --only broker --repo "$PLUGIN_DIR"',
+      'Dedicated-account packages include a root bootstrap script that must be reviewed',
+      'outside Feishu and executed by the target user.',
+    ].join('\n'),
     doctor: '/she doctor — show source, state file, OpenCode health, runtime paths and current-scope shadow repo (admins only).',
     submit: [
       '/she submit <request> — create a Topic and enqueue a task',
@@ -609,6 +645,7 @@ const zhCN: Strings = {
     '/session — 会话列表 / 切换 / 重命名 / 归档（/session 查看用法）',
     '/stop — 停止当前任务',
     '/status — 会话 / 工作区 / 模式 / 模型 / 推理强度 / 轮次与 Token 累计',
+    '/info — 只读查看服务位置、自启动与重启帮助',
     '/ws — 列出可用工作区',
     '/ws add <路径> — 添加一个可用工作区（手机上添加）',
     '/ws remove <名称或路径> — 移除一个已添加的工作区',
@@ -777,7 +814,7 @@ const zhCN: Strings = {
     '/she init update — 更新当前 scope 的 shadow repo',
     '/she init reset — 清除当前 scope 的 shadow repo 映射',
     '/she need — 兼容入口，等同 /she sandbox status',
-    '/she sandbox [status|build|list|info|stats|start|stop|restart|destroy] — sandbox 构建与 broker 管理',
+    '/she sandbox [status|build|list|info|stats|start|stop|restart|destroy] — sandbox 构建与 broker 管理（/she help sandbox）',
     '/she doctor — 查看 SHE/OpenCode/共享目录诊断',
     '/she submit <原文> — 新建 Topic 并提交任务',
     '/she continue <Topic> <原文> — 在同一 Topic 追加串行任务',
@@ -865,6 +902,58 @@ const zhCN: Strings = {
   sheDoctorHealth: (ok, detail) => `OpenCode：${ok ? 'healthy' : 'unhealthy'}${detail === '' ? '' : `（${detail}）`}`,
   sheDoctorRuntime: (runtimeRoot, worktreeRoot, reposRoot) => `Runtime：${runtimeRoot}\nWorktree：${worktreeRoot}\nRepos：${reposRoot}`,
   sheDoctorScope: shadowRepo => `当前话题 shadow repo：${shadowRepo ?? '未映射'}`,
+  infoServiceTitle: 'SHE 服务帮助',
+  infoServiceUnavailable: '当前运行环境不支持 /info（未装配 service report hook）。',
+  infoServiceAccount: (account, pluginRoot) => `账户：${account}\n插件目录：${pluginRoot}`,
+  infoServiceInstaller: (installerPath, present) => `安装器：${installerPath}（${present ? '存在' : '未找到'}）`,
+  infoServiceSystemd: (account, reachable, linger) => {
+    const lingerText = linger === 'yes'
+      ? '已开启（服务可在登录前随 user manager 启动）'
+      : linger === 'no'
+        ? `未开启（当前只在登录后启动；需要免登录自启时执行 sudo loginctl enable-linger ${account}）`
+        : '未知'
+    return `systemd --user：${reachable ? '可达' : '不可达（请在目标账户的登录 shell 或服务环境中检查）'}\nlinger：${lingerText}`
+  },
+  infoServiceUnit: (label, name, unitFileState, activeState, fragmentPath) => {
+    const autoStart = unitFileState === 'enabled' || unitFileState === 'enabled-runtime'
+      ? 'enabled'
+      : unitFileState === 'disabled'
+        ? 'disabled'
+        : (unitFileState === undefined || unitFileState === '' ? 'unknown' : unitFileState)
+    return `${label}：${name}\n  自启动：${autoStart}\n  状态：${activeState === undefined || activeState === '' ? 'unknown' : activeState}\n  unit：${fragmentPath ?? '未加载'}`
+  },
+  infoServiceBrokerSocket: (path, present) => `broker socket：${path}（${present ? '存在' : '不存在'}）`,
+  infoServiceInstallerHint: pluginRoot => [
+    '安装/检查（在部署机 shell 执行；不要从飞书传脚本）：',
+    `PLUGIN_DIR="${pluginRoot}"`,
+    'bash "$PLUGIN_DIR/scripts/install-user-services.sh" --check  --only broker --repo "$PLUGIN_DIR"',
+    'bash "$PLUGIN_DIR/scripts/install-user-services.sh" --enable --only broker --repo "$PLUGIN_DIR"',
+  ].join('\n'),
+  infoServiceRestartHint: units => [
+    '加载/查看/重启（宿主机终端，当前账户）：',
+    'systemctl --user daemon-reload',
+    ...units.map(unit => `systemctl --user restart ${unit}`),
+    ...units.map(unit => `systemctl --user status ${unit} --no-pager`),
+  ].join('\n'),
+  infoServiceBusctlHint: units => [
+    'systemctl 不可用但 user D-Bus 可达时，可让 agent 在宿主机同账户执行：',
+    ...units.map(unit => `busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager RestartUnit ss ${unit} replace`),
+    '注意：agent sandbox/容器内通常没有宿主 user bus；该命令必须在宿主机同账户执行。',
+  ].join('\n'),
+  infoServiceNote: '本命令只读：不会自动安装、enable、重启或停止服务。安装/重启是宿主机同账户的显式动作。',
+  infoUsage: [
+    '/info — 只读显示宿主服务位置、自启动与重启帮助',
+    '',
+    '内容：',
+    '  1. 当前账户、插件目录和一键安装器路径；',
+    '  2. dsh-feishu4dsh 与 sandbox-broker 两个 user unit 的 enabled/active 和实际 FragmentPath；',
+    '  3. linger 状态，以及是否需要启用 linger 才能登录前自启；',
+    '  4. 部署机上的 --check / --enable 命令；',
+    '  5. systemctl 加载/状态/重启命令，以及让 agent 使用 busctl 重启的命令与前提。',
+    '',
+    '本命令只读，不会自动安装、enable、restart 或 stop 服务。',
+    '安装/重启必须由宿主机同一 Unix 账户显式执行；agent sandbox 内通常没有宿主 user bus。',
+  ].join('\n'),
   sheNoPermission: '当前发送人无权使用 /she（需为审批人 / 会话驱动者）。',
   sheSubmitted: (label, status) => `已提交任务 ${label}（${status}）。完成后用 /she status ${label} 查看。`,
   sheContinued: (label, status) => `已追加任务 ${label}（${status}）。`,
@@ -966,6 +1055,7 @@ const enUS: Strings = {
     '/new — start a fresh session (clears context)',
     '/stop — stop the current task',
     '/status — session / workspace / mode / model / reasoning effort / token totals',
+    '/info — read-only service location, autostart and restart help',
     '/ws — list available workspaces',
     '/ws add <path> — add a workspace (from your phone)',
     '/ws remove <name or path> — remove an added workspace',
@@ -1099,7 +1189,7 @@ const enUS: Strings = {
     '/she init update — update the current scope shadow repo',
     '/she init reset — forget the current scope shadow repo mapping',
     '/she need — compatibility alias for /she sandbox status',
-    '/she sandbox [status|build|list|info|stats|start|stop|restart|destroy] — sandbox builder and broker management',
+    '/she sandbox [status|build|list|info|stats|start|stop|restart|destroy] — sandbox builder and broker management (/she help sandbox)',
     '/she doctor — inspect SHE/OpenCode/shared-directory diagnostics',
     '/she submit <request> — create a Topic and enqueue a task',
     '/she continue <Topic> <request> — append a serial task',
@@ -1187,6 +1277,56 @@ const enUS: Strings = {
   sheDoctorHealth: (ok, detail) => `OpenCode: ${ok ? 'healthy' : 'unhealthy'}${detail === '' ? '' : ` (${detail})`}`,
   sheDoctorRuntime: (runtimeRoot, worktreeRoot, reposRoot) => `Runtime: ${runtimeRoot}\nWorktree: ${worktreeRoot}\nRepos: ${reposRoot}`,
   sheDoctorScope: shadowRepo => `Current-scope shadow repo: ${shadowRepo ?? 'not mapped'}`,
+  infoServiceTitle: 'SHE service help',
+  infoServiceUnavailable: 'This runtime does not provide the /info report hook.',
+  infoServiceAccount: (account, pluginRoot) => `Account: ${account}\nPlugin directory: ${pluginRoot}`,
+  infoServiceInstaller: (installerPath, present) => `Installer: ${installerPath} (${present ? 'present' : 'not found'})`,
+  infoServiceSystemd: (account, reachable, linger) => {
+    const lingerText = linger === 'yes'
+      ? 'enabled (user manager can start before login)'
+      : linger === 'no'
+        ? `disabled (starts after login only; run sudo loginctl enable-linger ${account} for boot-time start)`
+        : 'unknown'
+    return `systemd --user: ${reachable ? 'reachable' : 'unreachable (check from the target account login shell or service environment)'}\nlinger: ${lingerText}`
+  },
+  infoServiceUnit: (label, name, unitFileState, activeState, fragmentPath) => {
+    const autoStart = unitFileState === 'enabled' || unitFileState === 'enabled-runtime'
+      ? 'enabled'
+      : unitFileState === 'disabled'
+        ? 'disabled'
+        : (unitFileState === undefined || unitFileState === '' ? 'unknown' : unitFileState)
+    return `${label}: ${name}\n  autostart: ${autoStart}\n  state: ${activeState === undefined || activeState === '' ? 'unknown' : activeState}\n  unit: ${fragmentPath ?? 'not loaded'}`
+  },
+  infoServiceBrokerSocket: (path, present) => `broker socket: ${path} (${present ? 'present' : 'missing'})`,
+  infoServiceInstallerHint: pluginRoot => [
+    'Install/check from the deployment-host shell (never transfer the script via Feishu):',
+    `PLUGIN_DIR="${pluginRoot}"`,
+    'bash "$PLUGIN_DIR/scripts/install-user-services.sh" --check  --only broker --repo "$PLUGIN_DIR"',
+    'bash "$PLUGIN_DIR/scripts/install-user-services.sh" --enable --only broker --repo "$PLUGIN_DIR"',
+  ].join('\n'),
+  infoServiceRestartHint: units => [
+    'Reload/check/restart from the host terminal as the same account:',
+    'systemctl --user daemon-reload',
+    ...units.map(unit => `systemctl --user restart ${unit}`),
+    ...units.map(unit => `systemctl --user status ${unit} --no-pager`),
+  ].join('\n'),
+  infoServiceBusctlHint: units => [
+    'If systemctl is unavailable but the user D-Bus is reachable, an agent on the host may use:',
+    ...units.map(unit => `busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager RestartUnit ss ${unit} replace`),
+    'Note: agent sandbox/container environments usually do not have the host user bus; run this on the host as the same account.',
+  ].join('\n'),
+  infoServiceNote: 'This command is read-only: it never installs, enables, restarts, or stops services. Installation/restart remains an explicit host-side action.',
+  infoUsage: [
+    '/info — read-only host service location, autostart and restart help',
+    '',
+    'Shows: current account/plugin/installer paths; enabled/active/FragmentPath for',
+    'dsh-feishu4dsh and sandbox-broker user units; linger/boot-start status; host-side',
+    '--check/--enable commands; and systemctl/busctl load/status/restart commands with prerequisites.',
+    '',
+    'This command never installs, enables, restarts or stops a service. Those actions must be',
+    'run explicitly on the host as the same Unix account; agent sandboxes usually do not have',
+    'the host user bus.',
+  ].join('\n'),
   sheNoPermission: 'This sender may not use /she (must be an approver / the chat driver).',
   sheSubmitted: (label, status) => `Submitted task ${label} (${status}). Check it with /she status ${label}.`,
   sheContinued: (label, status) => `Appended task ${label} (${status}).`,

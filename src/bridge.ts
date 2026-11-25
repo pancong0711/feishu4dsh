@@ -42,7 +42,7 @@ import { formatBytes, formatNumber, formatStamp, shortHash, sleep, splitWithCode
 import { parseSheCommand } from './secretary/command.js'
 import { SecretaryServiceError, type SecretaryService } from './secretary/service.js'
 import type { SecretaryAttachmentInput } from './secretary/types.js'
-import type { SecretaryDoctorReport, SecretaryRuntimeInitInput, SecretaryRuntimeInitResult, SecretaryRuntimeResetResult, SecretaryRuntimeUpdateResult } from './secretary/runtime.js'
+import type { SecretaryDoctorReport, SecretaryRuntimeInitInput, SecretaryRuntimeInitResult, SecretaryRuntimeResetResult, SecretaryRuntimeUpdateResult, SecretaryServiceReport } from './secretary/runtime.js'
 import type { TaskAcceptResult, TaskReturnResult } from './secretary/returns.js'
 import type { SheNeedReport } from './secretary/need.js'
 import type { BrokerDockerStats, BrokerSandboxView } from './secretary/broker.js'
@@ -52,6 +52,8 @@ import {
   type SandboxTargetKind, type SandboxToolId, type SandboxWizardState,
 } from './secretary/sandbox.js'
 import type { SheSandboxBuildOptions } from './secretary/command.js'
+import { parseSheCardInteraction } from './integrations/she/render.js'
+import type { FeishuSheContext, FeishuSheInteractionInput } from './integrations/she/gateway.js'
 
 /* ------------------------------------------------------------------ */
 /* Host surface the bridge needs (structurally satisfied by cordis ctx) */
@@ -239,7 +241,21 @@ interface PendingQuestion {
 }
 
 /** Optional cross-cutting hooks the runtime can supply. */
+/** Text input forwarded to the new SHE control-plane runtime. */
+export interface BridgeSheTextInput extends FeishuSheContext {
+  readonly text: string
+}
+
+/** Narrow runtime surface the bridge calls when SHE control-plane mode is on. */
+export interface BridgeSheRuntime {
+  readonly state: string
+  handleFeishuText(input: BridgeSheTextInput): Promise<boolean>
+  handleFeishuInteraction(input: FeishuSheInteractionInput): Promise<void>
+}
+
 export interface BridgeHooks {
+  /** Optional new independent SHE control-plane runtime. */
+  sheRuntime?: BridgeSheRuntime
   /** Persist one chat's workspace selection (survives restarts via settings). */
   onWorkspaceChange?: (scopeKey: string, workspacePath: string) => void | Promise<void>
   /** Persist the list of user-added workspaces (from `/ws add` / `/ws remove`). */
@@ -272,6 +288,8 @@ export interface BridgeHooks {
   secretaryInitReset?: (scopeKey: string) => Promise<SecretaryRuntimeResetResult>
   /** `/she doctor`: read-only SHE diagnostics. */
   secretaryDoctor?: (scopeKey: string) => Promise<SecretaryDoctorReport>
+  /** `/info`: read-only host service location/autostart/restart guidance. */
+  secretaryServiceReport?: () => Promise<SecretaryServiceReport>
   /** Persistent scope→shadow-repo mapping written by `/she init`. */
   secretaryWorkspaceFor?: (scopeKey: string) => string | undefined
   /** `/she return`: copy one task's results into `<project>/she_returns/<task-id>/`. */
@@ -3382,6 +3400,34 @@ function formatSandboxList(records: readonly BrokerSandboxView[], copy: Strings)
   return [copy.sheSandboxListTitle, ...records.map(record => copy.sheSandboxListEntry(record.name, record.role, record.status.state))].join('\n')
 }
 
+/** Format `/info`: location, autostart state and safe restart guidance. */
+function formatServiceReport(report: SecretaryServiceReport, copy: Strings): string {
+  const linger: 'yes' | 'no' | 'unknown' = report.linger === true ? 'yes' : report.linger === false ? 'no' : 'unknown'
+  const unitNames = report.units.map(unit => unit.name)
+  return [
+    copy.infoServiceTitle,
+    copy.infoServiceAccount(report.account, report.pluginRoot),
+    copy.infoServiceInstaller(report.installerPath, report.installerPresent),
+    copy.infoServiceSystemd(report.account, report.systemdUserBusReachable, linger),
+    ...report.units.map(unit => copy.infoServiceUnit(
+      unit.role === 'channel' ? 'channel' : 'broker',
+      unit.name,
+      unit.unitFileState ?? 'unknown',
+      unit.activeState ?? 'unknown',
+      unit.fragmentPath,
+    )),
+    copy.infoServiceBrokerSocket(report.brokerSocket, report.brokerSocketPresent),
+    '',
+    copy.infoServiceInstallerHint(report.pluginRoot),
+    '',
+    copy.infoServiceRestartHint(unitNames),
+    '',
+    copy.infoServiceBusctlHint(unitNames),
+    '',
+    copy.infoServiceNote,
+  ].join('\n')
+}
+
 /** Combined `/she sandbox status` + legacy `/she need` report. */
 function formatSandboxStatus(host: SandboxHostReport, attach: SheNeedReport | undefined, copy: Strings, legacyHint = false): string {
   const lines = [formatSandboxPreflight(host, copy)]
@@ -3806,6 +3852,30 @@ async function handleCardAction(env: BridgeEnv, state: BridgeState, event: CardA
   // an empty string is not nullish, so `??` alone would skip the fallback.
   const action = event.action
   const raw = typeof action.option === 'string' && action.option !== '' ? action.option : action.value
+  const sheInteraction = parseSheCardInteraction(raw, formValueOf(event) ?? {})
+  if (sheInteraction !== undefined) {
+    const runtime = env.hooks.sheRuntime
+    if (runtime === undefined) {
+      await safeSend(env, event.chatId, state.copy.sheError('control_plane_unavailable', 'SHE control-plane integration is not enabled'))
+      return
+    }
+    if (!mayApprove(env.authorization, event.operator.openId, true)) return
+    const binding = [...state.chats.values()].find(candidate => candidate.chatId === event.chatId)
+    try {
+      await runtime.handleFeishuInteraction({
+        senderId: event.operator.openId,
+        ...(event.operator.name === undefined ? {} : { senderName: event.operator.name }),
+        chatId: event.chatId,
+        chatType: binding?.chatType ?? 'group',
+        messageId: event.messageId,
+        interactionId: sheInteraction.interactionId,
+        values: sheInteraction.values,
+      })
+    } catch (error) {
+      await safeSend(env, event.chatId, state.copy.sheError('interaction_failed', describeError(error)))
+    }
+    return
+  }
   const payload = decodeActionValue(raw)
   if (payload === null) {
     env.report(`feishu4dsh: card action ignored (unrecognized payload tag=${action.tag})`)
@@ -4295,6 +4365,38 @@ function currentSessionId(state: BridgeState, binding: ChatBinding): string {
   return sessionIdOf(binding.scopeKey, binding.workspacePath, state.ledger.generationOf(agentKey))
 }
 
+/** `/info`: channel-level read-only service/location/autostart guidance. */
+async function cmdInfo(
+  env: BridgeEnv,
+  state: BridgeState,
+  binding: ChatBinding,
+  args: string,
+  senderId: string,
+  replyTo?: string,
+): Promise<void> {
+  const copy = state.copy
+  const arg = args.trim()
+  if (arg === '--help' || arg === '-h' || arg === 'help') {
+    await safeSend(env, binding.chatId, copy.infoUsage, replyTo)
+    return
+  }
+  if (arg !== '') {
+    await safeSend(env, binding.chatId, copy.infoUsage, replyTo)
+    return
+  }
+  if (!mayApprove(env.authorization, senderId, true)) {
+    await safeSend(env, binding.chatId, copy.sheNoPermission, replyTo)
+    return
+  }
+  const reportService = env.hooks.secretaryServiceReport
+  if (reportService === undefined) {
+    await safeSend(env, binding.chatId, copy.infoServiceUnavailable, replyTo)
+    return
+  }
+  const report = await reportService()
+  await safeSend(env, binding.chatId, formatServiceReport(report, copy), replyTo)
+}
+
 /** Built-in channel commands; unrecognised lines fall through to the host. */
 async function runCommand(
   env: BridgeEnv,
@@ -4382,7 +4484,29 @@ async function runCommand(
       await cmdSwitchWorkspace(env, state, binding, line.slice('/cd'.length).trim(), senderId, replyTo)
       return
     }
+    case '/info': {
+      await cmdInfo(env, state, binding, line.slice('/info'.length).trim(), senderId, replyTo)
+      return
+    }
     case '/she': {
+      const runtime = env.hooks.sheRuntime
+      if (runtime !== undefined) {
+        try {
+          await runtime.handleFeishuText({
+            senderId,
+            ...(message?.senderName === undefined ? {} : { senderName: message.senderName }),
+            chatId: binding.chatId,
+            chatType: binding.chatType,
+            ...(message?.threadId === undefined ? {} : { threadId: message.threadId }),
+            ...(message?.messageId === undefined ? {} : { messageId: message.messageId }),
+            workspaceKey: binding.scopeKey,
+            text: line,
+          })
+        } catch (error) {
+          await safeSend(env, chatId, state.copy.sheError('control_plane_unavailable', describeError(error)), replyTo)
+        }
+        return
+      }
       await cmdShe(env, state, binding, line.slice('/she'.length).trim(), senderId, replyTo, message)
       return
     }

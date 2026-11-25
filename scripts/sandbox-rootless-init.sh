@@ -1,7 +1,37 @@
 #!/usr/bin/env bash
-# Initialize rootless Docker for the current (non-root) user.
-# This script must NOT be run with sudo.
+# Initialize and verify rootless Docker for the current (non-root) user.
+#
+# This is a target-user script: it must NOT be run with sudo. It only touches
+# the current user's rootless Docker setup and does not read Feishu/provider
+# secrets. The root-side account/subuid/linger bootstrap is a separate script
+# (sandbox-bootstrap-host.sh), and the long-lived broker service is installed
+# separately by install-user-services.sh.
 set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: ./scripts/sandbox-rootless-init.sh [--help]
+
+Initialize rootless Docker for the current non-root user, verify that Docker
+reports the "rootless" security option, and run a hello-world smoke test.
+
+Requirements:
+  - run as the target user, never with sudo;
+  - docker CLI and dockerd-rootless-setuptool.sh must already be installed;
+  - a user systemd/dbus session must be available.
+
+This script does not install Docker, create accounts, install the broker
+service, or create sandbox containers. Use sandbox-bootstrap-host.sh for the
+one-time root account/Docker package setup.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown argument: $1 (use --help)" >&2; exit 2 ;;
+  esac
+done
 
 [ "$(id -u)" -ne 0 ] || { echo "must run as the target user, not root (do not use sudo)" >&2; exit 1; }
 TARGET_USER="$(id -un)"

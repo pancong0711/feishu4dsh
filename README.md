@@ -27,37 +27,41 @@ dsh --profile feishu4dsh    # 日志出现 `feishu4dsh: connected as <机器人>
 
 ### 从空机器初始化 agent sandbox（可选）
 
-`/she sandbox` 只生成无密钥安装包；新机器先用仓库脚本检查/准备专用 rootless 账户。默认推荐专用账户，不建议把 agent 与 dsh/飞书凭据放在同一 home。
+`/she sandbox build` 只生成无密钥安装包；新机器先用仓库脚本检查/准备专用 rootless 账户。默认推荐专用账户，不建议把 agent 与 dsh/飞书凭据放在同一 home。
 
 ```sh
+# 终端 onboarding：脚本写在本地固定目录，路径打印在终端，不通过飞书发送
+pnpm sandbox:onboard
+
+# 手工预检/rootless 准备（可选）
 ./scripts/sandbox-preflight.sh --user feishu4dsh-sandbox
 sudo ./scripts/sandbox-bootstrap-host.sh --user feishu4dsh-sandbox --dry-run
 sudo ./scripts/sandbox-bootstrap-host.sh --user feishu4dsh-sandbox --install-docker-ce
-# 飞书： /she sandbox
+
+# 飞书 /she sandbox 才通过文件消息发送 sandbox 安装包
 ```
 
-固定路径为 `$HOME/.local/share/feishu4dsh/sandboxes/<sandbox-name>/{workspace,home,cache,logs}`。容器只挂 workspace/home/cache 三个叶子目录，不挂 Docker socket、home 父目录或 `/srv` 根；详见 [docs/SECRETARY.md](docs/SECRETARY.md)。
+固定路径为 `$HOME/.local/share/feishu4dsh/sandboxes/<sandbox-name>/{workspace,inbox,outbox,home,cache,logs}`。容器只挂 workspace/inbox/outbox/home/cache 叶子目录，不挂 Docker socket、home 父目录或 `/srv` 根；详见 [docs/SECRETARY.md](docs/SECRETARY.md)。
 
 ## 进程管理（systemd 推荐）
 
-仓库部署环境已配置 user 级 systemd unit：
+飞书频道与 broker 是两个独立 user service，由仓库内非 root 安装器生成：
 
 ```text
 ~/.config/systemd/user/dsh-feishu4dsh.service
+~/.config/systemd/user/feishu4dsh-sandbox-broker.service
 ```
 
-常用命令：
-
 ```sh
-systemctl --user daemon-reload
-systemctl --user enable --now dsh-feishu4dsh.service
-systemctl --user restart dsh-feishu4dsh.service
-systemctl --user status dsh-feishu4dsh.service
-journalctl --user -u dsh-feishu4dsh.service -f
+# 先 dry-run/check，再 enable；日志用 journalctl --user -u <unit>
+bash scripts/install-user-services.sh --dry-run
+bash scripts/install-user-services.sh --check
+bash scripts/install-user-services.sh --enable
 ```
 
 - 服务由 systemd 托管，崩溃后自动重启（`Restart=always`）；
-- 日志进入 journald，用 `journalctl --user -u dsh-feishu4dsh.service` 查看；
+- 安装器先发现实际 unit 位置，再决定是否创建/改写；已有不同配置需显式 `--replace` 并保留备份；
+- broker 使用同账户 rootless Docker、Unix socket 0600、不监听 LAN；当前 client 只支持 dsh 与 broker 同 Unix 账户布局；
 - 如果之前用 `nohup` 手工启动过，请先停掉手工进程再启用 systemd，避免双开。
 
 ## 主要能力
@@ -74,7 +78,8 @@ journalctl --user -u dsh-feishu4dsh.service -f
 | **多工作区** | 会话 = scope×工作区；`/ws` 点选进入、`/ws new` 浏览新建、`/cd` 兜底切换，均持久化 |
 | 交互选择卡 | `/ws` `/model` `/session` 均有点选卡片（当前项标 ✅，`/model` 支持分页下拉）；点击以点击者身份过审批 ACL，菜单 15 分钟自动失效 |
 | 授权 | 应用可用范围 + 发送人/群白名单 + 审批人名单（只收窄） |
-| 命令 | `/help` `/new` `/mode` `/reasoning` `/session` `/stop` `/status` `/ws` `/cd` `/model`（含 effort、清单增删与点选卡片） |
+| 命令 | `/help` `/info` `/new` `/mode` `/reasoning` `/session` `/stop` `/status` `/ws` `/cd` `/model`（含 effort、清单增删与点选卡片） |
+| **SHE 控制面（实验，可选）** | 默认关闭。配置 `she.enabled: true` 后，`/she` 与交互卡片改走独立 SHE control-plane 的 gateway.v1（Unix socket）；支持 health/hello、RenderIntent、原生表单、task 里程碑和 cursor/snapshot 恢复。SHE 不可达不影响普通聊天；旧 `secretary*` 路径保留作回滚。 |
 | **秘书（SHE，可选）** | 默认关闭。审批人可用 `/she init` 一键创建共享 shadow repo/runtime/ACL 与 0600 状态文件；`/she need` 保留为兼容入口（等同 `/she sandbox status`）；**`/she sandbox` 是唯一沙箱供给入口（`status` 合并主机预检与 SHE 接入检查，`build` 生成固定路径、最小挂载、无密钥安装包，`list/info/stats/start/stop/restart/destroy` 通过 broker 管理已注册 sandbox）**；`/she return` / `/she accept` 负责结果回收与 stage；`/she submit/continue/list/status/report/stop/resume/topic …` 把任务确定性转交本机 OpenCode。详见 [docs/SECRETARY.md](docs/SECRETARY.md) |
 | 文件 | 入站进 `.feishu4dsh/inbox/`；`send_file` 回传，群聊逐次审批 |
 | i18n | `locale: auto` 跟随读者语言，默认中文 |
@@ -90,7 +95,7 @@ journalctl --user -u dsh-feishu4dsh.service -f
 - **群聊出站必审批**：无关闭项（防提示注入外泄）。
 - **工作区切换准入**：仅默认 / 已注册 / `/ws add` / `workspaceRoots` 之内。
 - **会话单写入方约定**：请勿在 dsh web 中打开/驱动飞书通道创建的会话（`feishu-*` 前缀）——双写入方会导致输出错乱乃至会话日志损坏、飞书端中断；宿主暂无归属排他能力，此项为长期修复目标（详见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) §4）。
-- **Agent sandbox 隔离**：`/she sandbox` 不执行 sudo/Docker；生成脚本使用 rootless Docker、只读 rootfs、`cap-drop ALL`、`no-new-privileges`，只挂 workspace/home/cache 三个叶子目录，禁止 Docker socket/host network/privileged。
+- **Agent sandbox 隔离**：`/she sandbox` 不执行 sudo/Docker；生成脚本使用 rootless Docker、只读 rootfs、`cap-drop ALL`、`no-new-privileges`，只挂 workspace/inbox/outbox/home/cache 叶子目录，禁止 Docker socket/host network/privileged。
 
 ## 开发
 
@@ -113,7 +118,7 @@ pnpm build        # tsc 产出 lib/
 
 ## 版本与兼容性
 
-要求 **dsh `>= 0.2.1-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.2.1-rc.2` 上验证（v0.21.1）。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。
+要求 **dsh `>= 0.2.1-rc.2`**（Cordis `^4.0.1`）与飞书 SDK `^1.73.0`。当前源码与测试已在 dsh `0.2.1-rc.2` 上验证（v0.22.0）。dsh 处于预览期，升级后请回归；宿主契约收敛在 `src/host.ts`，是版本适配唯一改动面。
 
 **升级前先跑契约门禁**：`pnpm test` 里的 `tests/host-contract.spec.ts` 会直接读取本机已安装 dsh 的 `.d.ts`，把 `TurnEndReasonMap`、`AgentCancelCause`、`commands.execute` 签名、`archivedSessionIds` getter、`snapshotEvents()`、观察租约、`user-questions/request` 逐条对账；宿主不可达时自动 skip。0.2.1 的四处漂移（`cancel` 结构化原因、`execute` 四参、归档集变取值器、`Session.events` 移除）都不会让插件启动失败，只会让 `/stop`、`/compact`、`/session archive`、`/status` 在真机上静默哑掉——这正是该门禁要提前拦住的。兼容底线说明：0.2.0 起 Agent 预设由 `@deepseek-ai/dsh-agent-preset-registry`（注册表服务）+ 每预设一条 `@deepseek-ai/dsh-agent-preset` 声明行提供（dsh 不再内置预设），插件 bundle patch 出厂声明 `standard` / `minimal` 并把宿主模型面工具行让位给 preset 层；dsh `0.1.5-rc.1` 及以下使用已废弃的 `@deepseek-ai/dsh-agent-presets` 包与 `settings.yaml` 载体，**本版本不可用**（需配套 v0.9.x）。
 

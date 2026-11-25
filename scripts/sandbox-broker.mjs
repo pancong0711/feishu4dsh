@@ -15,30 +15,65 @@ import { listenBroker } from '../lib/secretary/broker-server.js'
 const defaultSocket = join(homedir(), '.local', 'share', 'feishu4dsh', 'broker', 'broker.sock')
 
 function usage() {
-  return `sandbox broker
+  return `feishu4dsh sandbox broker
+
+A host-local control service for sandbox lifecycle, read-only status/stats and
+policy-checked inbox/outbox message routing. It listens only on a Unix socket;
+it exposes no generic Docker command surface and accepts no raw dockerArgs.
 
 Usage:
   pnpm sandbox:broker -- serve [--socket <path>] [--registry <path>] [--main-actor-id <id>]
-  pnpm sandbox:broker -- health|list
+  pnpm sandbox:broker -- health
+  pnpm sandbox:broker -- list
   pnpm sandbox:broker -- next-name [suffix]
+  pnpm sandbox:broker -- main [actorId]
   pnpm sandbox:broker -- info <name>
   pnpm sandbox:broker -- stats <name>
   pnpm sandbox:broker -- register <descriptor.json>
   pnpm sandbox:broker -- start|stop|restart|destroy <name>
-  pnpm sandbox:broker -- main [actorId]
   pnpm sandbox:broker -- message --from <main|sandbox> --to <sandbox> --root-task <id> [options]
+
+Commands:
+  serve          Run the long-lived broker. Run it as the target Unix user; the
+                 user systemd unit is feishu4dsh-sandbox-broker.service.
+  health         Probe GET /v1/health on the local socket.
+  list           List registered sandboxes plus Docker state.
+  next-name      Return the next fixed sbx-<suffix> or sbx-000N name.
+  main           Register/refresh the control-plane main actor.
+  info|stats     Read sandbox metadata or a one-shot Docker resource snapshot.
+  register       Register a generated sandbox.json descriptor.
+  start|stop|restart
+                 Lifecycle actions on a registered sandbox, via Docker CLI.
+  destroy        Remove container/network only; persistent data is retained.
+  message        Deliver broker-checked artifacts to a target inbox.
 
 message options:
   --parent-task <id>
   --message-id <id>
-  --ttl <seconds>
-  --text <text> --as <relative-path>
-  --file <host-file> --as <relative-path>     # inline base64; small control files only
-  --from-outbox <relative-path> --as <relative-path>  # only for a sandbox sender
+  --ttl <seconds>                                   default: 3600, clamped 60..604800
+  --text <text> --as <relative-path>                inline UTF-8 control message
+  --file <host-file> --as <relative-path>           inline base64; small control files only
+  --from-outbox <relative-path> --as <relative-path>  only for a registered sandbox sender
 
-Common:
-  --socket <path>    default: ~/.local/share/feishu4dsh/broker/broker.sock
-  --registry <path>  default: ~/.local/share/feishu4dsh/broker/registry.json
+Common options:
+  --socket <path>                    default: ~/.local/share/feishu4dsh/broker/broker.sock
+  --registry <path>                  default: ~/.local/share/feishu4dsh/broker/registry.json
+  --main-actor-id <id>               serve only; default: main:<host>:<user>
+  -h, --help                         show this help
+
+Examples:
+  # Foreground smoke test with isolated state:
+  pnpm sandbox:broker -- serve --socket /tmp/feishu4dsh-broker.sock --registry /tmp/feishu4dsh-registry.json
+  pnpm sandbox:broker -- health --socket /tmp/feishu4dsh-broker.sock
+
+  # Production service (non-root, same account as rootless Docker):
+  bash scripts/install-user-services.sh --check --only broker
+  bash scripts/install-user-services.sh --enable --only broker
+
+Security notes:
+  - Socket mode is 0600 under the target account's XDG data directory.
+  - The broker uses that account's rootless Docker daemon; it does not listen on TCP/LAN.
+  - The current client layout is same-account only. Do not expose this socket to agents.
 `
 }
 

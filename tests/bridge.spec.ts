@@ -6543,6 +6543,45 @@ describe('bridge: SHE secretary commands (R56)', () => {
     expect(port.sent.some(message => String(message.input.markdown ?? '').includes('已接受'))).toBe(true)
   })
 
+  it('adds /info with installer, autostart and busctl guidance', async () => {
+    const { port } = makeEnv({}, {
+      secretaryServiceReport: async () => ({
+        account: 'bot2603',
+        pluginRoot: '/home/bot2603/feishu4dsh',
+        installerPath: '/home/bot2603/feishu4dsh/scripts/install-user-services.sh',
+        installerPresent: true,
+        unitDir: '/home/bot2603/.config/systemd/user',
+        systemdUserBusReachable: true,
+        linger: true,
+        brokerSocket: '/home/bot2603/.local/share/feishu4dsh/broker/broker.sock',
+        brokerSocketPresent: false,
+        units: [
+          {
+            name: 'dsh-feishu4dsh.service', role: 'channel', fragmentPath: '/home/bot2603/.config/systemd/user/dsh-feishu4dsh.service',
+            loadState: 'loaded', unitFileState: 'enabled', activeState: 'active',
+          },
+          {
+            name: 'feishu4dsh-sandbox-broker.service', role: 'broker', loadState: 'not-found',
+            unitFileState: 'disabled', activeState: 'inactive',
+          },
+        ],
+      }),
+    })
+    await textMessage(port, '/info')
+    const text = String(port.sent.at(-1)?.input.markdown ?? '')
+    expect(text).toContain('SHE 服务帮助')
+    expect(text).toContain('安装器：/home/bot2603/feishu4dsh/scripts/install-user-services.sh')
+    expect(text).toContain('dsh-feishu4dsh.service')
+    expect(text).toContain('自启动：enabled')
+    expect(text).toContain('feishu4dsh-sandbox-broker.service')
+    expect(text).toContain('--enable --only broker')
+    expect(text).toContain('systemctl --user restart dsh-feishu4dsh.service')
+    expect(text).toContain('busctl --user call org.freedesktop.systemd1')
+    expect(text).toContain('只读')
+    await textMessage(port, '/info --help')
+    expect(String(port.sent.at(-1)?.input.markdown ?? '')).toContain('/info — 只读显示宿主服务位置')
+  })
+
   it('R58: /she doctor formats source, health, paths and scope mapping', async () => {
     const { port } = makeEnv({}, {
       secretaryDoctor: async () => ({
@@ -6697,5 +6736,75 @@ describe('bridge: SHE secretary commands (R56)', () => {
     expect(String(guide?.input.markdown)).toContain('./create-sandbox.sh')
     expect(String(guide?.input.markdown)).toContain('./verify-sandbox.sh')
     expect(guide?.options).toEqual({ replyTo: 'om_sandbox', replyInThread: true })
+  })
+})
+
+describe('SHE control-plane runtime hook (P4)', () => {
+  it('routes /she to the new runtime without invoking the legacy secretary handler', async () => {
+    const textCalls: Array<{ text: string; chatId: string; senderId: string; messageId?: string }> = []
+    const env = makeEnv({}, {
+      sheRuntime: {
+        state: 'ready',
+        handleFeishuText: async input => {
+          textCalls.push(input)
+          return true
+        },
+        handleFeishuInteraction: async () => undefined,
+      },
+    })
+    await textMessage(env.port, '/she status')
+    expect(textCalls).toEqual([{
+      senderId: 'ou_user',
+      senderName: 'User',
+      chatId: 'oc_chat1',
+      chatType: 'group',
+      messageId: expect.any(String),
+      workspaceKey: expect.any(String),
+      text: '/she status',
+    }])
+    expect(env.port.sent).toEqual([])
+    await env.dispose()
+  })
+
+  it('routes SHE card and form interactions with decoded values', async () => {
+    const interactions: Array<{ interactionId: string; values: Record<string, unknown>; messageId?: string }> = []
+    const env = makeEnv({}, {
+      sheRuntime: {
+        state: 'ready',
+        handleFeishuText: async () => true,
+        handleFeishuInteraction: async input => {
+          interactions.push(input)
+        },
+      },
+    })
+    env.port.emit('cardAction', {
+      messageId: 'om_card',
+      chatId: 'oc_chat1',
+      operator: { openId: 'ou_user', name: 'User' },
+      action: { value: { she: { interactionId: 'int-approve', actionId: 'approve', value: 'yes' } }, tag: 'button' },
+    })
+    await sleep(20)
+    env.port.emit('cardAction', {
+      messageId: 'om_form',
+      chatId: 'oc_chat1',
+      operator: { openId: 'ou_user', name: 'User' },
+      action: {
+        value: {
+          she: {
+            interactionId: 'int-form',
+            actionId: 'submit',
+            fields: [{ id: 'notes', name: 'f0', type: 'text' }],
+          },
+        },
+        tag: 'button',
+      },
+      raw: { action: { form_value: { f0: 'hello' } } },
+    })
+    await sleep(20)
+    expect(interactions).toEqual([
+      expect.objectContaining({ interactionId: 'int-approve', values: { value: 'yes' }, messageId: 'om_card' }),
+      expect.objectContaining({ interactionId: 'int-form', values: { notes: 'hello' }, messageId: 'om_form' }),
+    ])
+    await env.dispose()
   })
 })

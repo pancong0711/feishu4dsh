@@ -2,10 +2,11 @@
  * R65 terminal onboarding kit.
  *
  * This module is deliberately non-interactive: the CLI collects choices and
- * this module writes a self-contained, review-before-run kit. It never runs
- * sudo, calls Docker, or reads/writes credentials. The generated scripts keep
- * root setup, target-user rootless setup, and sandbox lifecycle strictly
- * separate.
+ * this module writes a self-contained, review-before-run kit under the local
+ * output root. The terminal kit is not sent through Feishu; /she sandbox is
+ * the chat-delivery path. It never runs sudo, installs systemd services, calls
+ * Docker, or reads/writes credentials. Generated scripts keep root setup,
+ * target-user rootless setup, and sandbox lifecycle strictly separate.
  * @module feishu4dsh/secretary/onboard
  */
 
@@ -66,6 +67,7 @@ function renderReadme(input: {
   readonly packageRel: string
   readonly host?: SandboxHostReport
   readonly directory: string
+  readonly repoRoot: string
 }): string {
   const checkLines = input.host === undefined
     ? ['- 未执行主机探测；请先运行 `00-preflight.sh`。']
@@ -96,12 +98,12 @@ function renderReadme(input: {
     '## 1. 这套东西是什么',
     '',
     '```text',
-    '飞书 / SHE  →  控制面：任务、审批、状态',
-    '             →  target-user Docker：创建 sandbox',
-    '             →  容器内 agent：只看到自己的 workspace/home/cache',
+    '飞书 / SHE  →  控制面：任务、审批、状态；经 broker 发起生命周期操作',
+    '             →  target-user rootless Docker：按固定模板创建 sandbox',
+    '             →  容器内 agent：只看到自己的 workspace/inbox/outbox/home/cache',
     '```',
     '',
-    'agent 不拿 Docker socket；sandbox 默认只挂载自己的 workspace/home/cache，不挂宿主 home、项目根目录或 `/srv` 根。',
+    'agent 不拿 Docker socket，也不拿 broker socket；sandbox 默认只挂载自己的 workspace/inbox/outbox/home/cache，不挂宿主 home、项目根目录或 `/srv` 根。',
     '',
     '## 2. 本次选择',
     '',
@@ -124,6 +126,45 @@ function renderReadme(input: {
     '- `30/40/90` 只操作本 sandbox 的容器和固定目录；',
     '- Docker CLI 缺失时，先执行 `sudo INSTALL_DOCKER_CE=1 bash 10-bootstrap-host-root.sh --dry-run`，审查后再正式执行；',
     '- 执行任何脚本前先看 `manifest.json`、`plan.json`、`Dockerfile` 和脚本文本。',
+    '',
+    '### 交付方式（本 kit 与飞书包的区别）',
+    '',
+    '- **终端 onboarding**：脚本和 README 直接写在当前账户的固定目录中，不通过飞书发送；本文末尾的路径就是操作入口。',
+    '- **飞书 `/she sandbox`**：生成 tar.gz 后作为文件发送到聊天（私聊直接发送，群聊先走文件审批）；收到后自行下载、解压和审查。',
+    '- **服务安装脚本**：`install-user-services.sh` 属于部署仓库，不塞进 sandbox 包、也不通过飞书投递；在宿主机仓库目录运行。',
+    '',
+    '### 独立服务的安装与检查',
+    '',
+    '本 kit 只生成 sandbox 生命周期脚本，**不安装、不启动 systemd service**。频道进程与 broker 是两个独立 user service：',
+    '',
+    '```text',
+    'dsh-feishu4dsh.service          # 飞书/dsh 控制面，读取飞书凭据',
+    'feishu4dsh-sandbox-broker.service  # 受限容器控制面，使用同账户 rootless Docker',
+    '```',
+    '',
+    '在部署仓库中先 dry-run 和 check，确认后再启用：',
+    '',
+    '```sh',
+    `# 仓库位置（本机生成时的部署仓库；如已迁移请替换）`,
+    `# ${shellQuote(input.repoRoot)}`,
+    '# 先发现当前账户的服务位置，并打印期望 unit；不修改系统',
+    `bash ${shellQuote(join(input.repoRoot, 'scripts', 'install-user-services.sh'))} --dry-run --repo ${shellQuote(input.repoRoot)}`,
+    '# 只读检查实际 FragmentPath、systemd 状态、env 文件与 broker socket health',
+    `bash ${shellQuote(join(input.repoRoot, 'scripts', 'install-user-services.sh'))} --check --repo ${shellQuote(input.repoRoot)}`,
+    '# 发现通过后启用；已有不同 unit 会拒绝静默覆盖，需先审查再加 --replace',
+    `bash ${shellQuote(join(input.repoRoot, 'scripts', 'install-user-services.sh'))} --enable --repo ${shellQuote(input.repoRoot)}`,
+    '```',
+    '',
+    '只安装/检查其中一个服务时加 `--only channel` 或 `--only broker`。',
+    '安装器先读 `XDG_CONFIG_HOME` 与 systemd `FragmentPath`，确认服务实际位置后才创建目录；替换已有不同 unit 必须显式 `--replace` 并保留备份。',
+    '**账户边界**：当前 broker client 只支持同一 Unix 账户布局；broker 必须与 dsh 频道进程使用同一账户及同一个 broker socket。不要把一个服务装在 `feishu4dsh-sandbox`、另一个装在 `bot2603` 后期待它们自动互通。',
+    '',
+    '如果只记得 dsh profile 而忘了部署仓库路径，可在部署机执行：',
+    '',
+    '```sh',
+    'PLUGIN_DIR="$(readlink -f "${DSH_HOME:-$HOME/.dsh}/profiles/feishu4dsh/node_modules/feishu4dsh")"',
+    'bash "$PLUGIN_DIR/scripts/install-user-services.sh" --check --only broker --repo "$PLUGIN_DIR"',
+    '```',
     '',
     '## 4. 终端交互时你会看到什么',
     '',
@@ -200,7 +241,9 @@ function renderReadme(input: {
     '',
     '```text',
     '$HOME/.local/share/feishu4dsh/sandboxes/<sandbox-name>/',
-    '  workspace/  # 业务数据',
+    '  workspace/  # 业务数据，容器内 RW',
+    '  inbox/      # broker 写、容器内 RO',
+    '  outbox/     # agent 写、broker 收集',
     '  home/       # agent 用户态工具',
     '  cache/      # 包缓存',
     '  logs/       # 宿主侧日志，不挂入容器',
@@ -336,6 +379,7 @@ export async function buildSandboxOnboarding(input: SandboxOnboardingInput): Pro
     packageRel,
     host: input.host,
     directory,
+    repoRoot: input.repoRoot,
   })
   const scripts: Record<string, string> = {
     '00-preflight.sh': renderPreflight(targetUser, packageDirName),

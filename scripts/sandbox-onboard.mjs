@@ -34,11 +34,25 @@ Options:
   --image <ref>                         Required for hermes/deepseek-harness/custom
   --tools core,node,python,build,data,search
   --output <dir>                        Onboarding root (default: ~/.local/share/feishu4dsh/onboarding)
-  --yes                                  Non-interactive
+  --yes                                 Non-interactive
   --help
 
-The generated kit contains root-only bootstrap, target-user rootless init and
-target-user create/verify/destroy scripts. Nothing is executed automatically.
+Output contract:
+  The terminal writes the kit under --output and prints the absolute README,
+  manifest and archive paths. It does not send files through Feishu; the
+  Feishu /she sandbox flow is the path that sends an archive to the chat.
+  The kit contains root-only bootstrap, target-user rootless init and
+  target-user create/verify/destroy scripts plus a README with line-by-line
+  commands. Nothing is executed automatically.
+
+Service boundary:
+  This command generates sandbox lifecycle scripts only. It does not install
+  systemd services. Install/check the independent dsh channel and broker user
+  services with scripts/install-user-services.sh:
+    bash scripts/install-user-services.sh --check
+    bash scripts/install-user-services.sh --enable
+  The current broker client is same-Unix-account only; do not mix a broker in
+  one account with a dsh channel in another account.
 `
 }
 
@@ -123,11 +137,17 @@ function printIntro() {
 核心模型：
   飞书 / SHE  = 控制面：任务、审批、状态
   sandbox     = agent 的独立执行空间
-  broker      = 未来的受限容器管理面（当前未实现）
+  broker      = 独立 user service：受限容器管理面，持有同账户 rootless Docker 控制权
+
+服务边界：
+  - dsh-feishu4dsh.service（频道进程）与 sandbox-broker.service（容器控制面）是两个独立 user service；
+  - broker 不监听 LAN，只使用目标账户的 rootless Docker；
+  - 当前 broker client 只支持同一 Unix 账户布局，不能把 broker 与 dsh 拆到两个账户后直接互通；
+  - 本命令只生成 sandbox 生命周期脚本，不启动/停止/安装任何 systemd service。
 
 安全边界：
-  - agent 不拿 Docker socket
-  - 只挂载自己的 workspace/home/cache
+  - agent 不拿 Docker socket，也不拿 broker socket
+  - 只挂载自己的 workspace/home/cache/inbox/outbox
   - root 脚本只做一次性主机/账户初始化
   - 创建、验证、销毁必须由目标用户非 root 执行
   - 不把 sandbox 数据放在项目仓库或 ~/Projects
@@ -313,6 +333,8 @@ async function main() {
   console.log('\n执行顺序：')
   for (const command of result.commands) console.log(`  ${command}`)
   console.log('\n注意：10-bootstrap-host-root.sh 是唯一的 root 脚本；其余生命周期脚本必须由目标用户非 root 执行。')
+  console.log('本命令没有安装 systemd 服务；服务安装/检查请用 scripts/install-user-services.sh。')
+  console.log('broker 与 dsh 频道服务独立，但当前 client 要求二者使用同一个 Unix 账户和 socket 路径。')
 }
 
 main().catch(error => {

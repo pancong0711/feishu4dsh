@@ -2,3 +2,10 @@
 # 其 postinstall 需要放行，否则 pnpm install 报 ERR_PNPM_IGNORED_BUILDS 并使 CI 全红。
 allowBuilds:
   protobufjs: true
+
+# SHE integration 临时发布通道：registry 正式发布前使用 GitHub Release tarball。
+# 正式切回 npm registry 后必须删除 blockExoticSubdeps 与 overrides。
+blockExoticSubdeps: false
+overrides:
+  '@she/protocol': https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-protocol-0.1.0.tgz
+  '@she/client': https://github.com/pancong0711/she/releases/download/v0.1.0-packages.1/she-client-0.1.0.tgz

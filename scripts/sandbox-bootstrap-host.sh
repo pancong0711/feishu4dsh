@@ -1,19 +1,45 @@
 #!/usr/bin/env bash
 # One-time root bootstrap for a dedicated rootless sandbox account.
+#
+# This root-side phase only creates/configures the account, subuid/subgid,
+# linger, Docker packages (optional), and rootless initialization. It does not
+# read Feishu/provider secrets and does not install the broker or dsh user
+# services; those are non-root user-systemd operations owned by the target
+# account (see install-user-services.sh).
+#
 # Review before running. Supports Debian/Ubuntu for --install-docker-ce.
-#
-# Usage:
-#   sudo ./scripts/sandbox-bootstrap-host.sh [--user feishu4dsh-sandbox] [--dry-run]
-#   sudo ./scripts/sandbox-bootstrap-host.sh --install-docker-ce
-#   sudo ./scripts/sandbox-bootstrap-host.sh --no-rootless-init   # onboarding split
-#
-# Environment overrides:
-#   SUBUID_START=100000 SUBUID_COUNT=65536
 set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  sudo ./scripts/sandbox-bootstrap-host.sh [--user <name>] [--dry-run]
+  sudo INSTALL_DOCKER_CE=1 ./scripts/sandbox-bootstrap-host.sh [--user <name>] [--dry-run]
+  sudo ./scripts/sandbox-bootstrap-host.sh --install-docker-ce [--user <name>]
+  sudo ./scripts/sandbox-bootstrap-host.sh --no-rootless-init [--user <name>]
+
+Options:
+  --user <name>        Dedicated sandbox account (default: feishu4dsh-sandbox)
+  --dry-run            Print mutating commands; do not execute them
+  --install-docker-ce  Install Docker CE/rootless extras via apt (Debian/Ubuntu)
+  --no-rootless-init   Skip rootless Docker initialization (onboarding split)
+  -h, --help           Show this help
+
+Environment:
+  SUBUID_START=100000  First subordinate UID/GID (default: 100000)
+  SUBUID_COUNT=65536   Number of subordinate UIDs/GIDs (default: 65536)
+
+This script is the only root phase. It never installs the broker service or
+starts sandbox containers. After it completes, run the target-user
+20-init-rootless-target.sh, then install/check the broker separately as that
+user with:
+  bash scripts/install-user-services.sh --check --only broker
+USAGE
+}
 
 SANDBOX_USER="feishu4dsh-sandbox"
 DRY_RUN=0
-INSTALL_DOCKER_CE=0
+INSTALL_DOCKER_CE="${INSTALL_DOCKER_CE:-0}"
 INIT_ROOTLESS=1
 SUBUID_START="${SUBUID_START:-100000}"
 SUBUID_COUNT="${SUBUID_COUNT:-65536}"
@@ -38,7 +64,7 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,15p' "$0"
+      usage
       exit 0
       ;;
     *)

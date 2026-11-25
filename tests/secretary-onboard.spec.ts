@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,10 +30,98 @@ describe('terminal sandbox onboarding (R65)', () => {
       script, '--dry-run', '--repo', repoRoot, '--dsh', '/bin/true',
       '--profile', 'feishu4dsh', '--env-file', '/tmp/feishu4dsh-test.env',
     ], { encoding: 'utf8' })
-    expect(output).toContain('== dsh unit ==')
-    expect(output).toContain('== broker unit ==')
+    expect(output).toContain('== current service discovery ==')
+    expect(output).toContain('== desired dsh unit ==')
+    expect(output).toContain('== desired broker unit ==')
+    expect(output).toContain('installer-managed path:')
     expect(output).toContain('ExecStart=/bin/true --profile feishu4dsh')
-    expect(output).toContain('sandbox-broker.sh serve')
+    expect(output).toContain('sandbox-broker.sh')
+    expect(output).toContain('--check')
+  })
+
+  it('discovers an existing service before creating a unit directory or shadowing it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'feishu4dsh-services-'))
+    const bin = join(dir, 'bin')
+    const xdg = join(dir, 'xdg')
+    const envFile = join(dir, 'feishu4dsh.env')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(envFile, 'FEISHU_APP_ID=test\nFEISHU_APP_SECRET=test\n', { mode: 0o600 })
+    const fakeSystemctl = join(bin, 'systemctl')
+    writeFileSync(fakeSystemctl, `#!/usr/bin/env bash
+set -euo pipefail
+[ "\${1:-}" = "--user" ] && shift
+case "\${1:-}" in
+  show-environment) exit 0 ;;
+  show)
+    prop="\${3:-}"; unit="\${5:-}"
+    case "$prop" in
+      FragmentPath) echo "/tmp/external-systemd/$unit" ;;
+      LoadState) echo loaded ;;
+      UnitFileState) echo enabled ;;
+      ActiveState) echo active ;;
+      WorkingDirectory) echo /tmp/external-repo ;;
+      ExecStart) echo "{ path=/tmp/external-dsh ; argv[]=/tmp/external-dsh --profile feishu4dsh ; ignore_failure=no }" ;;
+      EnvironmentFiles) echo "/tmp/external.env (ignore_errors=no)" ;;
+      DropInPaths) echo "" ;;
+      *) echo "" ;;
+    esac ;;
+  is-enabled) echo enabled ;;
+  is-active) echo active ;;
+  daemon-reload) exit 0 ;;
+  *) exit 0 ;;
+esac
+`, { mode: 0o755 })
+    try {
+      let failed = false
+      let output = ''
+      try {
+        execFileSync('bash', [
+          join(repoRoot, 'scripts', 'install-user-services.sh'),
+          '--enable', '--only', 'channel', '--repo', repoRoot,
+          '--dsh', '/bin/true', '--env-file', envFile,
+        ], {
+          encoding: 'utf8',
+          env: { ...process.env, HOME: dir, XDG_CONFIG_HOME: xdg, PATH: `${bin}:${process.env.PATH ?? ''}` },
+        })
+      } catch (error) {
+        failed = true
+        const e = error as { stdout?: string; stderr?: string }
+        output = `${e.stdout ?? ''}${e.stderr ?? ''}`
+      }
+      expect(failed).toBe(true)
+      expect(output).toContain('/tmp/external-systemd/dsh-feishu4dsh.service')
+      expect(output).toContain('refusing to create a duplicate/shadow unit')
+      expect(existsSync(join(xdg, 'systemd', 'user'))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('documents service separation, account boundary and check mode in help', () => {
+    const script = join(repoRoot, 'scripts', 'install-user-services.sh')
+    const output = execFileSync('bash', [script, '--help'], { encoding: 'utf8' })
+    expect(output).toContain('dsh-feishu4dsh.service')
+    expect(output).toContain('feishu4dsh-sandbox-broker.service')
+    expect(output).toContain('--check')
+    expect(output).toContain('--only all|channel|broker')
+    expect(output).toContain('--replace')
+    expect(output).toContain('same account')
+  })
+
+  it('shows broker CLI scope and same-account boundary in help', () => {
+    const output = execFileSync('bash', [join(repoRoot, 'scripts', 'sandbox-broker.sh'), '--help'], { encoding: 'utf8' })
+    expect(output).toContain('host-local control service')
+    expect(output).toContain('no generic Docker command surface')
+    expect(output).toContain('same-account only')
+    expect(output).toContain('install-user-services.sh --check --only broker')
+  })
+
+  it('treats --help as read-only for target-user lifecycle helper scripts', () => {
+    for (const file of ['sandbox-rootless-init.sh', 'sandbox-preflight.sh', 'sandbox-bootstrap-host.sh']) {
+      const output = execFileSync('bash', [join(repoRoot, 'scripts', file), '--help'], { encoding: 'utf8' })
+      expect(output.toLowerCase()).toContain('usage')
+      expect(output).toContain('--help')
+    }
   })
 
   it('checks development prerequisites and points to the non-root pnpm installer', () => {
@@ -76,6 +164,10 @@ describe('terminal sandbox onboarding (R65)', () => {
       expect(readme).toContain('命令逐行说明')
       expect(readme).toContain('# 只读检查 Docker/rootless/目标账户/镜像')
       expect(readme).toContain('# 构建镜像、创建独立网络并启动 sandbox 容器')
+      expect(readme).toContain('交付方式')
+      expect(readme).toContain('不通过飞书发送')
+      expect(readme).toContain('install-user-services.sh')
+      expect(readme).toContain('--only broker')
       const manifest = JSON.parse(readFileSync(result.manifestPath, 'utf8')) as {
         target: { kind: string; user: string }
         scripts: { file: string; root: boolean }[]

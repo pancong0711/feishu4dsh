@@ -1,9 +1,24 @@
 # 秘书子模块（SHE）
 
-> 状态：可选能力，默认关闭；`/she sandbox` MVP 已加入。详细工作单不在公开快照内。
+> 状态：可选能力，默认关闭；`/she sandbox` MVP 已加入。SHE 计划迁往独立 agent 控制面项目，公开快照保留当前可用实现与迁移提示。详细工作单不在公开快照内。
 
 SHE = **S**ecretary **H**andoff **E**xecutor。它让飞书里的 `/she` 命令把用户原文按固定信封
 转交给本机 OpenCode 异步执行，并持久化 Topic/Task、串行队列、状态和报告。
+
+## 用户级服务安装与检查
+
+`dsh-feishu4dsh.service`（飞书频道）与 `feishu4dsh-sandbox-broker.service`（受限容器控制面）是独立 user service。安装器不通过飞书发送，从部署仓库直接执行：
+
+```sh
+bash scripts/install-user-services.sh --dry-run
+bash scripts/install-user-services.sh --check
+bash scripts/install-user-services.sh --enable
+bash scripts/install-user-services.sh --uninstall
+# 只管理其中一个
+bash scripts/install-user-services.sh --check --only broker
+```
+
+安装器先只读发现实际服务位置（`XDG_CONFIG_HOME`、systemd `FragmentPath`/drop-ins/WorkingDirectory/ExecStart），再决定是否写 unit；已存在但内容不同或有同名 unit 从其他路径加载时不会静默覆盖/遮蔽，需审查后显式 `--replace`。`--check` 还会核对 enabled/active、飞书 env 文件权限与 key，以及 broker socket 的 `/v1/health`。broker 使用同账户 rootless Docker、socket 0600、不监听 LAN；当前 client 只支持 dsh 与 broker 同 Unix 账户布局。服务日志用 `journalctl --user -u <unit>` 查看。
 
 ## 终端 onboarding
 
@@ -14,7 +29,7 @@ pnpm install
 pnpm sandbox:onboard
 ```
 
-程序只检测环境并生成 `~/.local/share/feishu4dsh/onboarding/...` 下的 onboarding kit，不自动 sudo、不写密钥、不自动建容器。按生成的 README 执行：root 脚本 → 目标用户 rootless 初始化 → 创建 → 验证。
+程序只检测环境并生成 `~/.local/share/feishu4dsh/onboarding/...` 下的 onboarding kit，不自动 sudo、不写密钥、不自动建容器；终端打印 README/脚本绝对路径，不通过飞书发送。按生成的 README 执行：root 脚本 → 目标用户 rootless 初始化 → 创建 → 验证。飞书 `/she sandbox` 才走文件消息发送安装包。
 
 ## 快速启用
 
@@ -59,6 +74,7 @@ secretaryEnabled: true（手工配置）
 /she need
 /she need package
 /she doctor
+/info
 /she submit <原文>
 /she continue <Topic> <原文>
 /she list [Topic]
@@ -88,14 +104,18 @@ secretaryEnabled: true（手工配置）
 
 ```text
 $HOME/.local/share/feishu4dsh/sandboxes/<sandbox-name>/
-  workspace/ home/ cache/ logs/ sandbox.json
+  workspace/  inbox/  outbox/  home/  cache/  logs/  sandbox.json
 ```
 
-包内包含 plan、host preflight、root bootstrap（专用账户模式）、create/verify/destroy 脚本、Dockerfile 与 CHECKSUMS。容器默认只读 rootfs、`cap-drop ALL`、`no-new-privileges`、独立网络，只挂 workspace/home/cache 三个叶子目录，禁止 Docker socket/host network/privileged。SHE 不执行 sudo 或容器创建；目标用户在飞书外审查执行。
+包内包含 plan、host preflight、root bootstrap（专用账户模式）、create/verify/destroy 脚本、Dockerfile 与 CHECKSUMS。容器默认只读 rootfs、`cap-drop ALL`、`no-new-privileges`、独立网络，只挂 workspace/inbox/outbox/home/cache 叶子目录，禁止 Docker socket/host network/privileged。SHE 不执行 sudo 或容器创建；目标用户在飞书外审查执行。
 
 空机器可用 `scripts/sandbox-preflight.sh`（只读）和 `scripts/sandbox-bootstrap-host.sh`（root，支持 dry-run）准备专用 rootless 账户。
 
 Broker 使用固定 `sbx-` 名称前缀、Unix socket 和固定 registry；inbox 由 broker 写且容器只读，outbox 由 agent 写。
+
+### 服务帮助
+
+`/info` 只读显示两个 user service 的实际 unit 位置、enabled/active、linger 自启动状态，以及部署机上的安装器定位、`--check/--enable` 和 `systemctl`/`busctl` 重启命令。它不会自动安装或重启服务；busctl 需要宿主机同账户的 user D-Bus，agent sandbox 内通常不可用。
 
 ### 结果回收
 
@@ -121,7 +141,7 @@ manifest 中的 affectedPaths；不 commit/push。它不是单纯的 `git add`�
 
 ## 行为与安全
 
-- SHE 不访问 Docker socket；`/she sandbox` 只生成无密钥安装包，不执行 sudo/Docker；容器/provider 凭据由目标 sandbox 账户侧负责；
+- SHE 不直接访问 Docker socket；`/she sandbox build` 只生成无密钥安装包，生命周期动作只经 broker 窄接口发起；容器/provider 凭据由目标 sandbox 账户侧负责；
 - 同一 Topic 严格串行；失败、中断、报告缺失或执行器不可达会暂停 Topic；
 - 每个 Topic 使用独立 OpenCode session 与 git worktree；
 - 数据库只保存请求 hash、20 字摘录与执行器引用；排队原文仅临时 spool，提交后删除；

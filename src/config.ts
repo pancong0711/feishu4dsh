@@ -35,6 +35,18 @@ export type AgentPreset = (typeof AGENT_PRESETS)[number]
 export const REASONING_CHOICES = ['on', 'off'] as const
 export type ReasoningChoice = (typeof REASONING_CHOICES)[number]
 
+/** Optional controlled SHE endpoint. Missing/empty paths use the documented XDG fallbacks. */
+export interface SheConfig {
+  /** Default false: the legacy secretary path remains the active `/she` implementation. */
+  enabled?: boolean
+  /** Optional explicit control-plane Unix socket path. */
+  socketPath?: string
+  /** Optional 0600 bearer-token file. */
+  tokenFile?: string
+  /** Per-request timeout in milliseconds. */
+  timeoutMs?: number
+}
+
 /** Resolved plugin configuration, one instance per mounted row. */
 export interface Config {
   /** Feishu/Lark app id (`cli_...`). */
@@ -112,6 +124,8 @@ export interface Config {
   groupAllowlist?: string[]
   /** open_ids that may click approve/deny; empty lets the chat driver decide. */
   approvers?: string[]
+  /** New independent SHE control-plane integration. Disabled by default. */
+  she?: SheConfig
   /* SHE / secretary handoff (R56). Disabled by default. */
   /** Enable the optional `/she` secretary submodule. */
   secretaryEnabled?: boolean
@@ -199,6 +213,12 @@ export const Config = Schema.object({
   senderAllowlist: Schema.array(String).default([]),
   groupAllowlist: Schema.array(String).default([]),
   approvers: Schema.array(String).default([]),
+  she: Schema.object({
+    enabled: Schema.boolean().default(false),
+    socketPath: Schema.string().default(''),
+    tokenFile: Schema.string().default(''),
+    timeoutMs: Schema.number().default(30_000),
+  }),
   secretaryEnabled: Schema.boolean().default(false),
   secretaryAutoRestore: Schema.boolean().default(true),
   secretaryBootstrapFile: Schema.string().default('~/.local/state/feishu4dsh/she-bootstrap.json'),
@@ -318,6 +338,12 @@ export function resolveConfig(config: Config): Required<Config> {
     senderAllowlist: cleanList(config.senderAllowlist),
     groupAllowlist: cleanList(config.groupAllowlist),
     approvers: cleanList(config.approvers),
+    she: {
+      enabled: config.she?.enabled ?? false,
+      socketPath: (config.she?.socketPath ?? '').trim(),
+      tokenFile: (config.she?.tokenFile ?? '').trim(),
+      timeoutMs: numberAtLeast(config.she?.timeoutMs, 1, 30_000),
+    },
     secretaryEnabled: config.secretaryEnabled ?? false,
     secretaryAutoRestore: config.secretaryAutoRestore ?? true,
     secretaryBootstrapFile: (config.secretaryBootstrapFile ?? '~/.local/state/feishu4dsh/she-bootstrap.json').trim()

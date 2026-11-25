@@ -1,19 +1,38 @@
 # Changelog
 
+## 0.22.0 (2026-11-25)
+
+**SHE 独立控制面薄接入（实验，默认关闭）**
+
+- 新增 `she` 配置命名空间：`enabled` / `socketPath` / `tokenFile` / `timeoutMs`；默认 `enabled: false`，旧 `secretary*` `/she` 与普通飞书聊天完全保留。
+- 新增 `src/integrations/she/`：config、client、gateway 映射、command 透传、RenderIntent renderer、NDJSON 事件泵、Feishu GatewayAdapter 等价实现与 runtime。
+- 支持 health/hello、capability/协议协商、token 0600 校验、结构化不可用错误。
+- 支持 RenderIntent → 文本/Markdown/交互卡片/原生表单/文件意图；表单 submit 与卡片按钮回调可回填 gateway.v1 interaction values，并保留线程内原 conversation。
+- 事件泵支持 cursor 持久化原语、重复抑制、指数退避、`cursor_expired → /v1/snapshot` 恢复、task accepted/progress/completed/failed/artifact 里程碑。
+- 新增默认关闭的 dsh 双轨开关：`she.enabled: true` 时 `/she` 走独立控制面；不可达时明确报错，不影响普通聊天。
+- 依赖通过 SHE GitHub Release `v0.1.0-packages.1` tarball + pnpm overrides 锁定；正式 npm registry 发布后再切回 semver。
+- 已知限制：`file` RenderIntent 目前等待 SHE 公开 artifact bytes API；cursor 文件 store 尚未配置化启用；旧 `src/secretary/` 仍保留。
+- 验证：`tsc` ✓，Vitest **469/469**。
+
 ## 0.21.1 (2026-11-24)
 
 **R70-a：dsh 与 broker 用户级服务一键安装**
 
 - 新增 `scripts/install-user-services.sh`：
   - `--dry-run` 打印两个 user unit 与 systemctl 命令；
-  - `--enable` 写入 `~/.config/systemd/user/`、daemon-reload、enable --now；
-  - `--uninstall` 停用/删除 unit，保留 broker registry 与 sandbox 数据。
+  - `--check` 只读核对 unit、systemd enabled/active、env 文件权限与 key、broker socket health；
+  - `--enable` 写入 `~/.config/systemd/user/`、daemon-reload、enable --now，并对 broker 做 socket health check；
+  - `--uninstall` 停用/删除 unit，保留 broker registry 与 sandbox 数据；
+  - `--only channel|broker` 支持独立管理两个服务；
+  - 所有模式先发现 `XDG_CONFIG_HOME` 与 systemd 实际 `FragmentPath`；已有不同 unit 或从其他路径加载时拒绝静默覆盖/遮蔽，需显式 `--replace` 并保留备份。
 - 统一安装：
   - `dsh-feishu4dsh.service`
   - `feishu4dsh-sandbox-broker.service`
-- 非 root；专用 sandbox 账户需以目标用户执行。
-- 新增 `pnpm services:install` 包装命令。
-- README/SECRETARY 与测试清单更新；全量测试 428/428。
+- 非 root；专用 sandbox 账户需以目标用户执行；文档明确当前 broker client 只支持同 Unix 账户布局。
+- 补齐 installer/broker/onboarding/preflight/rootless/deploy 的 `--help`、注释与 docstring；更正 onboarding 中“broker 未实现”的过期说明。
+- 新增 `pnpm services:install` / `pnpm services:check` 包装命令。
+- 新增只读 `/info`：报告两个 user unit 的实际位置/enabled/active/linger，展示安装器路径、部署机 check/enable 命令、systemctl 加载/重启命令和宿主机 busctl 重启命令；不自动安装或重启。
+- README/SECRETARY 与测试清单更新；全量测试 434/434。
 
 ## 0.21.0 (2026-11-24)
 
