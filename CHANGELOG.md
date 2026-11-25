@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.23.1 (2026-11-25)
+
+**SHE 移除后功能对账与发布加固**
+
+- 新增 `pnpm clean`，并让 `pnpm build` 先清理 `lib/tsconfig.tsbuildinfo`，避免增量构建残留已删除的 SHE 产物。
+- 发布快照构建前清理 `lib/` 与 tsbuildinfo，确保快照测试与 npm 打包不会带入历史编译文件。
+- channel-only 安装器补回 systemd 实际 `FragmentPath` 核对：发现由其他路径加载时 `--check` 报错、`--enable` 拒绝静默覆盖。
+- `/info` 保持 channel-only，回归测试改为版本通配，避免下次发版因硬编码版本号误报。
+- 与 v0.22.0 对账：核心 `adapter/acl/cards/files/host/sessions/workspaces/model-selection/session-* /util` 未改动；Config/BridgeHooks/Strings 仅删除 SHE 字段，新增 `cardActionFailed` 与 `infoChannelBody`；频道命令仅移除 `/she`。
+- 验证：`pnpm install --frozen-lockfile` ✓，`tsc` ✓，Vitest **377/377** ✓，`pnpm build` ✓，构建产物无 `secretary`/`she` 目录。
+
 ## 0.23.0 (2026-11-25)
 
 **破坏性边界变更：移除 SHE 业务，回归飞书 ↔ dsh 通道**

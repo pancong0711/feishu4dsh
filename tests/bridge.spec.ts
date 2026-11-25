@@ -6272,7 +6272,7 @@ describe('SHE removal boundary (v0.23.0)', () => {
     const { port } = makeEnv()
     await textMessage(port, '/info')
     const text = String(port.sent.at(-1)?.input.markdown ?? port.sent.at(-1)?.input.text ?? '')
-    expect(text).toContain('feishu4dsh 0.23.0')
+    expect(text).toMatch(/feishu4dsh \d+\.\d+\.\d+/)
     expect(text).toContain('dsh-feishu4dsh.service')
     expect(text).not.toContain('sandbox-broker')
     expect(text).not.toContain('/she')

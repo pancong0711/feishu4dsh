@@ -107,6 +107,9 @@ unit_exists() { [ -e "$UNIT_PATH" ]; }
 unit_enabled() { systemctl --user is-enabled "$UNIT_NAME" >/dev/null 2>&1; }
 unit_active() { systemctl --user is-active "$UNIT_NAME" >/dev/null 2>&1; }
 systemd_reachable() { systemctl --user show-environment >/dev/null 2>&1; }
+unit_fragment_path() {
+  systemctl --user show -p FragmentPath --value "$UNIT_NAME" 2>/dev/null | head -n 1
+}
 
 describe() {
   say "unit: $UNIT_PATH"
@@ -123,6 +126,12 @@ describe() {
     say "systemd --user: reachable"
     say "enabled: $(unit_enabled && echo yes || echo no)"
     say "active: $(unit_active && echo yes || echo no)"
+    local loaded
+    loaded="$(unit_fragment_path)"
+    if [ -n "$loaded" ]; then
+      say "loaded unit: $loaded"
+      [ "$loaded" = "$UNIT_PATH" ] || say "WARNING: loaded unit path differs from target: $UNIT_PATH"
+    fi
   else
     say "systemd --user: unreachable (run in the target account's login shell)"
   fi
@@ -143,6 +152,12 @@ write_unit() {
       die "existing unit differs: $UNIT_PATH (rerun with --replace after review)"
     fi
     cp "$UNIT_PATH" "$UNIT_PATH.bak.$(date +%Y%m%d-%H%M%S)"
+  fi
+  local loaded
+  loaded="$(unit_fragment_path 2>/dev/null || true)"
+  if [ -n "$loaded" ] && [ "$loaded" != "$UNIT_PATH" ] && [ "$WITH_REPLACE" != "1" ]; then
+    rm -f "$tmp"
+    die "systemd is loading this service from another path: $loaded (review it, then rerun with --replace)"
   fi
   mv "$tmp" "$UNIT_PATH"
   say "wrote $UNIT_PATH"
@@ -192,6 +207,11 @@ case "$MODE" in
     systemd_reachable || exit 1
     unit_enabled || { say "unit is not enabled: $UNIT_NAME"; failures=$((failures + 1)); }
     unit_active || { say "unit is not active: $UNIT_NAME"; failures=$((failures + 1)); }
+    loaded="$(unit_fragment_path)"
+    if [ -n "$loaded" ] && [ "$loaded" != "$UNIT_PATH" ]; then
+      say "unit is loaded from a different path: $loaded (expected $UNIT_PATH)"
+      failures=$((failures + 1))
+    fi
     [ "$failures" -eq 0 ] || exit 1
     say "✅ feishu4dsh channel service is ready"
     ;;

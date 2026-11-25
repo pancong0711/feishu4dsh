@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 主题 |
 |---|---|---|
+| 0.23.1 | 2026-11-25 | **SHE 移除后对账**：清理构建残留、发布快照清理 lib、安装器恢复 FragmentPath 核对、`/info` 回归去硬编码；核心飞书 ↔ dsh 文件未变，377/377 |
 | 0.23.0 | 2026-11-25 | **移除 SHE 业务**：`/she`、secretary、control-plane client、sandbox/broker 脚本与 `@she/*` 依赖迁出 feishu4dsh；只保留飞书 ↔ dsh 通道；`/info` 与安装器收敛；377/377 |
 | 0.22.0 | 2026-11-25 | **SHE 独立控制面薄接入（实验，默认关闭）**：`she` 配置、health/hello、/she 透传、RenderIntent/表单/按钮回调、NDJSON 事件泵与 cursor/snapshot 恢复、task 里程碑、默认关闭双轨开关；SHE 不可达不影响普通聊天；469/469 |
 | 0.1.0 | 2026-08-19 | 首个可用版本：WebSocket/Webhook 双传输、三种会话作用域（chat/chat-thread/chat-sender）、流式与聚合两种回复渲染 |
